@@ -27,6 +27,8 @@ struct FillOptions {
     int shapeBudget = kDefaultShapeBudget;
     int evaluationBudget = kDefaultEvaluationBudget;
     int profileTrialBudget = 0;
+    int timeBudgetMilliseconds = 0;
+    bool adaptiveBudget = true;
     bool thinRegion = false;
     bool thinRegionQuality = false;
     bool retainFailedFill = false;

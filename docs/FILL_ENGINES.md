@@ -18,10 +18,13 @@ measurements, cancellation state, and errors. GUI insertion turns accepted
 placements into ordinary scene groups. Saved figures preserve the authored paths
 separately from generated shapes.
 
-Leeway describes occluding geometry above a fill. It permits support underneath
-that geometry while quality checks measure the visible result. Callers supply
-leeway explicitly. Cancellation discards generated placements; failure handling
-depends on the selected engine.
+Leeway supplies geometry in which a fill may change hidden support while quality
+checks measure the visible result. The editor accepts an opaque vector shape,
+a closed saved Pen path, or their union within a group. Saved paths supply an
+explicit permitted area. World transforms, cutouts and visibility apply to the
+combined geometry. The active target contour cannot supply its own leeway.
+Callers supply leeway explicitly. Cancellation discards generated placements;
+failure handling depends on the selected engine.
 
 ## Contour conversion and Analytical Pen
 
@@ -49,6 +52,19 @@ tangent constraints; straight, corner, and interior tasks supply complementary
 proposals. Ranked candidates form a seed, followed by bounded repair, affine
 refinement, count reduction, and final verification.
 
+With leeway, boundary search also simplifies hidden chains between hard
+anchors, including chains with soft points and curved spans. It tests direct
+connections and new corners at intersections of the retained edge directions.
+Each replacement must reduce the anchor count,
+retain valid compound contours, cover required paint and remain within
+spill-free support. Search effort and extension lengths are bounded. The
+working contours supply additional straight and corner candidates, plus a
+single affine Square candidate for a completed parallelogram. Selection and
+final verification use the original coverage requirements. Authored contours
+and exposed curves are preserved. Profile diagnostics report accepted
+shortcuts, intersections, anchor counts and generated candidates under
+`leewayContour`.
+
 Selection and refinement assess the complete placement union. Coverage repair
 uses missing interior support and observed contour defects. Reduction reuses
 candidate geometry and the joint unique support of neighboring placements.
@@ -68,6 +84,8 @@ Defaults are defined by `compact::FillOptions` in `compact_fit.h`:
 | `shapeBudget` | `3000` | Caller placement-count budget. |
 | `evaluationBudget` | `60000` | Refinement score-evaluation budget. |
 | `profileTrialBudget` | `0` | Automatic profile-search allocation. |
+| `adaptiveBudget` | `true` | Extend search in rounds according to complexity and measured progress. |
+| `timeBudgetMilliseconds` | `0` | Automatic time allowance; a positive value sets the search deadline. |
 | `retainFailedFill` | `false` | Retain available placements after a quality failure. |
 
 Geometric checks use triangle unions on a `1e-6` clipping grid and reconstructed
@@ -82,6 +100,56 @@ The solver can select a tighter outward allowance within the requested maximum.
 Stages share bounded work and retain feasible checkpoints. CPU and GPU trials
 contribute to the operation's work accounting. Progress reflects consumed work;
 setup and verification costs also depend on contour complexity.
+
+Adaptive refinement starts with 3,000 to 12,000 evaluations. Authored anchor count,
+holes, components and seed count increase the initial allowance and ceiling, up to the caller's
+`evaluationBudget`. Remaining work is issued in growing rounds on the same
+objective, caches and placement state. Lower verified shape count or improved
+incomplete coverage resets patience; two stalled rounds stop further extensions.
+A verified one-shape fit stops count search. The automatic search allowance ranges
+from 3 to 20 seconds. Deadlines are cooperative: an in-progress geometry operation
+and final output verification can finish after the allowance.
+
+Internal deadlines return the best verified checkpoint. Explicit user
+cancellation clears placements. For eligible contours, a bounded proposal search first fits a uniform 256-unit
+frame. CPU proposals use up to 6,000 evaluations and GPU proposals use up to 3,000.
+Mapped placements must pass the original region's complete checks; a bounded
+native-coordinate repair can adjust a failed proposal. A verified fit of one or
+two shapes returns early. Other proposals remain checkpoints while native search
+continues with the unused evaluation allowance. Proposal deadlines are separate
+from native refinement.
+
+A failed compact search reports its failed checks. Triangulated covers remain
+available to the diagnostic tool and are not substituted for Compact Fit output.
+Count regression checks constrain successful compact results independently of the
+general shape budget. Geometry validity alone does not establish a compact result.
+
+Extensions repair the current failures: exact boundary transforms address contour
+continuity and protected corners, while coverage repair addresses missing interior
+support. Progress includes constraint improvement as well as verified count
+reduction. Automatic profile seeding and refinement have separate time allowances;
+a stopped seed phase retains selected candidates for refinement. An explicit time
+allowance continues to bound the combined seed and refinement phases.
+
+Compact Fit searches in observation units, relative to the first contour anchor.
+Contour tolerances, coverage allowances, leeway, preferred coverage and supplied
+placements use the same coordinate conversion. Equivalent uniform changes of
+units require scaling all distance settings, including `observationScale` and
+the contour's boundary tolerance. Public distance and area measurements return
+in project units. `coordinateFrame` records the origin and observation unit;
+dimensionless scores and internal diagnostic coordinates remain in solver units.
+Returned placements receive native transform rounding and another coverage check
+in the original project coordinates. Coordinate conversion can change clipping-grid
+rounding. Conversion first tries bounded clearance adjustments, then repairs the
+existing placements in project coordinates within the unused work allowance.
+Conversion repair cannot increase the placement count.
+A bounded clearance adjustment can recover coverage lost during rounding; it
+must pass the complete original quality requirements.
+
+GPU refinement starts from substantially covered seeds and shares a bounded part
+of the repair allocation. Exact repair and
+count reduction continue under the remaining stage allocations after a feasible
+GPU result. Failed GPU attempts retain their consumed work in the shared budget.
 
 The GUI enables failed-fill retention: available Compact Fit placements can be
 inserted with a reported warning when verification fails. Headless callers use

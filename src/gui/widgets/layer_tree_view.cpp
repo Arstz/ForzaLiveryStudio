@@ -45,11 +45,11 @@ LayerTreeView::LayerTreeView(QWidget *parent)
     });
 }
 
-void LayerTreeView::setLeewayGroupId(const QString &groupId) {
-    if (leewayGroupId_ == groupId) {
+void LayerTreeView::setLeewayEntryId(const QString &entryId) {
+    if (leewayEntryId_ == entryId) {
         return;
     }
-    leewayGroupId_ = groupId;
+    leewayEntryId_ = entryId;
     viewport()->update();
 }
 
@@ -70,7 +70,7 @@ void LayerTreeView::paintEvent(QPaintEvent *event) {
             }
             const QRect rowRect = visualRect(index);
             if (index.data(LayerTreeModel::EntryIdRole).toString()
-                == leewayGroupId_) {
+                == leewayEntryId_) {
                 QColor fill = kLeewayAccentColor;
                 fill.setAlpha(35);
                 painter.fillRect(rowRect, fill);
@@ -102,11 +102,11 @@ void LayerTreeView::mousePressEvent(QMouseEvent *event) {
         && event->modifiers().testFlag(Qt::AltModifier)) {
         const QModelIndex index = indexAt(event->position().toPoint());
         if (index.isValid()
-            && index.data(LayerTreeModel::IsGroupRole).toBool()) {
-            const QString groupId =
+            && !index.data(LayerTreeModel::IsGuideRole).toBool()) {
+            const QString entryId =
                 index.data(LayerTreeModel::EntryIdRole).toString();
-            if (!groupId.isEmpty()) {
-                Q_EMIT leewayGroupRequested(groupId);
+            if (!entryId.isEmpty()) {
+                Q_EMIT leewayEntryRequested(entryId);
                 event->accept();
                 return;
             }

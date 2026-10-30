@@ -100,8 +100,8 @@ public:
     QVector<catalog::Primitive> compactFillPrimitives(QString *error = nullptr) const;
     QVector<catalog::Primitive> thinFillPrimitives(QString *error = nullptr) const;
     bool canAssignContourLeeway() const;
-    void setContourLeewayGroupId(const QString &groupId);
-    QString contourLeewayGroupId() const;
+    void setContourLeewayEntryId(const QString &entryId);
+    QString contourLeewayEntryId() const;
     QPainterPath contourLeewayPath(QString *error = nullptr) const;
     void invalidateContourLeewayCache();
     void setPenFillRunning(bool running, const QString &message = QString());
@@ -613,10 +613,11 @@ private:
     std::optional<PathInteractionState> liningDraft_;
     fls::scene::ContourPathKind pathFigureKind_ = fls::scene::ContourPathKind::Pen;
     bool syncingPathFigure_ = false;
-    QString contourLeewayGroupId_;
+    QString contourLeewayEntryId_;
     PathInteraction lining_{fls::scene::ContourPathKind::Lining};
     mutable QPainterPath contourLeewayPathCache_;
     mutable QString contourLeewayErrorCache_;
+    mutable QString contourLeewayTargetIdCache_;
     mutable PenGeometryCache penGeometryCache_;
     mutable PenHitCache penHitCache_;
     mutable bool contourLeewayCacheDirty_ = true;

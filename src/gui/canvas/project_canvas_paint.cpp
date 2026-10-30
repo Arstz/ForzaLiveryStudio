@@ -92,7 +92,7 @@ void ProjectCanvas::drawPenOverlay(QPainter &painter) {
     painter.resetTransform();
     painter.setRenderHint(QPainter::Antialiasing, true);
 
-    if (!contourLeewayGroupId_.isEmpty()) {
+    if (!contourLeewayEntryId_.isEmpty()) {
         const QPainterPath leeway = contourLeewayPath();
         if (!leeway.isEmpty()) {
             const QPainterPath screenLeeway = camera_.matrix().map(leeway);

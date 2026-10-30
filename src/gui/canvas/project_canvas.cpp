@@ -1,5 +1,6 @@
 #include "project_canvas.h"
 #include "thin_fit.h"
+#include "contour_leeway.h"
 
 #include "project_canvas_internal.h"
 
@@ -666,21 +667,21 @@ bool ProjectCanvas::canAssignContourLeeway() const {
         && !pen_.fillRunning;
 }
 
-void ProjectCanvas::setContourLeewayGroupId(const QString &groupId) {
-    if (contourLeewayGroupId_ == groupId) {
+void ProjectCanvas::setContourLeewayEntryId(const QString &entryId) {
+    if (contourLeewayEntryId_ == entryId) {
         return;
     }
-    contourLeewayGroupId_ = groupId;
+    contourLeewayEntryId_ = entryId;
     invalidateContourLeewayCache();
     update();
 }
 
-QString ProjectCanvas::contourLeewayGroupId() const {
-    return contourLeewayGroupId_;
+QString ProjectCanvas::contourLeewayEntryId() const {
+    return contourLeewayEntryId_;
 }
 
 QPainterPath ProjectCanvas::contourLeewayPath(QString *error) const {
-    if (contourLeewayCacheDirty_) {
+    if (contourLeewayCacheDirty_ || contourLeewayTargetIdCache_ != pathFigureId_) {
         rebuildContourLeewayCache();
     }
     if (error != nullptr) {
@@ -697,59 +698,19 @@ void ProjectCanvas::invalidateContourLeewayCache() {
 }
 
 void ProjectCanvas::rebuildContourLeewayCache() const {
-    QPainterPath result;
-    result.setFillRule(Qt::WindingFill);
     contourLeewayCacheDirty_ = false;
+    contourLeewayTargetIdCache_ = pathFigureId_;
     contourLeewayPathCache_ = {};
     contourLeewayErrorCache_.clear();
-    if (contourLeewayGroupId_.isEmpty()) {
+    if (contourLeewayEntryId_.isEmpty()) {
         return;
     }
-    if (state_ == nullptr
-        || state_->groupForId(contourLeewayGroupId_) == nullptr) {
-        contourLeewayErrorCache_ = QStringLiteral("The leeway group is unavailable");
+    const auto *node = state_ != nullptr ? state_->sceneNode(contourLeewayEntryId_) : nullptr;
+    if (node == nullptr) {
+        contourLeewayErrorCache_ = QStringLiteral("The leeway entry is unavailable");
         return;
     }
-
-    int shapeCount = 0;
-    for (const SceneRenderEntry &entry : state_->renderEntries()) {
-        if (entry.shape == nullptr
-            || !entry.ancestorGroupIds.contains(contourLeewayGroupId_)) {
-            continue;
-        }
-        const fls::scene::Shape &shape = *entry.shape;
-        if (!shape.visible) {
-            continue;
-        }
-        if (shape.isRaster() || shape.mask
-            || shape.color[3] != 255
-            || shape.opacity < 1.0) {
-            contourLeewayErrorCache_ = QStringLiteral(
-                "Leeway requires visible opaque vector shapes without masks");
-            return;
-        }
-        const ShapeGeometry *geometry =
-            geometry_.shape(shape.shapeId);
-        if (geometry == nullptr) {
-            contourLeewayErrorCache_ = QStringLiteral("Leeway group geometry is unavailable");
-            return;
-        }
-        const PenPrimitive primitive =
-            buildPenPrimitive(shape.shapeId, *geometry);
-        if (primitive.silhouette.isEmpty()) {
-            contourLeewayErrorCache_ = QStringLiteral("Leeway group geometry is unavailable");
-            return;
-        }
-        result = result.united(
-            entry.worldTransform.map(primitive.silhouette));
-        ++shapeCount;
-    }
-    if (shapeCount == 0 || result.isEmpty()) {
-        contourLeewayErrorCache_ = QStringLiteral("Leeway group has no visible vector coverage");
-        return;
-    }
-
-    contourLeewayPathCache_ = result;
+    contourLeewayPathCache_ = buildContourLeeway(*node, geometry_, pathFigureId_, &contourLeewayErrorCache_);
 }
 
 void ProjectCanvas::setPathFillRunning(PathInteraction &path, bool running, const QString &message) {

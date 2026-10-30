@@ -18,10 +18,10 @@ class LayerTreeView final : public QTreeView {
 
 public:
     explicit LayerTreeView(QWidget *parent = nullptr);
-    void setLeewayGroupId(const QString &groupId);
+    void setLeewayEntryId(const QString &entryId);
 
 Q_SIGNALS:
-    void leewayGroupRequested(const QString &groupId);
+    void leewayEntryRequested(const QString &entryId);
 
 protected:
     void paintEvent(QPaintEvent *event) override;
@@ -48,7 +48,7 @@ private:
     int dragScrollDirection_ = 0;
     QPoint lastDragPosition_;
     QTimer dragScrollTimer_;
-    QString leewayGroupId_;
+    QString leewayEntryId_;
 };
 
 } // namespace gui

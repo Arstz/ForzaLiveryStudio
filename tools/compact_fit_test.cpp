@@ -3,6 +3,10 @@
 #include "project_codec.h"
 #include "layer.h"
 #include "compact_fit.h"
+#include "compact_fit_coordinates.h"
+#include "compact_fit_constructive.h"
+#include <QThread>
+#include "contour_leeway.h"
 #include "profile_fit.h"
 #include "thin_fit.h"
 #include "cubic_contour.h"
@@ -15,8 +19,9 @@
 #include "greedy_cover.h"
 #include "matrix_math.h"
 #include "shape_registry.h"
+#include "polygon_mesh.h"
 
-#include <clipper2/clipper.engine.h>
+#include <clipper2/clipper.h>
 
 #include <QCoreApplication>
 #include <QDir>
@@ -79,6 +84,235 @@ void requireComplete(const gui::catalog::FillResult &result) {
     require(result.fill.unfilled.isEmpty(), QStringLiteral("Fill contains an uncovered residual"));
     require(result.diagnostics.value(QStringLiteral("coverageVerifiedOnGrid")).toBool(),
             QStringLiteral("Final coverage was not verified"));
+}
+
+void leewayContourTests(const QVector<gui::catalog::Primitive> &primitives) {
+    using namespace gui;
+    using namespace gui::catalog;
+    const auto simplify = [](const PenFillRequest &request, const Polygons &leeway,
+                             QJsonObject *diagnostics) {
+        const auto authored = buildRegion(request, {});
+        const auto coverage = leewayAdjustedRegion(authored, leeway, 2.0);
+        const auto simplified = simplifyLeewayRegion(request, authored, coverage, {}, diagnostics);
+        require(subtract(coverage.required, simplified.required).isEmpty(),
+            QStringLiteral("Leeway simplification removed required paint"));
+        require(subtract(simplified.required, coverage.spillFree).isEmpty(),
+            QStringLiteral("Leeway simplification added exposed paint"));
+        const auto originalVisible = subtract(authored.visible, leeway);
+        const auto candidateVisible = subtract(simplified.visible, leeway);
+        require(subtract(originalVisible, candidateVisible).isEmpty()
+            && subtract(candidateVisible, originalVisible).isEmpty(),
+            QStringLiteral("Leeway simplification changed visible geometry"));
+        return simplified;
+    };
+    const QPolygonF stepped{{0, 0}, {70, 0}, {70, 10}, {80, 10}, {80, 20},
+        {90, 20}, {90, 30}, {100, 30}, {100, 100}, {0, 100}};
+    const QPolygonF upperLeeway{{60, -10}, {110, -10}, {110, 40}, {60, 40}};
+    for (bool reversed : {false, true}) {
+        auto points = stepped;
+        if (reversed)
+            std::reverse(points.begin(), points.end());
+        const PenFillRequest request{{}, {polygonLoop(points)}};
+        QJsonObject diagnostics;
+        const auto simplified = simplify(request, {upperLeeway}, &diagnostics);
+        require(simplified.required.size() == 1 && simplified.required.front().size() == 4
+            && diagnostics.value("intersections").toInt() > 0,
+            QStringLiteral("Boundary extensions did not recover a hidden rectangular corner"));
+        require(std::any_of(simplified.required.front().begin(), simplified.required.front().end(),
+            [](const QPointF &point) { return QLineF(point, {100, 0}).length() < 1e-6; }),
+            QStringLiteral("Simplified contour lacks its new intersection anchor"));
+        require(request.loops.front().points.size() == stepped.size(),
+            QStringLiteral("Leeway simplification changed the authored request"));
+    }
+    PenFillRequest hiddenCurve{{}, {polygonLoop(stepped)}};
+    hiddenCurve.loops.front().points[3].kind = PenPointKind::Soft;
+    hiddenCurve.loops.front().points[5].kind = PenPointKind::Soft;
+    QJsonObject hiddenCurveDiagnostics;
+    const auto completedCurve = simplify(hiddenCurve, {upperLeeway}, &hiddenCurveDiagnostics);
+    require(completedCurve.required.size() == 1 && completedCurve.required.front().size() == 4
+        && hiddenCurveDiagnostics.value("intersections").toInt() > 0,
+        QStringLiteral("Soft anchors blocked completion of a hidden curved chain"));
+    const PenFillRequest branch{{}, {polygonLoop({{0, 0}, {100, 0}, {100, 30},
+        {110, 30}, {110, 40}, {100, 40}, {100, 100}, {0, 100}})}};
+    const Polygons sideLeeway{QPolygonF{{95, 20}, {115, 20}, {115, 50}, {95, 50}}};
+    QJsonObject branchDiagnostics;
+    const auto contracted = simplify(branch, sideLeeway, &branchDiagnostics);
+    require(contracted.required.front().size() == 4 && area(contracted.required) == 10000.0
+        && branchDiagnostics.value("shortcuts").toInt() > 0,
+        QStringLiteral("A hidden branch was not contracted with a direct connection"));
+    auto detailed = branch;
+    for (int index = 1; index < 200; ++index)
+        detailed.loops.front().points.push_back({{index % 2 ? 1.0 : 0.0, 100.0 - index * 0.5}, PenPointKind::Hard});
+    QJsonObject detailedDiagnostics;
+    simplify(detailed, sideLeeway, &detailedDiagnostics);
+    require(detailedDiagnostics.value("anchorsAfter").toInt()
+            < detailedDiagnostics.value("anchorsBefore").toInt(),
+        QStringLiteral("Visible contour detail exhausted the search before a local hidden shortcut"));
+
+    const PenFillRequest notch{{}, {polygonLoop({{0, 0}, {40, 0}, {50, 30},
+        {60, 0}, {100, 0}, {100, 100}, {0, 100}})}};
+    QJsonObject notchDiagnostics;
+    const auto retained = simplify(notch, {QPolygonF{{-10, -5}, {110, -5}, {110, 5}, {-10, 5}}},
+        &notchDiagnostics);
+    require(retained.required == buildRegion(notch, {}).required
+        && notchDiagnostics.value("anchorsAfter").toInt() == 7,
+        QStringLiteral("A hidden chord incorrectly allowed an exposed swept area"));
+
+    auto curved = branch;
+    curved.loops.front().points.insert(1, {{50, -10}, PenPointKind::Soft});
+    curved.loops.push_back(polygonLoop({{20, 20}, {30, 20}, {30, 30}, {20, 30}}, PenLoopKind::Cutout));
+    QJsonObject curveDiagnostics;
+    const auto preserved = simplify(curved, sideLeeway, &curveDiagnostics);
+    require(curveDiagnostics.value("anchorsAfter").toInt() < curveDiagnostics.value("anchorsBefore").toInt()
+        && preserved.required.size() == 2,
+        QStringLiteral("Leeway contraction failed to preserve curved paint and its cutout"));
+
+    const auto authored = buildRegion(branch, {});
+    const auto coverage = leewayAdjustedRegion(authored, sideLeeway, 2.0);
+    QJsonObject cancelledDiagnostics;
+    require(simplifyLeewayRegion(branch, authored, coverage, [] { return true; }, &cancelledDiagnostics).required
+        == authored.required && cancelledDiagnostics.value("geometryChecks").toInt() == 0,
+        QStringLiteral("Cancelled leeway search changed geometry"));
+    QJsonObject emptyDiagnostics;
+    require(simplifyLeewayRegion(branch, authored, authored, {}, &emptyDiagnostics).required == authored.required,
+        QStringLiteral("A contour changed without leeway"));
+    const auto square = std::find_if(primitives.begin(), primitives.end(), [](const auto &primitive) {
+        return primitive.shape.shapeId == 101;
+    });
+    require(square != primitives.end(), QStringLiteral("Square is missing from the catalog"));
+    compact::FillOptions options;
+    options.leeway = {upperLeeway};
+    options.evaluationBudget = 1200;
+    options.useGpu = false;
+    options.seedOnly = true;
+    const auto seeded = profile::fillRegion({{}, {polygonLoop(stepped)}}, {*square}, options);
+    const auto contourDiagnostics = seeded.diagnostics.value("leewayContour").toObject();
+    require(seeded.fill.error.isEmpty() && !seeded.fill.placements.isEmpty()
+        && contourDiagnostics.value("intersections").toInt() > 0
+        && contourDiagnostics.value("boundaryCandidates").toInt() > 0
+        && seeded.diagnostics.value("deepMissingArea").toDouble() < 1e-6,
+        QStringLiteral("Profile search did not use the simplified leeway contour"));
+    require(seeded.fill.placements.size() == 1
+        && contourDiagnostics.value("wholeRegionCandidates").toInt() == 1,
+        QStringLiteral("Completed rectangular support was not proposed as one Square"));
+    QTextStream(stdout) << "Leeway intersections, shortcuts, visible coverage, curves, cutouts and cancellation passed\n";
+}
+
+void leewayGeometryTests(const gui::ShapeGeometryStore &geometry) {
+    using namespace gui;
+    using namespace fls::scene;
+    Group root;
+    root.x = 20;
+    root.y = -30;
+    auto group = std::make_unique<Group>();
+    group->scaleX = group->scaleY = 2;
+    auto first = std::make_unique<ContourFigure>();
+    first->id = "first";
+    first->data.closed = true;
+    first->data.points = polygonLoop({{0, 0}, {40, 0}, {40, 40}, {0, 40}}).points;
+    first->data.cutouts = {polygonLoop({{10, 10}, {20, 10}, {20, 20}, {10, 20}}).points};
+    auto *figure = static_cast<ContourFigure *>(group->append(std::move(first)));
+    auto second = std::make_unique<ContourFigure>();
+    second->id = "second";
+    second->data.closed = true;
+    second->data.points = polygonLoop({{50, 0}, {90, 0}, {90, 40}, {50, 40}}).points;
+    group->append(std::move(second));
+    auto *groupNode = static_cast<Group *>(root.append(std::move(group)));
+    QTransform world;
+    world.translate(20, -30);
+    world.scale(2, 2);
+    QString error;
+    const auto single = buildContourLeeway(*figure, geometry, {}, &error);
+    require(error.isEmpty() && single.contains(world.map(QPointF(5, 5)))
+        && !single.contains(world.map(QPointF(15, 15))),
+        QStringLiteral("Saved-path leeway lost its transform or cutout"));
+    const auto combined = buildContourLeeway(*groupNode, geometry, {}, &error);
+    require(error.isEmpty() && combined.contains(world.map(QPointF(55, 5)))
+        && combined.contains(world.map(QPointF(5, 5)))
+        && !combined.contains(world.map(QPointF(45, 5)))
+        && !combined.contains(world.map(QPointF(15, 15))),
+        QStringLiteral("Grouped saved paths did not supply their union"));
+    require(buildContourLeeway(*groupNode, geometry, figure->id, &error).isEmpty()
+        && error.contains("own leeway"), QStringLiteral("An active path became its own leeway"));
+    figure->data.closed = false;
+    require(buildContourLeeway(*figure, geometry, {}, &error).isEmpty() && !error.isEmpty(),
+        QStringLiteral("An open saved path supplied filled leeway"));
+    figure->visible = false;
+    require(!buildContourLeeway(*groupNode, geometry, {}, &error).isEmpty() && error.isEmpty(),
+        QStringLiteral("A hidden path blocked the remaining group coverage"));
+    auto shape = std::make_unique<Shape>();
+    shape->setVectorShape(101);
+    shape->x = 200;
+    auto *shapeNode = static_cast<Shape *>(groupNode->append(std::move(shape)));
+    const auto native = buildContourLeeway(*shapeNode, geometry, {}, &error);
+    require(!native.isEmpty() && error.isEmpty(), QStringLiteral("A single native shape was rejected as leeway"));
+    const auto mixed = buildContourLeeway(*groupNode, geometry, {}, &error);
+    require(error.isEmpty() && native.subtracted(mixed).isEmpty()
+        && mixed.contains(world.map(QPointF(55, 5))),
+        QStringLiteral("A mixed group lost shape or saved-path coverage"));
+    shapeNode->mask = true;
+    require(buildContourLeeway(*shapeNode, geometry, {}, &error).isEmpty() && !error.isEmpty(),
+        QStringLiteral("A masked shape supplied opaque leeway"));
+    QTextStream(stdout) << "Single-shape and saved-path leeway, nested groups, transforms, cutouts and validation passed\n";
+}
+
+void leewayProjectTest(const QString &path, const gui::ShapeGeometryStore &geometry,
+                       const QVector<gui::catalog::Primitive> &primitives, bool savedPath) {
+    QFile file(path);
+    require(file.open(QIODevice::ReadOnly), QStringLiteral("Cannot read the leeway project"));
+    const auto project = fls::decodeProjectDocument(file.readAll());
+    const fls::scene::ContourFigure *target = nullptr;
+    const fls::scene::Layer *occluder = nullptr;
+    const fls::scene::Layer *savedLeeway = nullptr;
+    for (const auto &child : project.root->children) {
+        if (child->kind() == fls::scene::LayerKind::Contour) {
+            if (target == nullptr)
+                target = static_cast<const fls::scene::ContourFigure *>(child.get());
+            else
+                savedLeeway = child.get();
+        }
+        if (child->kind() == fls::scene::LayerKind::Group)
+            for (const auto &entry : static_cast<const fls::scene::Group &>(*child).children)
+                if (entry->kind() == fls::scene::LayerKind::Shape
+                    && static_cast<const fls::scene::Shape &>(*entry).shapeId == 102)
+                    occluder = entry.get();
+    }
+    if (savedPath)
+        occluder = savedLeeway;
+    require(target != nullptr && occluder != nullptr, QStringLiteral("Leeway project lacks a target or occluder"));
+    const auto matrix = target->worldMatrix();
+    const QTransform world(matrix.m[0][0], matrix.m[1][0], matrix.m[0][1], matrix.m[1][1], matrix.m[0][2], matrix.m[1][2]);
+    gui::PenFillRequest request;
+    request.loops = {{target->data.points, gui::PenLoopKind::Outer}};
+    for (auto &point : request.loops.front().points)
+        gui::transformPenPoint(point, world);
+    QString error;
+    const auto leeway = gui::buildContourLeeway(*occluder, geometry, target->id, &error);
+    require(!leeway.isEmpty() && error.isEmpty(), error);
+    const auto authored = gui::catalog::buildRegion(request, {});
+    const auto envelope = gui::catalog::leewayAdjustedRegion(authored, leeway.toSubpathPolygons(), 2.0);
+    const double completionSpill = gui::catalog::area(
+        gui::catalog::subtract({QPolygonF(authored.bounds)}, envelope.spillFree));
+    QTextStream(stdout) << "Completion outside spill-free support: " << completionSpill << '\n';
+    for (bool useGpu : {false, true}) {
+        gui::compact::FillOptions options;
+        options.leeway = leeway.toSubpathPolygons();
+        options.useGpu = useGpu;
+        const auto result = gui::profile::fillRegion(request, primitives, options);
+        const auto diagnostics = result.diagnostics.value("profileSeed").toObject().value("leewayContour").toObject();
+        QTextStream(stdout) << "Leeway replay GPU=" << useGpu << " count=" << result.fill.placements.size()
+            << " error=" << result.fill.error << ' ' << QJsonDocument(diagnostics).toJson(QJsonDocument::Compact) << '\n';
+        require(result.fill.error.isEmpty() && !result.fill.placements.isEmpty()
+            && result.diagnostics.value("approximationVerified").toBool(),
+            QStringLiteral("Leeway project did not produce a verified fill"));
+        if (savedPath) {
+            require(completionSpill > 0.0 && diagnostics.value("wholeRegionCandidates").toInt() == 0,
+                QStringLiteral("A saved path authorized completion outside its exact coverage"));
+        } else {
+            require(result.fill.placements.size() == 1 && result.fill.placements.front().shapeId == 101,
+                QStringLiteral("Leeway project did not produce one verified red Square"));
+        }
+    }
 }
 
 void requireSame(const gui::catalog::FillResult &first, const gui::catalog::FillResult &second) {
@@ -162,6 +396,204 @@ gui::PenFillRequest readRequest(const QString &path) {
     require(!request.loops.isEmpty(), QStringLiteral("Replay log has no contour loops"));
 
     return request;
+}
+
+#include "compact_fit_constructive_benchmark.inc"
+#include "compact_fit_normalization_benchmark.inc"
+
+void requireApproximation(const gui::PenFillRequest &request, const gui::catalog::FillResult &result,
+                          const QVector<gui::catalog::Primitive> &catalog, const gui::compact::FillOptions &options);
+
+void adaptiveBudgetTests(const QVector<gui::catalog::Primitive> &primitives) {
+    using namespace gui::compact;
+    const auto simple = searchBudget(4, 0, 1, 2, 60000);
+    const auto complex = searchBudget(128, 8, 4, 120, 60000);
+    require(complex.maximumEvaluations > simple.maximumEvaluations && complex.milliseconds > simple.milliseconds,
+        QStringLiteral("Complexity did not increase the search allowance"));
+    require(searchBudget(128, 8, 4, 120, 400).maximumEvaluations == 400,
+        QStringLiteral("Adaptive search exceeded the caller ceiling"));
+    const gui::PenFillRequest rectangle{{}, {polygonLoop({{-40, -30}, {40, -30}, {40, 30}, {-40, 30}})}};
+    FillOptions options;
+    options.useGpu = false;
+    auto cover = constructiveCover(gui::catalog::buildRegion(rectangle, {}), primitives, options);
+    require(cover.fill.error.isEmpty() && verifyEmittedFill(rectangle, primitives, options, &cover),
+        QStringLiteral("Constructive checkpoint is invalid"));
+    options.initialPlacements = cover.fill.placements;
+    options.timeBudgetMilliseconds = 1;
+    options.workProgress = [](int, int, int) { QThread::msleep(2); };
+    auto timed = gui::compact::fillRegion(rectangle, primitives, options);
+    require(!timed.fill.cancelled && timed.fill.error.isEmpty()
+        && timed.fill.placements.size() <= cover.fill.placements.size()
+        && verifyEmittedFill(rectangle, primitives, options, &timed),
+        QStringLiteral("A time limit discarded the verified checkpoint"));
+    auto cancelled = gui::compact::fillRegion(rectangle, primitives, options, [] { return true; });
+    require(cancelled.fill.cancelled && cancelled.fill.placements.isEmpty(),
+        QStringLiteral("Explicit cancellation retained placements"));
+    options.workProgress = {};
+    options.timeBudgetMilliseconds = 0;
+    const auto fitted = gui::compact::fillRegion(rectangle, primitives, options);
+    require(fitted.fill.error.isEmpty() && fitted.fill.placements.size() == 1
+        && fitted.diagnostics.value("adaptiveSearch").toObject().value("stopReason").toString() == "one shape",
+        QStringLiteral("A verified one-shape fit did not stop search"));
+    const gui::PenFillRequest ring{{}, {polygonLoop({{-64,-64},{64,-64},{64,64},{-64,64}}),
+        polygonLoop({{-20,-20},{20,-20},{20,20},{-20,20}}, gui::PenLoopKind::Cutout)}};
+    const auto region = gui::catalog::buildRegion(ring, {});
+    auto ringCover = constructiveCover(region, primitives, options);
+    require(ringCover.fill.error.isEmpty(), ringCover.fill.error);
+    options.initialPlacements = ringCover.fill.placements;
+    options.evaluationBudget = 12000;
+    const auto continued = gui::compact::fillRegion(ring, primitives, options);
+    require(continued.fill.error.isEmpty() && continued.fill.placements.size() <= ringCover.fill.placements.size(),
+        QStringLiteral("Continued search regressed its verified checkpoint"));
+    const auto rounds = continued.diagnostics.value("adaptiveSearch").toObject().value("rounds").toArray();
+    require(!rounds.isEmpty(), QStringLiteral("Complex search did not extend its initial allowance"));
+    int previousEvaluations = 0;
+    for (const auto &value : rounds) {
+        const auto round = value.toObject();
+        const int evaluations = round.value("evaluations").toInt();
+        require(evaluations >= previousEvaluations && evaluations <= round.value("ceiling").toInt()
+            && evaluations <= options.evaluationBudget, QStringLiteral("Continued search reset or exceeded its work"));
+        previousEvaluations = evaluations;
+    }
+    options.shapeBudget = 1;
+    auto limited = constructiveCover(region, primitives, options);
+    require(!limited.fill.error.isEmpty() && limited.fill.placements.isEmpty(),
+        QStringLiteral("Constructive cover exceeded its shape allowance"));
+    FillOptions exhausted;
+    exhausted.evaluationBudget = 1;
+    exhausted.timeBudgetMilliseconds = 1;
+    const auto difficult = readRequest(QStringLiteral(FLS_SOURCE_DIR "/tools/fixtures/compact_fit_small_contour.json"));
+    const auto failed = gui::profile::fillRegion(difficult, primitives, exhausted);
+    require(!failed.fill.cancelled && !failed.fill.error.isEmpty() && failed.fill.placements.isEmpty(),
+        QStringLiteral("An exhausted compact search substituted a cover"));
+    require(!failed.diagnostics.contains("constructiveFallback") && !failed.diagnostics.contains("worldCoordinateFallback"),
+        QStringLiteral("Compact Fit reached a triangulated fallback"));
+    QTextStream(stdout) << "Adaptive complexity, checkpoint, deadline, cancellation and shape-limit checks passed\n";
+}
+
+void constructiveProductionCorpus(const QString &manifest, const QVector<gui::catalog::Primitive> &primitives, bool refine = false) {
+    QFile file(manifest);
+    require(file.open(QIODevice::ReadOnly), file.errorString());
+    const auto cases = QJsonDocument::fromJson(file.readAll()).array();
+    int failures = 0;
+    int automaticMeshSubstitutions = 0;
+    for (const auto &value : cases) {
+        const auto entry = value.toObject();
+        const auto request = readRequest(entry.value("request").toString());
+        gui::catalog::Region region;
+        bool canonical = false;
+        try { region = gui::catalog::buildRegion(request, {}); }
+        catch (...) { region = canonicalConstructiveRegion(request); canonical = true; }
+        QElapsedTimer timer;
+        timer.start();
+        auto result = refine ? gui::profile::fillRegion(request, primitives, gui::compact::FillOptions{})
+            : gui::compact::constructiveCover(region, primitives, {});
+        const bool verified = result.fill.error.isEmpty() && !result.fill.cancelled
+            && gui::compact::verifyEmittedRegion(region, primitives, {}, &result);
+        failures += !verified;
+        if (refine && (result.diagnostics.contains("constructiveFallback")
+            || result.diagnostics.value("worldCoordinateFallback").toBool()
+            || result.diagnostics.value("profileSeed").toObject().contains("constructionMode")))
+            ++automaticMeshSubstitutions;
+        QTextStream(stdout) << QJsonDocument(QJsonObject{{"case", entry.value("name")},
+            {"verified", verified}, {"count", result.fill.placements.size()}, {"ms", timer.elapsed()},
+            {"canonicalInput", canonical}, {"error", result.fill.error}, {"diagnostics", result.diagnostics}})
+            .toJson(QJsonDocument::Compact) << '\n' << Qt::flush;
+    }
+    if (!refine)
+        require(failures == 0, QStringLiteral("Production constructive corpus: %1 failures").arg(failures));
+    else
+        QTextStream(stdout) << "Compact results: " << cases.size() - failures << '/' << cases.size()
+            << " verified; " << failures << " failed; automatic mesh substitutions: "
+            << automaticMeshSubstitutions << '\n';
+    require(automaticMeshSubstitutions == 0, QStringLiteral("Compact corpus used a mesh substitution"));
+}
+
+void scaleConsistencyTests(const QVector<gui::catalog::Primitive> &primitives) {
+    const auto source = readRequest(QStringLiteral(FLS_SOURCE_DIR "/tools/fixtures/compact_fit_scale_consistency.json"));
+    for (bool useGpu : {false, true}) {
+        gui::compact::FillOptions referenceOptions;
+        referenceOptions.useGpu = useGpu;
+        const auto reference = gui::profile::fillRegion(source, primitives, referenceOptions);
+        requireApproximation(source, reference, primitives, referenceOptions);
+        require(reference.fill.error.isEmpty() && reference.diagnostics.value("approximationVerified").toBool(),
+            QStringLiteral("Scale-consistency reference failed: %1").arg(reference.fill.error));
+        QTextStream(stdout) << "Scale reference GPU=" << useGpu << " seed="
+            << reference.diagnostics.value("profileSeed").toObject().value("count").toInt()
+            << " final=" << reference.fill.placements.size() << '\n' << Qt::flush;
+        for (double factor : {0.125, 8.0}) {
+            auto request = source;
+            QTransform transform;
+            transform.translate(37 * factor, -53 * factor);
+            transform.scale(factor, factor);
+            for (auto &loop : request.loops)
+                for (auto &point : loop.points)
+                    gui::transformPenPoint(point, transform);
+            request.boundaryTolerance *= factor;
+            auto options = referenceOptions;
+            options.observationScale *= factor;
+            options.boundaryAllowance *= factor;
+            options.inwardAllowance *= factor;
+            const auto result = gui::profile::fillRegion(request, primitives, options);
+            requireApproximation(request, result, primitives, options);
+            QTextStream(stdout) << "Scale factor=" << factor << " GPU=" << useGpu << " seed="
+                << result.diagnostics.value("profileSeed").toObject().value("count").toInt()
+                << " final=" << result.fill.placements.size() << " error=" << result.fill.error << '\n' << Qt::flush;
+            require(result.fill.error.isEmpty() && result.diagnostics.value("approximationVerified").toBool(),
+                QStringLiteral("Scaled fill failed verification: %1").arg(result.fill.error));
+            require(result.fill.placements.size() == reference.fill.placements.size(),
+                QStringLiteral("Equivalent input units changed the shape count"));
+            for (int index = 0; index < reference.fill.placements.size(); ++index) {
+                const auto &expected = reference.fill.placements[index];
+                const auto &actual = result.fill.placements[index];
+                const auto restored = actual.transform * transform.inverted();
+                require(expected.shapeId == actual.shapeId,
+                    QStringLiteral("Equivalent input units changed the shape catalog choice"));
+                for (QPointF probe : {QPointF{}, QPointF{64, 0}, QPointF{0, 64}})
+                    require(QLineF(expected.transform.map(probe), restored.map(probe)).length() < 0.001,
+                        QStringLiteral("Equivalent input units changed a placement"));
+            }
+            require(result.diagnostics.value("evaluations") == reference.diagnostics.value("evaluations"),
+                QStringLiteral("Equivalent input units changed refinement work"));
+        }
+        if (useGpu && reference.diagnostics.value("gpuPipelineEvaluations").toInt() > 0)
+            require(reference.diagnostics.value("stageWork").toObject().value("spatialReduction")
+                    .toObject().value("evaluations").toInt() > 0,
+                QStringLiteral("GPU acceptance skipped count reduction"));
+        require(reference.fill.placements.size() == 2,
+            QStringLiteral("A combined Circle and Square retained redundant placements"));
+    }
+    const auto square = std::find_if(primitives.begin(), primitives.end(), [](const auto &primitive) {
+        return primitive.shape.shapeId == 101;
+    });
+    require(square != primitives.end(), QStringLiteral("Scale test requires a Square"));
+    for (double factor : {0.125, 1.0, 8.0}) {
+        QTransform transform;
+        transform.translate(37 * factor, -53 * factor);
+        transform.scale(factor, factor);
+        gui::PenFillRequest request{{}, {polygonLoop(transform.map(QPolygonF{{0, 0}, {100, 0}, {100, 100}, {0, 100}}))}};
+        request.boundaryTolerance *= factor;
+        gui::compact::FillOptions options;
+        options.observationScale = factor;
+        options.boundaryAllowance *= factor;
+        options.inwardAllowance *= factor;
+        options.evaluationBudget = 1200;
+        options.leeway = {transform.map(QPolygonF{{40, -10}, {60, -10}, {60, 110}, {40, 110}})};
+        gui::PenPlacement placement;
+        placement.shapeId = 101;
+        placement.transform.translate(50, 50);
+        placement.transform.scale(100 / square->shape.bounds.width(), 100 / square->shape.bounds.height());
+        placement.transform *= transform;
+        options.initialPlacements = {placement};
+        const auto result = gui::profile::fillRegion(request, {*square}, options);
+        require(result.fill.error.isEmpty() && result.fill.placements.size() == 1
+            && result.diagnostics.value("approximationVerified").toBool()
+            && result.diagnostics.value("boundaryQuality").toObject().value("components").toInt() == 2
+            && result.diagnostics.value("outsideEnvelope").toDouble() == 0.0,
+            QStringLiteral("Scale conversion changed supplied placements or occlusion geometry"));
+        require(std::abs(result.fill.targetArea / (factor * factor) - 8000) < 1e-4,
+            QStringLiteral("Scale conversion returned area in solver units"));
+    }
 }
 
 void auditCatalog(const gui::ShapeGeometryStore &geometry, const QString &destination) {
@@ -3035,6 +3467,31 @@ int main(int argc, char **argv) {
             ? gui::catalog::buildCatalog(geometry, &error)
             : gui::catalog::buildCatalog(geometry, configurationPath, &error);
         require(error.isEmpty(), error);
+        if (arguments.size() == 2 && arguments[1] == QStringLiteral("--adaptive-budget-tests")) {
+            adaptiveBudgetTests(fullCatalog);
+            return 0;
+        }
+        if (arguments.size() == 3 && (arguments[1] == QStringLiteral("--constructive-production-corpus")
+            || arguments[1] == QStringLiteral("--adaptive-production-corpus"))) {
+            constructiveProductionCorpus(arguments[2], fullCatalog, arguments[1] == QStringLiteral("--adaptive-production-corpus"));
+            return 0;
+        }
+        if (arguments.size() >= 3 && arguments[1] == QStringLiteral("--constructive-cover")) {
+            constructiveCoverBenchmark(arguments, fullCatalog);
+            return 0;
+        }
+        if (arguments.size() == 3 && arguments[1] == QStringLiteral("--normalization-verify")) {
+            verifyNormalizationPlacements(arguments[2], fullCatalog);
+            return 0;
+        }
+        if (arguments.size() >= 6 && arguments[1] == QStringLiteral("--normalization-benchmark")) {
+            normalizationBenchmark(arguments, fullCatalog);
+            return 0;
+        }
+        if (arguments.size() == 2 && arguments[1] == QStringLiteral("--scale-consistency-tests")) {
+            scaleConsistencyTests(fullCatalog);
+            return 0;
+        }
         if (arguments.size() == 2 && arguments[1] == QStringLiteral("--small-contour-tests")) {
             smallContourTests(fullCatalog);
             return 0;
@@ -3088,6 +3545,9 @@ int main(int argc, char **argv) {
                 QStringLiteral("Cubic contour repair left missing interior support or exceeded the envelope"));
             require(result.diagnostics.value("targetBoundary").toObject().value("protectedCorners").toInt()
                     == (cornered ? 24 : 18), QStringLiteral("Replay changed the protected corners"));
+            auto verifiedResult = result;
+            require(result.fill.error.isEmpty() && gui::compact::verifyEmittedFill(request, fullCatalog, options, &verifiedResult),
+                QStringLiteral("Cubic contour repair failed original-coordinate verification"));
             require(result.fill.placements.size() <= (cornered ? 151 : 174)
                 && result.diagnostics.value("evaluations").toInt() <= options.evaluationBudget,
                 QStringLiteral("Cubic contour repair exceeded its count or work allowance"));
@@ -3274,6 +3734,20 @@ int main(int argc, char **argv) {
             if (arguments.size() == 4 && reference)
                 saveComparison(arguments[2], arguments[3], result.fill, QStringLiteral("Thin Region Fit"),
                     outputPath(result.fill, thinCatalog).boundingRect(), exceptionPlacements);
+            return 0;
+        }
+        if (arguments.size() == 2 && arguments[1] == QStringLiteral("--leeway-geometry-tests")) {
+            leewayGeometryTests(geometry);
+            return 0;
+        }
+        if (arguments.size() == 3 && (arguments[1] == QStringLiteral("--leeway-project")
+            || arguments[1] == QStringLiteral("--leeway-project-path"))) {
+            leewayProjectTest(arguments[2], geometry, fullCatalog,
+                arguments[1] == QStringLiteral("--leeway-project-path"));
+            return 0;
+        }
+        if (arguments.size() == 2 && arguments[1] == QStringLiteral("--leeway-contour-tests")) {
+            leewayContourTests(fullCatalog);
             return 0;
         }
         if (arguments.size() == 2 && arguments[1] == QStringLiteral("--convex-union-tests")) {

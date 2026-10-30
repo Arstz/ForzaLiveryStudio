@@ -129,8 +129,8 @@ void MainWindow::setupTreeView() {
                 ? QStringLiteral("lining") : QStringLiteral("pen"));
         }
     });
-    connect(tree_, &LayerTreeView::leewayGroupRequested,
-            this, &MainWindow::toggleContourLeewayGroup);
+    connect(tree_, &LayerTreeView::leewayEntryRequested,
+            this, &MainWindow::toggleContourLeewayEntry);
 
     sectionBar_ = new LiverySectionBar(this);
     connect(sectionBar_, &LiverySectionBar::sectionActivated, this, &MainWindow::setActiveSection);

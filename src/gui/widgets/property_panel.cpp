@@ -917,13 +917,22 @@ void PropertyPanel::setSelection(const QVector<fls::scene::Shape *> &layers,
         loading_ = false;
         return;
     }
-    if (!contours_.isEmpty() && groups_.isEmpty()) {
+    if (!contours_.isEmpty() && layers_.isEmpty() && guides_.isEmpty() && groups_.isEmpty()) {
         for (QWidget *widget : layerPropertyWidgets(name_, shapeId_, x_, y_, scaleX_, scaleY_, rotation_, skew_, opacity_, visible_, locked_, mask_, colorButton_)) {
             widget->setEnabled(false);
         }
-        name_->setText(contours_.size() == 1 ? contours_.front()->name : QString());
-        updateColorButton();
-        debug_->setText(QStringLiteral("%1 saved path(s) selected").arg(contours_.size()));
+        for (QWidget *widget : guidePropertyWidgets(name_, x_, y_, scaleX_, scaleY_, rotation_, opacity_, visible_, locked_))
+            widget->setEnabled(true);
+        skew_->setEnabled(true);
+        colorButton_->setEnabled(true);
+        setContourFields();
+        loading_ = false;
+        return;
+    }
+    if (!contours_.isEmpty() && groups_.isEmpty()) {
+        for (QWidget *widget : layerPropertyWidgets(name_, shapeId_, x_, y_, scaleX_, scaleY_, rotation_, skew_, opacity_, visible_, locked_, mask_, colorButton_))
+            widget->setEnabled(false);
+        debug_->setText(QStringLiteral("Mixed saved-path selection"));
         loading_ = false;
         return;
     }
@@ -1028,11 +1037,13 @@ void PropertyPanel::setSelection(const QVector<fls::scene::Shape *> &layers,
 
 void PropertyPanel::refreshTransformFields() {
     if (loading_ || applyingChange_ || valueLabelDragging_
-        || (layers_.isEmpty() && guides_.isEmpty() && groups_.isEmpty())) {
+        || (layers_.isEmpty() && guides_.isEmpty() && groups_.isEmpty() && contours_.isEmpty())) {
         return;
     }
     loading_ = true;
-    if (!guides_.isEmpty() && layers_.isEmpty() && groups_.isEmpty()) {
+    if (!contours_.isEmpty() && layers_.isEmpty() && guides_.isEmpty() && groups_.isEmpty()) {
+        setContourFields();
+    } else if (!guides_.isEmpty() && layers_.isEmpty() && groups_.isEmpty()) {
         if (guides_.size() == 1) {
             const fls::scene::GuideLayer *guide = guides_.front();
             const auto blockers = makeSignalBlockers({x_, y_, scaleX_, scaleY_, rotation_});
@@ -1173,6 +1184,32 @@ void PropertyPanel::setSingleGuide(const fls::scene::GuideLayer *guide) {
                         .arg(width)
                         .arg(height)
                         .arg(format));
+}
+
+void PropertyPanel::setContourFields() {
+    const auto blockers = makeSignalBlockers({name_, shapeId_, x_, y_, scaleX_, scaleY_, rotation_, skew_,
+        visible_, locked_, mask_, opacity_});
+    const QString firstName = contours_.front()->name;
+    const bool sameName = std::all_of(contours_.begin(), contours_.end(), [&](const auto *figure) {
+        return figure->name == firstName;
+    });
+
+    clearMixedStyles();
+    setMixedDouble(x_, contours_, baselines_, [](const auto &figure) { return figure.x; });
+    setMixedDouble(y_, contours_, baselines_, [](const auto &figure) { return figure.y; });
+    setMixedDouble(scaleX_, contours_, baselines_, [](const auto &figure) { return figure.scaleX; });
+    setMixedDouble(scaleY_, contours_, baselines_, [](const auto &figure) { return figure.scaleY; });
+    setMixedDouble(rotation_, contours_, baselines_, [](const auto &figure) { return figure.rotation; });
+    setMixedDouble(skew_, contours_, baselines_, [](const auto &figure) { return figure.skew; });
+    setMixedDouble(opacity_, contours_, baselines_, [](const auto &figure) { return figure.opacity; });
+    setMixedCheck(visible_, contours_, [](const auto &figure) { return figure.visible; });
+    setMixedCheck(locked_, contours_, [this](const auto &figure) { return state_->isLayerLocked(figure.id); });
+    mask_->setTristate(false);
+    mask_->setChecked(false);
+    name_->setText(sameName ? firstName : QString());
+    name_->setStyleSheet(sameName ? QString() : mixedValueStyle());
+    updateColorButton();
+    debug_->setText(QStringLiteral("%1 saved path(s) selected").arg(contours_.size()));
 }
 
 void PropertyPanel::setMultipleLayers(const QVector<fls::scene::Shape *> &layers) {
@@ -1346,7 +1383,7 @@ void PropertyPanel::applyChanged(QWidget *sender) {
         if (isTransformProperty(command.property) && isBoxSelection()) {
             command.type = EditorCommandType::WorldTransform;
             command.worldTransform = boxAffine(command.property, old, box->value(), selectionBoxCenter());
-        } else if ((layers_.size() > 1 || guides_.size() > 1) && groups_.isEmpty()) {
+        } else if ((layers_.size() > 1 || guides_.size() > 1 || contours_.size() > 1) && groups_.isEmpty()) {
             command.relative = true;
             command.value = box->value() - old;
         }

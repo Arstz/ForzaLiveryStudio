@@ -61,6 +61,7 @@ private:
     void setSingleNodeFields(const fls::scene::Layer &node, double opacity);
     void setSingleLayer(const fls::scene::Shape *layer);
     void setSingleGuide(const fls::scene::GuideLayer *guide);
+    void setContourFields();
     void setMultipleLayers(const QVector<fls::scene::Shape *> &layers);
     void setMultipleGuides(const QVector<fls::scene::GuideLayer *> &guides);
     void clearMixedStyles();

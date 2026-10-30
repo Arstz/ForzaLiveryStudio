@@ -245,7 +245,7 @@ void MainWindow::startPenFill(const QVector<PenLoop> &loops,
                 : QStringLiteral("%1 failed: %2").arg(fillLabel, catalogError), 5000);
             return;
         }
-        if (!contourLeewayGroupId_.isEmpty()) {
+        if (!contourLeewayEntryId_.isEmpty()) {
             QString leewayError;
             const QPainterPath leewayPath = canvas_->contourLeewayPath(&leewayError);
             if (leewayPath.isEmpty()) {
@@ -256,7 +256,7 @@ void MainWindow::startPenFill(const QVector<PenLoop> &loops,
                 return;
             }
             compactOptions.leeway = leewayPath.toSubpathPolygons();
-            generatedFillLeewayGroupId_ = contourLeewayGroupId_;
+            generatedFillLeewayEntryId_ = contourLeewayEntryId_;
         }
         generatedFillProgress_->setRange(0, 0);
         generatedFillProgress_->setFormat(QStringLiteral("%1 | Preparing region").arg(fillLabel));
@@ -436,7 +436,7 @@ void MainWindow::clearGeneratedFillState() {
     generatedFillLabel_.clear();
     generatedFillGuideSelection_.clear();
     generatedFillTool_.clear();
-    generatedFillLeewayGroupId_.clear();
+    generatedFillLeewayEntryId_.clear();
     generatedFillMask_ = false;
 }
 
@@ -592,10 +592,10 @@ void MainWindow::insertGeneratedFill(const QString &groupName,
 
     state_->beginProjectEdit();
     const bool insertedBelowLeeway =
-        !generatedFillLeewayGroupId_.isEmpty()
+        !generatedFillLeewayEntryId_.isEmpty()
         && state_->insertLayerBelowEntry(
             insertedNode,
-            generatedFillLeewayGroupId_);
+            generatedFillLeewayEntryId_);
     if (!insertedBelowLeeway && insertedNode != nullptr) {
         state_->insertLayerAboveSelection(
             std::move(insertedNode),
@@ -631,11 +631,11 @@ void MainWindow::insertGeneratedFill(const QString &groupName,
                                  .arg(displayName)
                                  .arg(placements.size()),
                              3500);
-    clearContourLeewayGroup();
+    clearContourLeewayEntry();
 }
 
-void MainWindow::toggleContourLeewayGroup(
-    const QString &groupId) {
+void MainWindow::toggleContourLeewayEntry(
+    const QString &entryId) {
     if (canvas_ == nullptr
         || loadBehaviorSettings().contourFillMode != ContourFillMode::CompactFit) {
         statusBar()->showMessage(
@@ -649,40 +649,41 @@ void MainWindow::toggleContourLeewayGroup(
             3000);
         return;
     }
-    const QString nextGroupId =
-        contourLeewayGroupId_ == groupId
-        ? QString() : groupId;
-    canvas_->setContourLeewayGroupId(nextGroupId);
-    if (!nextGroupId.isEmpty()) {
+    const QString nextEntryId =
+        contourLeewayEntryId_ == entryId
+        ? QString() : entryId;
+    const QString previousEntryId = contourLeewayEntryId_;
+    canvas_->setContourLeewayEntryId(nextEntryId);
+    if (!nextEntryId.isEmpty()) {
         QString error;
         if (canvas_->contourLeewayPath(&error).isEmpty()) {
-            canvas_->setContourLeewayGroupId({});
+            canvas_->setContourLeewayEntryId(previousEntryId);
             statusBar()->showMessage(error, 4000);
             return;
         }
     }
-    contourLeewayGroupId_ = nextGroupId;
-    tree_->setLeewayGroupId(nextGroupId);
-    const fls::scene::Group *group =
-        state_->groupForId(nextGroupId);
+    contourLeewayEntryId_ = nextEntryId;
+    tree_->setLeewayEntryId(nextEntryId);
+    const fls::scene::Layer *entry =
+        state_->sceneNode(nextEntryId);
     statusBar()->showMessage(
-        nextGroupId.isEmpty()
+        nextEntryId.isEmpty()
         ? QStringLiteral("Contour leeway cleared")
         : QStringLiteral("Contour leeway: %1; fill will be placed below it")
-              .arg(group != nullptr ? group->name : nextGroupId),
+              .arg(entry != nullptr ? entry->name : nextEntryId),
         3500);
 }
 
-void MainWindow::clearContourLeewayGroup() {
-    if (contourLeewayGroupId_.isEmpty()) {
+void MainWindow::clearContourLeewayEntry() {
+    if (contourLeewayEntryId_.isEmpty()) {
         return;
     }
-    contourLeewayGroupId_.clear();
+    contourLeewayEntryId_.clear();
     if (canvas_ != nullptr) {
-        canvas_->setContourLeewayGroupId({});
+        canvas_->setContourLeewayEntryId({});
     }
     if (tree_ != nullptr) {
-        tree_->setLeewayGroupId({});
+        tree_->setLeewayEntryId({});
     }
 }
 
@@ -1455,7 +1456,7 @@ void MainWindow::noteProjectStructureChanged() {
 
 void MainWindow::setToolName(const QString &name) {
     if (name != QStringLiteral("pen")) {
-        clearContourLeewayGroup();
+        clearContourLeewayEntry();
     }
     for (QAction *action : actions()) {
         const QVariant toolName = action->property("canvasToolName");
