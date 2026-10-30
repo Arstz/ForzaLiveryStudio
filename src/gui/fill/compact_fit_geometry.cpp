@@ -64,17 +64,6 @@ double cross(const QPointF &left, const QPointF &right) {
     return left.x() * right.y() - left.y() * right.x();
 }
 
-Polygons polygonsFromPath(const QPainterPath &path) {
-    Polygons result;
-    for (QPolygonF polygon : path.toSubpathPolygons()) {
-        if (polygon.size() >= 3) {
-            result.push_back(std::move(polygon));
-        }
-    }
-
-    return unite(result);
-}
-
 Clipper2Lib::Paths64 integerPaths(const Polygons &polygons) {
     Clipper2Lib::Paths64 result;
     result.reserve(polygons.size());
@@ -972,8 +961,30 @@ Region buildRegion(const PenFillRequest &request, const std::function<bool()> &c
                           &polygon, &hulls, 0, cancelled);
         }
         const bool positive = loop.kind == PenLoopKind::Outer;
-        if ((signedArea(polygon) > 0.0) != positive) {
+        const bool reversed = (signedArea(polygon) > 0.0) != positive;
+        if (reversed) {
             std::reverse(polygon.begin(), polygon.end());
+        }
+        for (int index = 0; index < loop.segments.size(); ++index) {
+            const auto &previous = loop.segments[(index + loop.segments.size() - 1) % loop.segments.size()];
+            const auto &next = loop.segments[index];
+            auto incoming = previous.end - (previous.curved ? previous.control2 : previous.start);
+            auto outgoing = (next.curved ? next.control : next.end) - next.start;
+            if (incoming.isNull() && previous.curved)
+                incoming = previous.end - previous.control;
+            if (outgoing.isNull() && next.curved)
+                outgoing = next.control2 - next.start;
+            if (incoming.isNull())
+                incoming = previous.end - previous.start;
+            if (outgoing.isNull())
+                outgoing = next.end - next.start;
+            if (reversed) {
+                const auto original = incoming;
+                incoming = -outgoing;
+                outgoing = -original;
+            }
+            result.boundaryCorners.push_back({next.start, incoming, outgoing,
+                request.boundaryTolerance * kGeometryFraction * 2});
         }
         chords.push_back(polygon);
         result.originalArea += contourArea(loop.segments) * (positive ? 1.0 : -1.0);
@@ -1008,13 +1019,7 @@ Region leewayAdjustedRegion(const Region &region, const Polygons &inputLeeway,
 
         return result;
     }
-    QPainterPathStroker stroker;
-    stroker.setWidth(region.tolerance * 2.0);
-    stroker.setJoinStyle(Qt::RoundJoin);
-    stroker.setCapStyle(Qt::RoundCap);
-    const QPainterPath leewayPath = painterPath(leeway);
-    const Polygons leewayCore = polygonsFromPath(
-        leewayPath.subtracted(stroker.createStroke(leewayPath)));
+    const Polygons leewayCore = interiorSupport(leeway, region.tolerance);
     Region result = region;
     result.required = subtract(region.required, leewayCore);
     result.visible = subtract(region.required, leeway);

@@ -37,12 +37,20 @@ private:
     double step_ = 1.0;
 };
 
+struct BoundaryCorner {
+    QPointF point;
+    QPointF incoming;
+    QPointF outgoing;
+    double tolerance = 0.0;
+};
+
 struct Region {
     Polygons required;
     Polygons permitted;
     Polygons visible;
     Polygons spillFree;
     Polygons leeway;
+    QVector<BoundaryCorner> boundaryCorners;
     QPainterPath requiredPath;
     QPainterPath permittedPath;
     QPainterPath spillFreePath;

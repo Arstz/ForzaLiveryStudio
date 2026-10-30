@@ -479,17 +479,86 @@ void constructiveProductionCorpus(const QString &manifest, const QVector<gui::ca
     int automaticMeshSubstitutions = 0;
     for (const auto &value : cases) {
         const auto entry = value.toObject();
-        const auto request = readRequest(entry.value("request").toString());
+        auto request = readRequest(entry.value("request").toString());
+        QFile requestFile(entry.value("request").toString());
+        require(requestFile.open(QIODevice::ReadOnly), requestFile.errorString());
+        const auto replay = QJsonDocument::fromJson(requestFile.readAll()).object();
+        gui::compact::FillOptions options;
+        if (replay.value("regionScaledCoverage").toBool())
+            gui::compact::scaleCoverageToRegion(request, options);
+        for (const auto &leeway : replay.value("leewayRequests").toArray())
+            options.leeway += gui::catalog::buildRegion(readRequest(leeway.toString()), {}).required;
+        options.leeway = gui::catalog::unite(options.leeway);
         gui::catalog::Region region;
         bool canonical = false;
         try { region = gui::catalog::buildRegion(request, {}); }
         catch (...) { region = canonicalConstructiveRegion(request); canonical = true; }
         QElapsedTimer timer;
         timer.start();
-        auto result = refine ? gui::profile::fillRegion(request, primitives, gui::compact::FillOptions{})
+        auto result = refine ? gui::profile::fillRegion(request, primitives, options)
             : gui::compact::constructiveCover(region, primitives, {});
         const bool verified = result.fill.error.isEmpty() && !result.fill.cancelled
-            && gui::compact::verifyEmittedRegion(region, primitives, {}, &result);
+            && gui::compact::verifyEmittedRegion(region, primitives, options, &result);
+        if (!options.leeway.isEmpty()) {
+            QJsonObject diagnostics;
+            const auto coverage = gui::catalog::leewayAdjustedRegion(region, options.leeway, options.boundaryAllowance);
+            const auto simplified = gui::catalog::simplifyLeewayRegion(request, region, coverage, {}, &diagnostics);
+            diagnostics.insert("boundaryVertices", simplified.required.isEmpty() ? 0 : simplified.required.front().size());
+            result.diagnostics.insert("leewayReplay", diagnostics);
+        }
+        if (replay.contains("oraclePlacements")) {
+            gui::catalog::FillResult witness;
+            for (const auto &placement : replay.value("oraclePlacements").toArray()) {
+                const auto object = placement.toObject();
+                const auto values = object.value("transform").toArray();
+                require(values.size() == 6, QStringLiteral("Expected six witness transform coefficients"));
+                witness.fill.placements.push_back({object.value("shapeId").toInt(),
+                    gui::catalog::emittedTransform(QTransform(values[0].toDouble(), values[1].toDouble(),
+                        values[2].toDouble(), values[3].toDouble(), values[4].toDouble(), values[5].toDouble()))});
+            }
+            result.diagnostics.insert("witnessVerified", gui::compact::verifyEmittedRegion(region, primitives, options, &witness));
+            result.diagnostics.insert("witness", witness.diagnostics);
+            if (replay.value("diagnoseBoundary").toBool()) {
+                gui::catalog::Polygons polygons;
+                for (const auto &placement : witness.fill.placements) {
+                    const auto primitive = std::find_if(primitives.begin(), primitives.end(), [&](const auto &value) {
+                        return value.shape.shapeId == placement.shapeId;
+                    });
+                    polygons += gui::catalog::mapped(primitive->shape, placement.transform);
+                }
+                const auto coverage = gui::catalog::unite(polygons);
+                const gui::compact::BoundaryModel boundary(region.visible, options.observationScale, {}, false,
+                    region.boundaryCorners, gui::compact::boundaryOcclusion(options.leeway, options.observationScale));
+                QVector<gui::compact::BoundaryDefect> defects;
+                boundary.measure(coverage, boundary.observationSupport(coverage), {}, &defects);
+                std::stable_sort(defects.begin(), defects.end(), [](const auto &left, const auto &right) {
+                    return left.excessTurn > right.excessTurn;
+                });
+                QJsonArray entries;
+                for (int index = 0; index < std::min(12, int(defects.size())); ++index) {
+                    const auto &defect = defects[index];
+                    const auto reference = boundary.reference(defect.point);
+                    entries.push_back(QJsonObject{{"point", QJsonArray{defect.point.x(), defect.point.y()}},
+                        {"reference", QJsonArray{reference.point.x(), reference.point.y()}},
+                        {"distance", reference.distance}, {"nearCorner", reference.corner},
+                        {"excessTurnDegrees", defect.excessTurn * 180 / std::numbers::pi}});
+                }
+                result.diagnostics.insert("witnessDefects", entries);
+                QJsonArray corners;
+                for (const auto &polygon : coverage) {
+                    for (int index = 0; index < polygon.size(); ++index) {
+                        const auto incoming = polygon[index] - polygon[(index + polygon.size() - 1) % polygon.size()];
+                        const auto outgoing = polygon[(index + 1) % polygon.size()] - polygon[index];
+                        const double turn = std::atan2(incoming.x() * outgoing.y() - incoming.y() * outgoing.x(),
+                            QPointF::dotProduct(incoming, outgoing));
+                        if (std::abs(turn) > 0.6)
+                            corners.push_back(QJsonObject{{"point", QJsonArray{polygon[index].x(), polygon[index].y()}},
+                                {"turnDegrees", turn * 180 / std::numbers::pi}});
+                    }
+                }
+                result.diagnostics.insert("witnessCorners", corners);
+            }
+        }
         failures += !verified;
         if (refine && (result.diagnostics.contains("constructiveFallback")
             || result.diagnostics.value("worldCoordinateFallback").toBool()
@@ -594,6 +663,301 @@ void scaleConsistencyTests(const QVector<gui::catalog::Primitive> &primitives) {
         require(std::abs(result.fill.targetArea / (factor * factor) - 8000) < 1e-4,
             QStringLiteral("Scale conversion returned area in solver units"));
     }
+}
+
+void regionCoverageScalingTests(const QVector<gui::catalog::Primitive> &primitives) {
+    using namespace gui;
+    const auto source = readRequest(QStringLiteral(FLS_SOURCE_DIR "/tools/fixtures/compact_fit_junction_corners.json"));
+    auto reference = source;
+    compact::FillOptions referenceOptions;
+    const double referenceScale = compact::scaleCoverageToRegion(reference, referenceOptions);
+    require(referenceOptions.observationScale == 1 && referenceOptions.areaErrorRatio == 0.02,
+        QStringLiteral("Coverage defaults changed contour observation or area error"));
+    for (const auto &transform : QVector<QTransform>{QTransform().scale(0.25, 0.25),
+            QTransform().scale(1, 1), QTransform().scale(4, 4), QTransform().rotate(37).scale(-1, 1)}) {
+        auto request = source;
+        for (auto &loop : request.loops)
+            for (auto &point : loop.points)
+                transformPenPoint(point, transform);
+        compact::FillOptions options;
+        const double scale = compact::scaleCoverageToRegion(request, options);
+        const double factor = std::sqrt(std::abs(transform.determinant()));
+        require(std::abs(scale / referenceScale - factor) < 1e-8
+            && std::abs(options.boundaryAllowance / referenceOptions.boundaryAllowance - factor) < 1e-8
+            && std::abs(options.inwardAllowance / referenceOptions.inwardAllowance - factor) < 1e-8,
+            QStringLiteral("Coverage distances depend on rotation, reflection or position"));
+        require(options.observationScale == 1 && options.areaErrorRatio == 0.02
+            && request.boundaryTolerance <= source.boundaryTolerance,
+            QStringLiteral("Coverage scaling changed fixed stability limits or coarsened geometry"));
+        if (factor <= 1 && transform.determinant() > 0) {
+            const auto result = profile::fillRegion(request, primitives, options);
+            requireApproximation(request, result, primitives, options);
+            require(result.fill.placements.size() == 3
+                && result.diagnostics.value("cornerDistanceLimit").toDouble() == 0.5
+                && result.diagnostics.value("maximumExcessTurnLimit").toDouble() == 0.6,
+                QStringLiteral("Scaled coverage lost a three-shape fit or changed fixed stability limits"));
+        }
+    }
+    auto converted = source;
+    for (auto &loop : converted.loops)
+        for (auto &point : loop.points)
+            transformPenPoint(point, QTransform().scale(4, 4));
+    converted.boundaryTolerance *= 4;
+    compact::FillOptions convertedOptions;
+    convertedOptions.observationScale *= 4;
+    convertedOptions.boundaryAllowance *= 4;
+    convertedOptions.inwardAllowance *= 4;
+    require(std::abs(compact::scaleCoverageToRegion(converted, convertedOptions) - referenceScale) < 1e-8
+        && std::abs(convertedOptions.boundaryAllowance - referenceOptions.boundaryAllowance * 4) < 1e-8,
+        QStringLiteral("Equivalent scene units changed relative coverage"));
+    const QString copiesPath = QStringLiteral(FLS_SOURCE_DIR "/tools/fixtures/compact_fit_affine_copies.json");
+    const auto copies = readRequest(copiesPath);
+    QFile variants(copiesPath);
+    require(variants.open(QIODevice::ReadOnly), variants.errorString());
+    for (const auto &entry : QJsonDocument::fromJson(variants.readAll()).object().value("variants").toArray()) {
+        const auto values = entry.toObject().value("transform").toArray();
+        const QTransform transform(values[0].toDouble(), values[1].toDouble(), values[2].toDouble(),
+            values[3].toDouble(), values[4].toDouble(), values[5].toDouble());
+        auto request = copies;
+        for (auto &loop : request.loops)
+            for (auto &point : loop.points)
+                transformPenPoint(point, transform);
+        compact::FillOptions options;
+        compact::scaleCoverageToRegion(request, options);
+        const auto result = profile::fillRegion(request, primitives, options);
+        requireApproximation(request, result, primitives, options);
+        require(result.fill.placements.size() == 2, QStringLiteral("Scaled coverage fragmented an affine copy"));
+    }
+    QTextStream(stdout) << "Region-scaled coverage, fixed stability, scene units and affine-copy fits passed\n";
+}
+
+void multiCornerLeewayTests(const QVector<gui::catalog::Primitive> &primitives) {
+    const QString root = QStringLiteral(FLS_SOURCE_DIR "/tools/fixtures/");
+    auto request = readRequest(root + "compact_fit_multi_corner_leeway.json");
+    gui::compact::FillOptions options;
+    for (const auto &fixture : {"compact_fit_curve_leeway.json", "compact_fit_junction_corners.json"})
+        options.leeway += gui::catalog::buildRegion(readRequest(root + fixture), {}).required;
+    options.leeway = gui::catalog::unite(options.leeway);
+    for (bool reversed : {false, true}) {
+        if (reversed) {
+            auto &points = request.loops.front().points;
+            std::reverse(points.begin(), points.end());
+            for (auto &point : points)
+                std::swap(point.incoming, point.outgoing);
+        }
+        auto result = gui::profile::fillRegion(request, primitives, options);
+        require(result.fill.error.isEmpty(), result.fill.error);
+        require(gui::compact::verifyEmittedFill(request, primitives, options, &result),
+            QStringLiteral("A completed leeway rectangle failed original checks"));
+        require(result.fill.placements.size() == 1 && result.fill.placements.front().shapeId == 101,
+            QStringLiteral("Simultaneous support-line intersections did not produce one rectangle"));
+    }
+    QTextStream(stdout) << "Short support edges, simultaneous intersections, grouped leeway and both windings passed\n";
+    const gui::catalog::Polygons rectangle{QPolygonF(QRectF(0, 0, 100, 100))};
+    const gui::catalog::Polygons mask{QPolygonF(QRectF(-10, -10, 30, 30))};
+    const auto visible = gui::catalog::subtract(rectangle, mask);
+    const gui::compact::BoundaryModel model(visible, 1, {}, false, {}, gui::compact::boundaryOcclusion(mask, 1));
+    const auto spiked = gui::catalog::subtract(gui::catalog::unite(rectangle
+        + gui::catalog::Polygons{QPolygonF{{20, 0}, {22, -3}, {24, 0}}}), mask);
+    require(model.measure(spiked).maximumExcessTurn > 0.6,
+        QStringLiteral("Leeway hid an exposed unexpected turn"));
+}
+
+void cornerCorrespondenceTests(const QVector<gui::catalog::Primitive> &primitives) {
+    using namespace gui;
+    using namespace gui::compact;
+    const catalog::Polygons rectangle{QPolygonF{{0, 0}, {100, 0}, {100, 100}, {0, 100}}};
+    const catalog::Polygons dense{QPolygonF{{0, 0}, {0.01, 0}, {99.99, 0}, {100, 0}, {100, 0.01},
+        {100, 99.99}, {100, 100}, {99.99, 100}, {0.01, 100}, {0, 100}, {0, 99.99}, {0, 0.01}}};
+    const BoundaryModel boundary(dense, 1);
+    require(boundary.protectedCorners().size() == 4, QStringLiteral("Subdivision erased a sharp corner"));
+    const auto identity = boundary.measure(rectangle);
+    require(identity.matchedCorners == 4 && identity.unmatchedCorners == 0
+        && identity.maximumCornerDistance < 1e-6 && identity.maximumCornerAngleError < 1e-6
+        && identity.maximumExcessTurn < 1e-6, QStringLiteral("Equivalent cornered contours disagree"));
+    QTransform smallShift;
+    smallShift.translate(0.2, 0.1);
+    const auto shifted = boundary.measure({smallShift.map(rectangle.front())});
+    require(shifted.matchedCorners == 4 && shifted.maximumCornerDistance < 0.5
+        && shifted.maximumExcessTurn < 0.6, QStringLiteral("A corresponding corner was compared with a smooth span"));
+    QTransform largeShift;
+    largeShift.translate(0.8, 0);
+    require(boundary.measure({largeShift.map(rectangle.front())}).maximumCornerDistance > 0.5,
+        QStringLiteral("Corner correspondence hid a displaced corner"));
+    QPolygonF rounded{{2, 0}, {100, 0}, {100, 100}, {0, 100}, {0, 2}};
+    for (int index = 1; index < 16; ++index) {
+        const double angle = std::numbers::pi + index * std::numbers::pi / 32;
+        rounded.push_back(QPointF(2, 2) + QPointF(std::cos(angle), std::sin(angle)) * 2);
+    }
+    const auto removed = boundary.measure({rounded});
+    require(removed.unmatchedCorners > 0 || removed.maximumCornerAngleError > 0.6,
+        QStringLiteral("A nearby boundary substituted for a missing corner"));
+    const catalog::Polygons bent{QPolygonF{{0, 0}, {1, 1}, {100, 1}, {100, 100}, {0, 100}}};
+    require(boundary.measure(bent).maximumCornerAngleError > 0.6,
+        QStringLiteral("Corner angle changes bypassed the fixed turn limit"));
+    const catalog::Polygons spike{QPolygonF{{0, 0}, {48, 0}, {50, -3}, {52, 0}, {100, 0}, {100, 100}, {0, 100}}};
+    require(boundary.measure(spike).maximumExcessTurn > 0.6,
+        QStringLiteral("Corner matching hid an unexpected turn on a smooth span"));
+    const auto request = readRequest(QStringLiteral(FLS_SOURCE_DIR "/tools/fixtures/compact_fit_junction_corners.json"));
+    const auto region = catalog::buildRegion(request, {});
+    const BoundaryModel authored(region.visible, 1, {}, false, region.boundaryCorners);
+    require(authored.protectedCorners().size() == 4, QStringLiteral("Authored junctions were not preserved"));
+    const auto self = authored.measure(region.required);
+    QTextStream(stdout) << "Authored self: " << QJsonDocument(authored.diagnostics(self)).toJson(QJsonDocument::Compact) << '\n';
+    require(self.unmatchedCorners == 0 && self.maximumCornerDistance <= 0.5
+        && self.maximumCornerAngleError <= 0.6 && self.maximumExcessTurn <= 0.6,
+        QStringLiteral("An unchanged authored contour failed its corner checks"));
+    QFile fixture(QStringLiteral(FLS_SOURCE_DIR "/tools/fixtures/compact_fit_junction_corners.json"));
+    require(fixture.open(QIODevice::ReadOnly), fixture.errorString());
+    catalog::FillResult witness;
+    for (const auto &entry : QJsonDocument::fromJson(fixture.readAll()).object().value("oraclePlacements").toArray()) {
+        const auto placement = entry.toObject();
+        const auto values = placement.value("transform").toArray();
+        witness.fill.placements.push_back({placement.value("shapeId").toInt(), QTransform(values[0].toDouble(),
+            values[1].toDouble(), values[2].toDouble(), values[3].toDouble(), values[4].toDouble(), values[5].toDouble())});
+    }
+    FillOptions options;
+    options.boundaryAllowance = 8;
+    options.inwardAllowance = 2;
+    require(!verifyEmittedRegion(region, primitives, options, &witness), QStringLiteral("A displaced junction fit passed"));
+    require(witness.diagnostics.value("missingInteriorArea").toDouble() == 0
+        && witness.diagnostics.value("outsideEnvelope").toDouble() == 0
+        && witness.diagnostics.value("boundaryQuality").toObject().value("maximumCornerDistance").toDouble() > 0.5,
+        QStringLiteral("Coverage allowances relaxed the corner-position limit"));
+    const auto discovered = profile::fillRegion(request, primitives, options);
+    requireApproximation(request, discovered, primitives, options);
+    require(discovered.fill.placements.size() == 3
+        && std::all_of(discovered.fill.placements.begin(), discovered.fill.placements.end(), [](const auto &placement) {
+            return placement.shapeId == 102;
+        }), QStringLiteral("Joint discovery failed to recover a three-circle cover"));
+    for (const auto &transform : QVector<QTransform>{QTransform().rotate(37).scale(-1, 1),
+            QTransform().translate(23, -41).scale(0.125, 0.125), QTransform().scale(8, 8)}) {
+        auto transformed = request;
+        for (auto &loop : transformed.loops)
+            for (auto &point : loop.points)
+                transformPenPoint(point, transform);
+        const auto geometry = catalog::buildRegion(transformed, {});
+        const BoundaryModel model(geometry.visible, 1, {}, false, geometry.boundaryCorners);
+        const auto measured = model.measure(geometry.visible);
+        require(model.protectedCorners().size() == 4 && measured.matchedCorners == 4
+            && measured.unmatchedCorners == 0 && measured.maximumCornerDistance <= 0.5
+            && measured.maximumCornerAngleError <= 0.6 && measured.maximumExcessTurn <= 0.6,
+            QStringLiteral("A transformed authored contour lost its corner correspondence"));
+    }
+    const catalog::Polygons holes{QPolygonF(QRectF(20, 20, 20, 20)), QPolygonF(QRectF(40.2, 20, 20, 20))};
+    const auto perforated = catalog::subtract(rectangle, holes);
+    const BoundaryModel holeModel(perforated, 1);
+    auto shiftedHoles = perforated;
+    for (auto &polygon : shiftedHoles)
+        polygon = smallShift.map(polygon);
+    const auto holeMetrics = holeModel.measure(shiftedHoles);
+    require(holeMetrics.matchedCorners == 12 && holeMetrics.unmatchedCorners == 0
+        && holeMetrics.maximumCornerDistance < 0.5 && holeMetrics.maximumExcessTurn <= 0.6,
+        QStringLiteral("Nearby hole boundaries were matched to the wrong loop"));
+    const auto circle = std::find_if(primitives.begin(), primitives.end(), [](const auto &primitive) {
+        return primitive.shape.shapeId == 102;
+    });
+    require(circle != primitives.end(), QStringLiteral("Joint corner correction requires a Circle"));
+    QVector<PenPlacement> placements;
+    catalog::Polygons joined;
+    for (const auto &values : QVector<QPointF>{{0, 1}, {-80, 0.75}, {80, 0.75}}) {
+        PenPlacement placement;
+        placement.shapeId = 102;
+        placement.transform.translate(values.x(), 0);
+        placement.transform.scale(values.y(), values.y());
+        joined += catalog::mapped(circle->shape, placement.transform);
+        placement.transform *= QTransform().translate(0.7, 0.2);
+        placements.push_back(placement);
+    }
+    PenFillRequest joinedRequest;
+    for (const auto &polygon : catalog::unite(joined))
+        joinedRequest.loops.push_back(polygonLoop(polygon,
+            catalog::signedArea(polygon) > 0 ? PenLoopKind::Outer : PenLoopKind::Cutout));
+    FillOptions repair;
+    repair.initialPlacements = placements;
+    repair.shapeBudget = placements.size();
+    repair.evaluationBudget = 3000;
+    repair.inwardAllowance = 2;
+    repair.useGpu = false;
+    const auto corrected = compact::fillRegion(joinedRequest, {*circle}, repair);
+    requireApproximation(joinedRequest, corrected, {*circle}, repair);
+    require(corrected.fill.placements.size() == 3 && corrected.diagnostics.value("jointCornerCorrections").toInt() > 0,
+        QStringLiteral("Joined-circle junctions were not corrected together"));
+    const auto hidden = authored.protectedCorners().front();
+    const auto leeway = catalog::leewayAdjustedRegion(region, {QPolygonF(QRectF(hidden - QPointF(10, 10), QSizeF(20, 20)))}, 2);
+    const BoundaryModel visible(leeway.visible, 1, {}, false, region.boundaryCorners);
+    require(std::none_of(visible.protectedCorners().begin(), visible.protectedCorners().end(), [&](const auto &point) {
+        return QLineF(point, hidden).length() < 1e-4;
+    }), QStringLiteral("A hidden authored corner remained protected"));
+    QTextStream(stdout) << "Corner subdivision, correspondence, position, angle, unexpected turns and occlusion passed\n";
+}
+
+void affineWholeShapeTests(const QVector<gui::catalog::Primitive> &primitives) {
+    const QString fixture = QStringLiteral(FLS_SOURCE_DIR "/tools/fixtures/compact_fit_affine_copies.json");
+    const auto source = readRequest(fixture);
+    QFile file(fixture);
+    require(file.open(QIODevice::ReadOnly), file.errorString());
+    const auto variants = QJsonDocument::fromJson(file.readAll()).object().value("variants").toArray();
+    int checks = 0;
+    for (bool useGpu : {false, true}) {
+        for (const auto &entry : variants) {
+            const auto variant = entry.toObject();
+            const auto values = variant.value("transform").toArray();
+            const QTransform transform(values[0].toDouble(), values[1].toDouble(), values[2].toDouble(),
+                values[3].toDouble(), values[4].toDouble(), values[5].toDouble());
+            auto request = source;
+            for (auto &loop : request.loops)
+                for (auto &point : loop.points)
+                    gui::transformPenPoint(point, transform);
+            const int rotations = variant.value("name").toString() == QStringLiteral("compressed_small")
+                ? request.loops.front().points.size() : 1;
+            for (int rotation = 0; rotation < rotations; ++rotation) {
+                gui::compact::FillOptions options;
+                options.useGpu = useGpu;
+                const auto result = gui::profile::fillRegion(request, primitives, options);
+                require(result.fill.error.isEmpty(), QStringLiteral("Affine copy %1 failed: %2")
+                    .arg(variant.value("name").toString(), result.fill.error));
+                requireApproximation(request, result, primitives, options);
+                require(result.fill.placements.size() == variant.value("maximumCount").toInt(),
+                    QStringLiteral("Affine copy %1 retained redundant shapes").arg(variant.value("name").toString()));
+                require(result.diagnostics.value("wholeShapeSearch").toObject().value("repairEvaluations").toInt()
+                    <= options.evaluationBudget / 5, QStringLiteral("Whole-shape repair exceeded its work allowance"));
+                require(!result.diagnostics.contains("constructiveFallback"), QStringLiteral("Affine fill substituted a mesh"));
+                ++checks;
+                auto &points = request.loops.front().points;
+                std::rotate(points.begin(), points.begin() + 1, points.end());
+            }
+        }
+    }
+    QTemporaryDir controls;
+    require(controls.isValid(), QStringLiteral("Cannot create affine controls"));
+    exportTransformationControls(controls.path(), primitives);
+    const QVector<QTransform> transforms{
+        {}, QTransform(0.125, 0, 0, 0.125, 0, 0), QTransform(8, 0, 0, 8, 0, 0),
+        QTransform(0, 1, -1, 0, 23, -41), QTransform().rotate(45), QTransform(1, 0, 0, 0.0625, 0, 0),
+        QTransform(1, 0, 1, 1, 0, 0), QTransform(-1, 0, 0, 1, 31, 17)};
+    for (const auto &name : QDir(controls.path()).entryList({"*.json"}, QDir::Files)) {
+        const QString path = QDir(controls.path()).filePath(name);
+        const auto control = readRequest(path);
+        QFile oracleFile(path);
+        require(oracleFile.open(QIODevice::ReadOnly), oracleFile.errorString());
+        const int maximumCount = QJsonDocument::fromJson(oracleFile.readAll()).object().value("oraclePlacements").toArray().size();
+        for (const auto &transform : transforms) {
+            auto request = control;
+            for (auto &loop : request.loops)
+                for (auto &point : loop.points)
+                    gui::transformPenPoint(point, transform);
+            gui::compact::FillOptions options;
+            const auto result = gui::profile::fillRegion(request, primitives, options);
+            require(result.fill.error.isEmpty(), QStringLiteral("Control %1 failed: %2").arg(name, result.fill.error));
+            requireApproximation(request, result, primitives, options);
+            require(result.fill.placements.size() <= maximumCount,
+                QStringLiteral("Control %1 retained %2 shapes; expected at most %3")
+                    .arg(name).arg(result.fill.placements.size()).arg(maximumCount));
+            ++checks;
+        }
+    }
+    QTextStream(stdout) << checks << " affine, cyclic-order and whole-shape controls passed with original tolerances\n";
 }
 
 void auditCatalog(const gui::ShapeGeometryStore &geometry, const QString &destination) {
@@ -888,7 +1252,7 @@ void requireApproximation(const gui::PenFillRequest &request, const gui::catalog
             QStringLiteral("Compact spill allowance failed after transform reconstruction"));
     require(gui::catalog::subtract(region.required, gui::catalog::expanded(coverage, options.inwardAllowance)).isEmpty(),
             QStringLiteral("Compact missing allowance failed after transform reconstruction"));
-    const gui::compact::BoundaryModel boundary(region.required, options.observationScale);
+    const gui::compact::BoundaryModel boundary(region.required, options.observationScale, {}, false, region.boundaryCorners);
     const auto expected = boundary.measure(region.required);
     const auto measured = boundary.measure(coverage);
     require(measured.components == expected.components && measured.holes == expected.holes,
@@ -896,6 +1260,8 @@ void requireApproximation(const gui::PenFillRequest &request, const gui::catalog
     require(measured.maximumCornerDistance <= options.observationScale * 0.5,
             QStringLiteral("Compact displaced a protected corner"));
     require(measured.maximumExcessTurn <= 0.6, QStringLiteral("Compact introduced a sharp turn on a smooth boundary"));
+    require(measured.unmatchedCorners == 0 && measured.maximumCornerAngleError <= 0.6,
+        QStringLiteral("Compact changed a protected corner's correspondence or angle"));
     require(boundary.energy(measured) <= std::max(1.0, boundary.perimeter() * 0.025),
             QStringLiteral("Compact boundary roughness exceeded its limit"));
 }
@@ -999,10 +1365,11 @@ void compactTests(const QVector<gui::catalog::Primitive> &catalog, bool profile 
         reportedWork = 0;
         const auto result = fit(request, catalog, options);
         requireApproximation(request, result, catalog, options);
-        if (profile) {
+        if (profile && result.diagnostics.contains("profileSeed")) {
             require(result.diagnostics.value("profileSeed").toObject().value("selectionShapeLimit").toInt() == options.shapeBudget,
                 QStringLiteral("Profile seed has a separate shape limit"));
         }
+        require(result.fill.shapeLimit == options.shapeBudget, QStringLiteral("Fill changed the requested shape limit"));
         output << "Compact fixture: " << result.fill.placements.size() << " shapes\n" << Qt::flush;
         reportedWork = 0;
         const auto repeat = fit(request, catalog, options);
@@ -1048,8 +1415,9 @@ void compactTests(const QVector<gui::catalog::Primitive> &catalog, bool profile 
         requireApproximation(square, widerResult, catalog, wider);
         require(widerResult.fill.placements.size() == tighterResult.fill.placements.size(), QStringLiteral("Wider margin changed a feasible tight count"));
         require(widerResult.diagnostics.value("attempts").toArray().size() == 1
-            && widerResult.diagnostics.value("profileSeed").toObject().value("allowanceSelection")
-                .toObject().value("candidateSearches").toInt() == 1,
+            && (widerResult.diagnostics.contains("wholeShapeSearch")
+                || widerResult.diagnostics.value("profileSeed").toObject().value("allowanceSelection")
+                    .toObject().value("candidateSearches").toInt() == 1),
             QStringLiteral("Wider margin repeated the full search"));
         output << "Large-region and wider-margin regressions passed\n" << Qt::flush;
         gui::PenFillRequest thinBand;
@@ -1715,7 +2083,8 @@ void coverageRepairTests(const QVector<gui::catalog::Primitive> &catalog) {
     require(joinedMetrics.value("components").toInt() == 1 && joinedMetrics.value("holes").toInt() == 1
         && joinedRing.diagnostics.value("repairResidualArea").toDouble() < 1e-6,
         QStringLiteral("Shallow ring crack remained after shape-limited repair"));
-    require(joinedRing.diagnostics.value("feasibleCheckpoints").toInt() > 0
+    requireApproximation(splitRingRequest, joinedRing, {*square}, splitOptions);
+    require(joinedRing.diagnostics.value("approximationVerified").toBool()
         && joinedRing.diagnostics.value("feasibleRestores").toInt() > 0,
         QStringLiteral("Feasible intermediate restoration was not exercised"));
     auto poolOptions = splitOptions;
@@ -3476,6 +3845,10 @@ int main(int argc, char **argv) {
             constructiveProductionCorpus(arguments[2], fullCatalog, arguments[1] == QStringLiteral("--adaptive-production-corpus"));
             return 0;
         }
+        if (arguments.size() == 3 && arguments[1] == QStringLiteral("--export-transformation-controls")) {
+            exportTransformationControls(arguments[2], fullCatalog);
+            return 0;
+        }
         if (arguments.size() >= 3 && arguments[1] == QStringLiteral("--constructive-cover")) {
             constructiveCoverBenchmark(arguments, fullCatalog);
             return 0;
@@ -3490,6 +3863,42 @@ int main(int argc, char **argv) {
         }
         if (arguments.size() == 2 && arguments[1] == QStringLiteral("--scale-consistency-tests")) {
             scaleConsistencyTests(fullCatalog);
+            return 0;
+        }
+        if (arguments.size() == 2 && arguments[1] == QStringLiteral("--affine-whole-shape-tests")) {
+            affineWholeShapeTests(fullCatalog);
+            return 0;
+        }
+        if (arguments.size() == 2 && arguments[1] == QStringLiteral("--corner-correspondence-tests")) {
+            cornerCorrespondenceTests(fullCatalog);
+            return 0;
+        }
+        if (arguments.size() == 2 && arguments[1] == QStringLiteral("--multi-corner-leeway-tests")) {
+            multiCornerLeewayTests(fullCatalog);
+            return 0;
+        }
+        if (arguments.size() == 2 && arguments[1] == QStringLiteral("--region-coverage-scaling-tests")) {
+            regionCoverageScalingTests(fullCatalog);
+            return 0;
+        }
+        if (arguments.size() == 3 && arguments[1] == QStringLiteral("--boundary-self-check")) {
+            QFile manifest(arguments[2]);
+            require(manifest.open(QIODevice::ReadOnly), manifest.errorString());
+            int failures = 0;
+            for (const auto &entry : QJsonDocument::fromJson(manifest.readAll()).array()) {
+                const auto item = entry.toObject();
+                const auto region = gui::catalog::buildRegion(readRequest(item.value("request").toString()), {});
+                const gui::compact::BoundaryModel model(region.visible, 1, {}, false, region.boundaryCorners);
+                const auto self = model.measure(region.visible);
+                if (self.unmatchedCorners || self.maximumCornerDistance > 0.5
+                    || self.maximumCornerAngleError > 0.6 || self.maximumExcessTurn > 0.6) {
+                    ++failures;
+                    QTextStream(stdout) << item.value("name").toString() << ' '
+                        << QJsonDocument(model.diagnostics(self)).toJson(QJsonDocument::Compact) << '\n';
+                }
+            }
+            require(failures == 0, QStringLiteral("Unchanged boundary checks failed: %1").arg(failures));
+            QTextStream(stdout) << "All unchanged boundary checks passed\n";
             return 0;
         }
         if (arguments.size() == 2 && arguments[1] == QStringLiteral("--small-contour-tests")) {

@@ -252,6 +252,7 @@ qt_add_library(fls_editor_ui STATIC
     src/gui/fill/svg_vector_objects.cpp
     src/gui/fill/svg_vector_objects.h
     src/gui/fill/compact_fit.cpp
+    src/gui/fill/compact_fit_whole_shapes.cpp
     src/gui/fill/compact_fit_coordinates.cpp
     src/gui/fill/compact_fit_coordinates.h
     src/gui/fill/compact_fit_reduction.cpp
@@ -419,6 +420,7 @@ if(FLS_BUILD_TESTS)
         src/gui/fill/lining_fill.cpp
         src/gui/fill/compact_fit.cpp
         src/gui/fill/compact_fit_constructive.cpp
+        src/gui/fill/compact_fit_whole_shapes.cpp
         src/gui/fill/compact_fit_coordinates.cpp
         src/gui/fill/compact_fit_reduction.cpp
         src/gui/fill/profile_fit.cpp
@@ -468,6 +470,10 @@ if(FLS_BUILD_TESTS)
     add_test(NAME compact_comparison_projects COMMAND fls_compact_fit_tests --comparison-project-tests)
     add_test(NAME profile_fit COMMAND fls_compact_fit_tests --profile-tests)
     add_test(NAME compact_scale_consistency COMMAND fls_compact_fit_tests --scale-consistency-tests)
+    add_test(NAME compact_affine_whole_shapes COMMAND fls_compact_fit_tests --affine-whole-shape-tests)
+    add_test(NAME compact_corner_correspondence COMMAND fls_compact_fit_tests --corner-correspondence-tests)
+    add_test(NAME compact_multi_corner_leeway COMMAND fls_compact_fit_tests --multi-corner-leeway-tests)
+    add_test(NAME compact_region_coverage_scaling COMMAND fls_compact_fit_tests --region-coverage-scaling-tests)
     add_test(NAME leeway_contours COMMAND fls_compact_fit_tests --leeway-contour-tests)
     add_test(NAME leeway_geometry COMMAND fls_compact_fit_tests --leeway-geometry-tests)
     add_test(NAME thin_region_fit COMMAND fls_compact_fit_tests --thin-tests)

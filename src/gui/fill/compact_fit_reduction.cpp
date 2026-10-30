@@ -456,6 +456,8 @@ bool nonWorseningReduction(const ReductionState &after, const ReductionState &be
         || !noGreater(next.cornerEnergy, previous.cornerEnergy)
         || !noGreater(next.maximumDistance, previous.maximumDistance)
         || !noGreater(next.maximumExcessTurn, previous.maximumExcessTurn)
+        || !noGreater(next.maximumCornerAngleError, previous.maximumCornerAngleError)
+        || next.unmatchedCorners > previous.unmatchedCorners
         || !noGreater(next.maximumCornerDistance, previous.maximumCornerDistance)
         || next.cornerDefects > previous.cornerDefects
         || std::abs(next.components - target.components) > std::abs(previous.components - target.components)
@@ -479,6 +481,9 @@ bool nonWorseningReduction(const ReductionState &after, const ReductionState &be
 bool preservesCoverage(const ReductionState &after, const ReductionState &before,
                         const BoundaryMetrics &target, double cornerAllowance, bool growing) {
     if (after.coverage.isEmpty() || after.cornerDistances.size() != before.cornerDistances.size()
+        || !noGreater(after.metrics.maximumCornerAngleError,
+            std::max(kMaximumBoundaryTurn, before.metrics.maximumCornerAngleError))
+        || after.metrics.unmatchedCorners > before.metrics.unmatchedCorners
         || (!growing && std::abs(after.metrics.components - target.components) > std::abs(before.metrics.components - target.components))
         || catalog::area(catalog::subtract(after.deepMissing, before.deepMissing)) > kComparisonSlack
         || catalog::area(catalog::subtract(after.observedHoles, before.observedHoles)) > kComparisonSlack) {

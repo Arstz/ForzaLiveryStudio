@@ -4,6 +4,7 @@
 #include <cmath>
 #include <algorithm>
 #include <limits>
+#include <numbers>
 
 namespace gui::compact {
 namespace {
@@ -11,6 +12,7 @@ namespace {
 constexpr double kCoordinateClearanceUlps = 4.0;
 constexpr int kCoordinateRepairEvaluations = 2000;
 constexpr int kCoordinateRepairMilliseconds = 1500;
+constexpr double kCoverageToleranceFraction = 0.25;
 
 const PenPrimitive &placementPrimitive(const PenPlacement &placement, const QVector<catalog::Primitive> &primitives) {
     const auto found = std::find_if(primitives.begin(), primitives.end(), [&](const auto &primitive) {
@@ -107,6 +109,42 @@ FillOptions mappedOptions(FillOptions options, const QTransform &transform, doub
     return options;
 }
 
+PenFillRequest canonicalRequest(PenFillRequest request) {
+    const auto rotate = [](QVector<PenPoint> &points) {
+        if (points.isEmpty())
+            return;
+        const auto first = std::min_element(points.begin(), points.end(), [](const auto &left, const auto &right) {
+            return left.position.x() == right.position.x() ? left.position.y() < right.position.y()
+                : left.position.x() < right.position.x();
+        });
+        std::rotate(points.begin(), first, points.end());
+    };
+    rotate(request.points);
+    for (auto &loop : request.loops)
+        rotate(loop.points);
+
+    return request;
+}
+
+QPointF geometryOrigin(const PenFillRequest &request, double unit) {
+    QRectF bounds;
+    if (request.loops.isEmpty()) {
+        bounds = penPath(request.points).boundingRect();
+    } else {
+        for (const auto &loop : request.loops)
+            if (loop.kind == PenLoopKind::Outer)
+                bounds = bounds.united(penPath(loop.points).boundingRect());
+    }
+    auto center = bounds.center();
+    constexpr double kOriginSnap = 1e-9;
+    if (std::abs(center.x()) <= unit * kOriginSnap)
+        center.setX(0);
+    if (std::abs(center.y()) <= unit * kOriginSnap)
+        center.setY(0);
+
+    return center;
+}
+
 int measurementDimension(const QString &key) {
     static const QSet<QString> lengths{
         QStringLiteral("boundaryAllowance"), QStringLiteral("selectedBoundaryAllowance"),
@@ -157,22 +195,49 @@ QJsonValue restoredMeasurements(const QJsonValue &value, double unit) {
 
 } // namespace
 
+double scaleCoverageToRegion(PenFillRequest &request, FillOptions &options) {
+    const auto loops = request.loops.isEmpty() ? QVector<PenLoop>{{request.points, PenLoopKind::Outer}} : request.loops;
+    double area = 0;
+    for (const auto &loop : loops) {
+        const auto origin = loop.points.isEmpty() ? QPointF{} : loop.points.front().position;
+        double integral = 0;
+        for (auto segment : penSegments(loop.points)) {
+            segment.start -= origin;
+            segment.control -= origin;
+            segment.control2 -= origin;
+            segment.end -= origin;
+            integral += segment.signedArea();
+        }
+        area += std::abs(integral) * (loop.kind == PenLoopKind::Outer ? 1 : -1);
+    }
+    const double scale = std::sqrt(4 * area / std::numbers::pi)
+        / (kCoverageReferenceDiameter * options.observationScale);
+    if (!std::isfinite(scale) || scale <= 0)
+        throw std::runtime_error("Coverage scaling requires a positive finite region area and observation scale");
+    options.boundaryAllowance *= scale;
+    options.inwardAllowance *= scale;
+    request.boundaryTolerance = std::min(request.boundaryTolerance, options.inwardAllowance * kCoverageToleranceFraction);
+
+    return scale;
+}
+
 catalog::FillResult fitInObservationUnits(const PenFillRequest &request,
     const QVector<catalog::Primitive> &primitives, const FillOptions &options,
     const std::function<bool()> &cancelled, const std::function<void(int, double, double)> &progress,
     const CoordinateSolver &solver) {
-    const auto &points = request.loops.isEmpty() ? request.points : request.loops.front().points;
-    const QPointF origin = points.isEmpty() ? QPointF{} : points.front().position;
+    const auto canonical = canonicalRequest(request);
+    const auto &points = canonical.loops.isEmpty() ? canonical.points : canonical.loops.front().points;
     const double unit = options.observationScale;
+    const QPointF origin = geometryOrigin(canonical, unit);
     const double areaUnit = unit * unit;
 
     if (points.isEmpty() || !std::isfinite(unit) || unit <= 0.0
         || !std::isfinite(origin.x()) || !std::isfinite(origin.y())
         || (unit == kDefaultObservationScale && origin.isNull()))
-        return solver(request, options, progress);
+        return solver(canonical, options, progress);
     const QTransform toWorld(unit, 0, 0, unit, origin.x(), origin.y());
     const QTransform toFit = toWorld.inverted();
-    const auto workingRequest = mappedRequest(request, toFit, unit);
+    const auto workingRequest = mappedRequest(canonical, toFit, unit);
     const auto workingOptions = mappedOptions(options, toFit, unit);
     const std::function<void(int, double, double)> workingProgress = progress
         ? std::function<void(int, double, double)>([&](int count, double missing, double spill) {

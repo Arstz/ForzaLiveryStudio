@@ -5,6 +5,7 @@
 #include "compact_fit_reduction.h"
 #include "compact_fit_gpu_geometry.h"
 #include "compact_fit_coordinates.h"
+#include "compact_fit_whole_shapes.h"
 #include "profile_fit_batch.h"
 
 #include <algorithm>
@@ -87,7 +88,7 @@ constexpr int kWorkReportInterval = 256;
 constexpr int kSupportCacheLimit = 32;
 constexpr int kReductionStateCacheLimit = 16;
 constexpr int kMaximumMergeRefinements = 12;
-constexpr double kMaximumExcessTurn = 0.6;
+constexpr double kMaximumExcessTurn = kMaximumBoundaryTurn;
 constexpr double kConvexitySlack = 0.005;
 constexpr double kCornerWorkShare = 0.5;
 constexpr double kOwnershipClearance = 1e-5;
@@ -193,6 +194,7 @@ struct Objective {
     mutable int globalMoveChecks = 0;
     mutable int jointRepairTrials = 0;
     mutable int jointRepairs = 0;
+    mutable int jointCornerCorrections = 0;
     mutable int repairClusters = 0;
     mutable int repairGroupReplacements = 0;
     mutable int repairBenefitRejected = 0;
@@ -516,6 +518,8 @@ double error(const Polygons &coverage, const Objective &objective) {
 bool acceptableBoundary(const BoundaryMetrics &metrics, const Objective &objective) {
     return objective.boundary->energy(metrics) <= objective.qualityLimit
         && metrics.maximumExcessTurn <= kMaximumExcessTurn
+        && metrics.maximumCornerAngleError <= kMaximumExcessTurn
+        && metrics.unmatchedCorners == 0
         && metrics.maximumCornerDistance <= objective.cornerAllowance
         && metrics.cornerDefects <= objective.defectLimit
         && metrics.components == objective.targetMetrics.components
@@ -3068,6 +3072,7 @@ constexpr int kBoundaryRepairMoves = 2;
 constexpr int kBoundaryRepairChunk = 1000;
 constexpr int kBoundaryRepairMilliseconds = 1000;
 constexpr int kEarlyBoundaryRepairPieces = 8;
+constexpr double kNearBoundaryAreaRatio = 2;
 
 bool boundaryNeedsRepair(const ReductionState &state, const Objective &objective) {
     return !acceptableBoundary(state.metrics, objective);
@@ -3084,6 +3089,8 @@ double feasibilityCost(const ReductionState &state, const Objective &objective) 
     const double violations = excess(state.missingArea + state.spillArea, objective.areaBudget)
         + excess(objective.boundary->energy(metrics), objective.qualityLimit)
         + excess(metrics.maximumExcessTurn, kMaximumExcessTurn)
+        + excess(metrics.maximumCornerAngleError, kMaximumExcessTurn)
+        + metrics.unmatchedCorners
         + excess(metrics.maximumCornerDistance, objective.cornerAllowance)
         + excess(metrics.cornerDefects, objective.defectLimit)
         + std::abs(metrics.components - objective.targetMetrics.components)
@@ -3096,10 +3103,166 @@ double feasibilityCost(const ReductionState &state, const Objective &objective) 
         + (state.missingArea + state.spillArea) / objective.areaBudget;
 }
 
+QTransform cornerCorrectionTransform(const Piece &piece, const QVector<double> &parameters, double factor) {
+    const auto center = piece.bounds.center();
+    const double extent = std::max(piece.bounds.width(), piece.bounds.height());
+    const double horizontal = parameters[2] * factor / extent;
+    const double horizontalShear = parameters[3] * factor / extent;
+    const double verticalShear = parameters[4] * factor / extent;
+    const double vertical = parameters[5] * factor / extent;
+    const QTransform correction(1 + horizontal, verticalShear, horizontalShear, 1 + vertical,
+        parameters[0] * factor - horizontal * center.x() - horizontalShear * center.y(),
+        parameters[1] * factor - verticalShear * center.x() - vertical * center.y());
+
+    return piece.placement.transform * correction;
+}
+
+QVector<double> solveCornerSystem(QVector<QVector<double>> matrix) {
+    constexpr double kPivotTolerance = 1e-12;
+    const int size = matrix.size();
+    for (int column = 0; column < size; ++column) {
+        int pivot = column;
+        for (int row = column + 1; row < size; ++row)
+            if (std::abs(matrix[row][column]) > std::abs(matrix[pivot][column]))
+                pivot = row;
+        if (std::abs(matrix[pivot][column]) < kPivotTolerance)
+            return {};
+        std::swap(matrix[pivot], matrix[column]);
+        const double divisor = matrix[column][column];
+        for (int index = column; index <= size; ++index)
+            matrix[column][index] /= divisor;
+        for (int row = 0; row < size; ++row) {
+            if (row == column)
+                continue;
+            const double factor = matrix[row][column];
+            for (int index = column; index <= size; ++index)
+                matrix[row][index] -= matrix[column][index] * factor;
+        }
+    }
+    QVector<double> result;
+    for (const auto &row : matrix)
+        result.push_back(row[size]);
+
+    return result;
+}
+
+void correctJointCorners(QVector<Piece> *pieces, const Objective &objective,
+    const QVector<catalog::Primitive> &primitives, const std::function<bool()> &cancelled) {
+    constexpr int kMaximumPieces = 8;
+    constexpr int kMaximumCorners = 16;
+    constexpr int kMaximumTrials = 256;
+    constexpr int kIterations = 4;
+    constexpr int kParameters = 6;
+    constexpr double kDifferenceFraction = 0.125;
+    constexpr double kDamping = 0.001;
+    constexpr double kTrustFraction = 4;
+    if (pieces->size() < 2 || pieces->size() > kMaximumPieces)
+        return;
+    auto current = reductionStateFor(support(*pieces), objective);
+    const int corners = current.metrics.cornerOffsets.size();
+    const auto needsCorrection = [&](const BoundaryMetrics &metrics) {
+        return metrics.maximumCornerDistance > objective.cornerAllowance
+            || (metrics.cornerEnergy > kScoreEpsilon && objective.boundary->energy(metrics) > objective.qualityLimit);
+    };
+    if (corners == 0 || corners > kMaximumCorners || current.metrics.unmatchedCorners
+        || !needsCorrection(current.metrics))
+        return;
+    const int limit = std::min(objective.evaluationLimit, objective.evaluations + kMaximumTrials);
+    const double step = objective.cornerAllowance * kDifferenceFraction;
+    const auto finished = [&] { return stopped(cancelled) || objective.evaluations >= limit; };
+    const auto evaluate = [&](const QVector<Piece> &trial) {
+        ++objective.evaluations;
+        if (objective.workProgress && objective.evaluations % kWorkReportInterval == 0)
+            objective.workProgress(objective.evaluations);
+
+        return reductionStateFor(support(trial), objective);
+    };
+    const auto residuals = [&](const BoundaryMetrics &metrics) {
+        QVector<double> result;
+        for (const auto &offset : metrics.cornerOffsets) {
+            result.push_back(offset.x());
+            result.push_back(offset.y());
+        }
+
+        return result;
+    };
+    for (int iteration = 0; iteration < kIterations && !finished(); ++iteration) {
+        const auto residual = residuals(current.metrics);
+        const int dimensions = residual.size();
+        QVector<QVector<double>> columns;
+        for (int piece = 0; piece < pieces->size() && !finished(); ++piece) {
+            for (int parameter = 0; parameter < kParameters && !finished(); ++parameter) {
+                auto trial = *pieces;
+                QVector<double> displacement(kParameters, 0);
+                displacement[parameter] = step;
+                trial[piece] = makePiece(primitiveFor(trial[piece].placement.shapeId, primitives),
+                    cornerCorrectionTransform(trial[piece], displacement, 1));
+                const auto after = evaluate(trial);
+                QVector<double> column(dimensions, 0);
+                if (!after.metrics.unmatchedCorners && after.metrics.cornerOffsets.size() == corners) {
+                    const auto changed = residuals(after.metrics);
+                    for (int index = 0; index < dimensions; ++index)
+                        column[index] = (changed[index] - residual[index]) / step;
+                }
+                columns.push_back(column);
+            }
+        }
+        if (finished() || columns.size() != pieces->size() * kParameters)
+            break;
+        QVector<QVector<double>> system(dimensions, QVector<double>(dimensions + 1, 0));
+        for (int row = 0; row < dimensions; ++row) {
+            for (int column = 0; column < dimensions; ++column)
+                for (const auto &derivative : columns)
+                    system[row][column] += derivative[row] * derivative[column];
+            system[row][row] += kDamping;
+            system[row][dimensions] = -residual[row];
+        }
+        const auto solution = solveCornerSystem(system);
+        if (solution.isEmpty())
+            break;
+        QVector<QVector<double>> parameters(pieces->size(), QVector<double>(kParameters, 0));
+        double maximum = 0;
+        for (int index = 0; index < columns.size(); ++index) {
+            const double value = std::inner_product(columns[index].begin(), columns[index].end(), solution.begin(), 0.0);
+            parameters[index / kParameters][index % kParameters] = value;
+            maximum = std::max(maximum, std::abs(value));
+        }
+        const double trust = std::max(objective.cornerAllowance * kTrustFraction, current.metrics.maximumCornerDistance);
+        const double scale = maximum > trust ? trust / maximum : 1;
+        const double baseline = feasibilityCost(current, objective);
+        bool accepted = false;
+        for (double fraction : {1.0, 0.5, 0.25, 0.125}) {
+            if (finished())
+                break;
+            auto trial = *pieces;
+            for (int index = 0; index < pieces->size(); ++index)
+                trial[index] = makePiece(primitiveFor(trial[index].placement.shapeId, primitives),
+                    cornerCorrectionTransform((*pieces)[index], parameters[index], fraction * scale));
+            auto after = evaluate(trial);
+            if (after.metrics.unmatchedCorners || feasibilityCost(after, objective) >= baseline - kScoreEpsilon
+                || !preservesCoverage(after, current, objective.targetMetrics, objective.cornerAllowance)
+                || after.missingArea + after.spillArea > std::max(objective.areaBudget,
+                    current.missingArea + current.spillArea) + kScoreEpsilon
+                || !preservesInterior(after.coverage, current.coverage, objective)
+                || catalog::area(catalog::subtract(after.coverage, objective.outer))
+                    > catalog::area(catalog::subtract(current.coverage, objective.outer)) + kScoreEpsilon)
+                continue;
+            *pieces = std::move(trial);
+            current = std::move(after);
+            ++objective.jointCornerCorrections;
+            accepted = true;
+            break;
+        }
+        if (!accepted || !needsCorrection(current.metrics))
+            break;
+    }
+}
+
 void repairBoundaryDefects(QVector<Piece> *pieces, const Objective &objective,
     const QVector<catalog::Primitive> &primitives, const std::function<bool()> &cancelled, int round) {
     QElapsedTimer timer;
     timer.start();
+    correctJointCorners(pieces, objective, primitives, cancelled);
     const auto finished = [&] {
         return stopped(cancelled) || objective.evaluations >= objective.evaluationLimit
             || timer.elapsed() >= kBoundaryRepairMilliseconds;
@@ -4038,7 +4201,9 @@ Objective makeObjective(const catalog::Region &region, const FillOptions &option
     result.target = leewayRegion.required;
     result.visibleTarget = leewayRegion.visible;
     result.preferred = catalog::expanded(leewayRegion.required, options.inwardAllowance * 0.5);
-    result.boundary = std::make_shared<BoundaryModel>(leewayRegion.visible, options.observationScale);
+    result.boundary = std::make_shared<BoundaryModel>(leewayRegion.visible, options.observationScale,
+        QVector<BoundaryExclusion>{}, false, region.boundaryCorners,
+        boundaryOcclusion(leewayRegion.leeway, options.observationScale));
     result.targetMetrics = result.boundary->measure(leewayRegion.visible);
     result.qualityLimit = std::max(1.0, result.boundary->perimeter() * kBoundaryEnergyPerLength);
     result.defectLimit = std::max(1, static_cast<int>(result.boundary->perimeter() / (options.observationScale * kLengthPerDefect)));
@@ -4106,14 +4271,19 @@ bool verifyEmittedRegion(const catalog::Region &region, const QVector<catalog::P
     coverage = catalog::unite(coverage);
     const auto visible = visibleSupport(coverage, objective);
     const auto metrics = objective.boundary->measure(visible);
-    const bool verified = result->fill.placements.size() <= options.shapeBudget && acceptable(coverage, objective);
+    const bool verified = result->fill.placements.size() <= options.shapeBudget
+        && acceptableGeometry(coverage, objective) && acceptableBoundary(metrics, objective);
 
     result->fill.targetArea = catalog::area(objective.visibleTarget);
     result->fill.coveredArea = catalog::area(catalog::intersect(visible, objective.visibleTarget));
     result->fill.outsideArea = catalog::area(catalog::subtract(visible, objective.visibleTarget));
     result->fill.unfilled = catalog::painterPath(catalog::subtract(objective.visibleTarget, visible));
     result->diagnostics.insert(QStringLiteral("areaErrorLimit"), objective.areaBudget);
+    result->diagnostics.insert(QStringLiteral("boundaryAllowance"), options.boundaryAllowance);
+    result->diagnostics.insert(QStringLiteral("inwardAllowance"), options.inwardAllowance);
+    result->diagnostics.insert(QStringLiteral("observationScale"), options.observationScale);
     result->diagnostics.insert(QStringLiteral("maximumExcessTurnLimit"), kMaximumExcessTurn);
+    result->diagnostics.insert(QStringLiteral("maximumCornerAngleErrorLimit"), kMaximumExcessTurn);
     result->diagnostics.insert(QStringLiteral("boundaryEnergyLimit"), objective.qualityLimit);
     result->diagnostics.insert(QStringLiteral("cornerDistanceLimit"), objective.cornerAllowance);
     result->diagnostics.insert(QStringLiteral("cornerDefectLimit"), objective.defectLimit);
@@ -4128,8 +4298,179 @@ bool verifyEmittedRegion(const catalog::Region &region, const QVector<catalog::P
     result->diagnostics.insert(QStringLiteral("boundaryQuality"), objective.boundary->diagnostics(metrics));
     result->diagnostics.insert(QStringLiteral("approximationVerified"), verified);
     result->diagnostics.insert(QStringLiteral("emittedOutputVerified"), verified);
+    result->diagnostics.insert(QStringLiteral("emittedQualityTimings"), objective.boundary->performance());
 
     return verified;
+}
+
+catalog::FillResult selectWholeShapeCover(const catalog::Region &region,
+    const QVector<catalog::Primitive> &primitives, const FillOptions &options,
+    const QVector<ReusableCandidate> &candidates, const std::function<bool()> &cancelled) {
+    constexpr int kMaximumChecks = 16;
+    constexpr int kRepairChecks = 4;
+    constexpr int kRepairEvaluations = 1200;
+    constexpr int kGreedyStarts = 8;
+    constexpr int kCoverShapes = 8;
+    constexpr int kBeamWidth = 16;
+    auto objective = makeObjective(region, options);
+    const auto requiredBounds = catalog::painterPath(objective.inner).boundingRect();
+    catalog::FillResult result;
+    struct Cover { QVector<PenPlacement> placements; Polygons polygons; double error; };
+    QVector<Cover> covers;
+    QVector<Cover> nearCovers;
+    int screened = 0;
+    const auto add = [&](int first, int second) {
+        if (cancelled && cancelled())
+            return;
+        auto bounds = candidates[first].bounds;
+        if (second >= 0)
+            bounds = bounds.united(candidates[second].bounds);
+        if (!bounds.adjusted(-objective.inwardAllowance, -objective.inwardAllowance,
+            objective.inwardAllowance, objective.inwardAllowance).contains(requiredBounds))
+            return;
+        auto polygons = candidates[first].polygons;
+        if (second >= 0)
+            polygons += candidates[second].polygons;
+        ++screened;
+        polygons = catalog::unite(polygons);
+        QVector<PenPlacement> placements{candidates[first].placement};
+        if (second >= 0)
+            placements.push_back(candidates[second].placement);
+        const double areaError = error(polygons, objective);
+        if (acceptableGeometry(polygons, objective))
+            covers.push_back({placements, polygons, areaError});
+        else if (areaError <= objective.areaBudget)
+            nearCovers.push_back({placements, polygons, areaError});
+    };
+    for (int first = 0; first < candidates.size(); ++first)
+        add(first, -1);
+    if (options.shapeBudget >= 2)
+        for (int first = 0; first < candidates.size(); ++first)
+            for (int second = first+1; second < candidates.size(); ++second)
+                add(first, second);
+    if (covers.isEmpty() && options.shapeBudget > 2) {
+        for (int start = 0; start < std::min(kGreedyStarts, int(candidates.size())); ++start) {
+            auto polygons = candidates[start].polygons;
+            QVector<PenPlacement> placements{candidates[start].placement};
+            QVector<int> selected{start};
+            for (int depth = 1; depth < std::min(kCoverShapes, options.shapeBudget); ++depth) {
+                if (cancelled && cancelled())
+                    break;
+                const auto missing = catalog::subtract(objective.target, polygons);
+                int best = -1;
+                double gain = 0;
+                for (int index = 0; index < candidates.size(); ++index) {
+                    if (selected.contains(index))
+                        continue;
+                    const double candidateGain = catalog::area(catalog::intersect(missing, candidates[index].polygons));
+                    if (candidateGain > gain) {
+                        gain = candidateGain;
+                        best = index;
+                    }
+                }
+                if (best < 0)
+                    break;
+                selected.push_back(best);
+                placements.push_back(candidates[best].placement);
+                polygons = catalog::unite(polygons + candidates[best].polygons);
+                ++screened;
+                const double areaError = error(polygons, objective);
+                if (acceptableGeometry(polygons, objective)) {
+                    covers.push_back({placements, polygons, areaError});
+                    break;
+                }
+                if (areaError <= objective.areaBudget)
+                    nearCovers.push_back({placements, polygons, areaError});
+            }
+        }
+    }
+    if (!covers.isEmpty() && covers.front().placements.size() > 2) {
+        struct PartialCover { Cover cover; int last; double missing; };
+        QVector<PartialCover> beam{{{{}, {}, 0}, -1, catalog::area(objective.target)}};
+        const int maximumDepth = std::min(kCoverShapes, int(covers.front().placements.size()) - 1);
+        for (int depth = 0; depth < maximumDepth && !beam.isEmpty(); ++depth) {
+            QVector<PartialCover> next;
+            for (const auto &partial : beam) {
+                for (int index = partial.last + 1; index < candidates.size(); ++index) {
+                    if (cancelled && cancelled())
+                        break;
+                    auto polygons = catalog::unite(partial.cover.polygons + candidates[index].polygons);
+                    const double missing = catalog::area(catalog::subtract(objective.target, polygons));
+                    if (missing >= partial.missing)
+                        continue;
+                    auto placements = partial.cover.placements;
+                    placements.push_back(candidates[index].placement);
+                    ++screened;
+                    const double areaError = error(polygons, objective);
+                    if (acceptableGeometry(polygons, objective))
+                        covers.push_back({placements, polygons, areaError});
+                    else
+                        next.push_back({{placements, polygons, areaError}, index, missing});
+                }
+            }
+            std::stable_sort(next.begin(), next.end(), [](const auto &left, const auto &right) {
+                return left.missing == right.missing ? left.cover.error < right.cover.error : left.missing < right.missing;
+            });
+            next.resize(std::min(kBeamWidth, int(next.size())));
+            beam = std::move(next);
+        }
+    }
+    std::stable_sort(covers.begin(), covers.end(), [](const auto &left, const auto &right) {
+        return left.placements.size() == right.placements.size() ? left.error < right.error
+            : left.placements.size() < right.placements.size();
+    });
+    int checks = 0;
+    for (const auto &cover : covers) {
+        if ((cancelled && cancelled()) || checks >= kMaximumChecks)
+            break;
+        ++checks;
+        if (acceptable(cover.polygons, objective)) {
+            result.fill.placements = cover.placements;
+            result.fill.shapeLimit = options.shapeBudget;
+            if (verifyEmittedRegion(region, primitives, options, &result))
+                break;
+            result.fill.placements.clear();
+        }
+        nearCovers.push_back(cover);
+    }
+    int repairChecks = 0;
+    const int repairBudget = std::min(kRepairChecks * kRepairEvaluations, options.evaluationBudget / 5);
+    if (result.fill.placements.isEmpty()) {
+        objective.gpuRankingEnabled = false;
+        std::stable_sort(nearCovers.begin(), nearCovers.end(), [](const auto &left, const auto &right) {
+            return left.placements.size() == right.placements.size() ? left.error < right.error
+                : left.placements.size() < right.placements.size();
+        });
+        for (const auto &cover : nearCovers) {
+            if ((cancelled && cancelled()) || repairChecks >= kRepairChecks || objective.evaluations >= repairBudget)
+                break;
+            ++repairChecks;
+            QVector<Piece> pieces;
+            for (const auto &placement : cover.placements)
+                pieces.push_back(makePiece(primitiveFor(placement.shapeId, primitives), placement.transform));
+            objective.evaluationLimit = std::min(repairBudget, objective.evaluations + kRepairEvaluations);
+            correctJointCorners(&pieces, objective, primitives, cancelled);
+            if (!acceptable(support(pieces), objective))
+                refit(&pieces, objective, primitives, cancelled);
+            if (acceptableGeometry(support(pieces), objective) && !acceptable(support(pieces), objective))
+                repairBoundaryDefects(&pieces, objective, primitives, cancelled, repairChecks - 1);
+            if (!acceptable(support(pieces), objective))
+                continue;
+            for (const auto &piece : pieces)
+                result.fill.placements.push_back(piece.placement);
+            result.fill.shapeLimit = options.shapeBudget;
+            if (verifyEmittedRegion(region, primitives, options, &result))
+                break;
+            result.fill.placements.clear();
+        }
+    }
+    result.diagnostics.insert(QStringLiteral("wholeShapeSearch"), QJsonObject{
+        {QStringLiteral("candidates"), candidates.size()}, {QStringLiteral("screened"), screened},
+        {QStringLiteral("geometryCovers"), covers.size()}, {QStringLiteral("verifiedTrials"), checks},
+        {QStringLiteral("repairTrials"), repairChecks}, {QStringLiteral("repairEvaluations"), objective.evaluations},
+        {QStringLiteral("jointCornerCorrections"), objective.jointCornerCorrections}});
+
+    return result;
 }
 
 static catalog::FillResult fillInObservationUnits(const PenFillRequest &request,
@@ -4326,7 +4667,8 @@ static catalog::FillResult fillInObservationUnits(const PenFillRequest &request,
         finishStage(QStringLiteral("recognition"));
         if (options.adaptiveBudget && options.evaluationBudget >= kInitialSearchWork && !optimumReached
             && !stopped(cancelled) && pieces.size() <= kEarlyBoundaryRepairPieces
-            && acceptableGeometry(support(pieces), objective)
+            && error(support(pieces), objective) <= objective.areaBudget * kNearBoundaryAreaRatio
+            && catalog::subtract(support(pieces), objective.outer).isEmpty()
             && boundaryNeedsRepair(reductionStateFor(support(pieces), objective), objective)) {
             objective.evaluationLimit = std::min(stageLimit(activeBudget, WorkStage::Repair) / 2,
                 objective.evaluations + kBoundaryRepairChunk);
@@ -4691,6 +5033,7 @@ static catalog::FillResult fillInObservationUnits(const PenFillRequest &request,
         result.diagnostics.insert(QStringLiteral("feasibleCheckpoints"), objective.feasibleCheckpoints);
         result.diagnostics.insert(QStringLiteral("feasibleRestores"), objective.feasibleRestores);
         result.diagnostics.insert(QStringLiteral("jointBoundaryMoves"), objective.jointMoves);
+        result.diagnostics.insert(QStringLiteral("jointCornerCorrections"), objective.jointCornerCorrections);
         result.diagnostics.insert(QStringLiteral("qualityReference"), QStringLiteral("matched observation support; raw protected corners"));
         result.fill.cancelled = stopped(userCancelled);
         result.fill.shapeLimit = options.shapeBudget;
@@ -4710,6 +5053,7 @@ static catalog::FillResult fillInObservationUnits(const PenFillRequest &request,
         result.diagnostics.insert(QStringLiteral("targetBoundary"), objective.boundary->diagnostics(objective.targetMetrics));
         result.diagnostics.insert(QStringLiteral("observationScale"), options.observationScale);
         result.diagnostics.insert(QStringLiteral("maximumExcessTurnLimit"), kMaximumExcessTurn);
+        result.diagnostics.insert(QStringLiteral("maximumCornerAngleErrorLimit"), kMaximumExcessTurn);
         result.diagnostics.insert(QStringLiteral("cornerDistanceLimit"), objective.cornerAllowance);
         result.diagnostics.insert(QStringLiteral("cornerDefectLimit"), objective.defectLimit);
         result.diagnostics.insert(QStringLiteral("missingBeyondInward"), catalog::area(catalog::subtract(objective.target,
@@ -4766,6 +5110,8 @@ static catalog::FillResult fillInObservationUnits(const PenFillRequest &request,
         if (metrics.maximumCornerDistance > objective.cornerAllowance) {
             failedChecks.push_back(QStringLiteral("sharp-corner position"));
         }
+        if (metrics.maximumCornerAngleError > kMaximumExcessTurn || metrics.unmatchedCorners > 0)
+            failedChecks.push_back(QStringLiteral("sharp-corner correspondence"));
         if (metrics.components != objective.targetMetrics.components || metrics.holes != objective.targetMetrics.holes) {
             failedChecks.push_back(QStringLiteral("region topology"));
         }

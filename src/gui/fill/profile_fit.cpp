@@ -5,6 +5,7 @@
 #include "compact_fit_quality.h"
 #include "compact_fit_gpu_geometry.h"
 #include "compact_fit_coordinates.h"
+#include "compact_fit_whole_shapes.h"
 #include "compact_fit_budget.h"
 #include "greedy_cover.h"
 #include "cubic_contour.h"
@@ -2970,7 +2971,8 @@ catalog::FillResult buildSeed(const PenFillRequest &request, const QVector<catal
         }
         const auto region = curveRegion(authoredRegion, coverageRegion);
         const auto outer = region.permitted;
-        const compact::BoundaryModel boundary(coverageRegion.visible, options.observationScale);
+        const compact::BoundaryModel boundary(coverageRegion.visible, options.observationScale,
+            {}, false, authoredRegion.boundaryCorners, compact::boundaryOcclusion(coverageRegion.leeway, options.observationScale));
         const auto grid = makeGrid(coverageRegion, options.observationScale, options.thinPreferredCoverage);
         const auto witnesses = options.thinRegion ? QVector<QPointF>{}
             : boundaryWitnesses(coverageRegion, options.observationScale);
@@ -3481,9 +3483,9 @@ static catalog::FillResult fillNativeAttempt(const PenFillRequest &request, cons
         timeBudget = std::max(timeBudget, compact::searchBudget(vertices, holes,
             std::max(1, static_cast<int>(request.loops.size()) - holes), seed.fill.placements.size(),
             options.evaluationBudget).milliseconds);
+    if (options.replacementCandidates)
+        *reusable += *options.replacementCandidates;
     auto refinement = options;
-    refinement.boundaryAllowance = seed.diagnostics.value(QStringLiteral("selectedBoundaryAllowance"))
-        .toDouble(options.boundaryAllowance);
     refinement.initialPlacements = seed.fill.placements;
     if (options.timeBudgetMilliseconds > 0)
         refinement.timeBudgetMilliseconds = std::max(1, options.timeBudgetMilliseconds - static_cast<int>(searchTimer.elapsed()));
@@ -3521,120 +3523,54 @@ static catalog::FillResult fillNativeAttempt(const PenFillRequest &request, cons
 static catalog::FillResult fillAttempt(const PenFillRequest &request, const QVector<catalog::Primitive> &primitives,
     const compact::FillOptions &options, const std::function<bool()> &cancelled,
     const std::function<void(int, double, double)> &progress) {
-    constexpr int kGpuProposalEvaluations = 3000;
-    constexpr int kCpuProposalEvaluations = 6000;
-    constexpr int kGpuProposalMilliseconds = 3000;
-    constexpr int kCpuProposalMilliseconds = 6000;
-#ifdef FLS_HAS_CUDA
-    const bool gpuProposal = options.useGpu;
-#else
-    constexpr bool gpuProposal = false;
-#endif
-    const int proposalEvaluations = gpuProposal ? kGpuProposalEvaluations : kCpuProposalEvaluations;
-    const int proposalMilliseconds = gpuProposal ? kGpuProposalMilliseconds : kCpuProposalMilliseconds;
-    constexpr double kProposalExtent = 256.0;
-    constexpr double kProposalTolerance = 0.1;
-    constexpr int kLowShapeCount = 2;
-    int anchors = request.points.size();
-    for (const auto &loop : request.loops)
-        anchors += loop.points.size();
-    if (!options.adaptiveBudget || options.seedOnly || options.thinRegion || options.thinRegionQuality
-        || !options.initialPlacements.isEmpty() || anchors <= 4
-        || options.evaluationBudget < proposalEvaluations * 2 + compact::kInitialSearchWork || options.timeBudgetMilliseconds > 0)
+    constexpr int kWholeShapeMinimumBudget = 3000;
+    constexpr int kDiscoveryMilliseconds = 4000;
+    if (options.seedOnly || options.thinRegion || options.thinRegionQuality
+        || !options.initialPlacements.isEmpty() || options.evaluationBudget < kWholeShapeMinimumBudget
+        || options.shapeBudget < 1 || !std::isfinite(options.observationScale) || options.observationScale <= 0
+        || !std::isfinite(options.inwardAllowance) || options.inwardAllowance <= 0
+        || !std::isfinite(options.boundaryAllowance) || options.boundaryAllowance <= 0
+        || !std::isfinite(options.areaErrorRatio) || options.areaErrorRatio <= 0 || options.areaErrorRatio >= 1)
         return fillNativeAttempt(request, primitives, options, cancelled, progress);
-    catalog::FillResult checkpoint;
-    QJsonObject proposalDiagnostics;
+    QElapsedTimer timer;
+    timer.start();
+    const int discoveryMilliseconds = options.timeBudgetMilliseconds > 0
+        ? std::min(kDiscoveryMilliseconds, std::max(1, options.timeBudgetMilliseconds / 4)) : kDiscoveryMilliseconds;
+    const auto stopDiscovery = [&] {
+        return stopped(cancelled) || timer.elapsed() >= discoveryMilliseconds;
+    };
+    QJsonObject diagnostics;
+    auto candidates = std::make_shared<QVector<compact::ReusableCandidate>>();
     try {
         const auto region = catalog::buildRegion(request, cancelled);
-        const double extent = std::max(region.bounds.width(), region.bounds.height());
-        const double scale = kProposalExtent / extent;
-        const QTransform normalize(scale, 0, 0, scale,
-            -region.bounds.center().x() * scale, -region.bounds.center().y() * scale);
-        const auto restore = normalize.inverted();
-        auto working = request;
-        const auto mapPoints = [&](QVector<PenPoint> &points) {
-            materializePenHandles(points);
-            for (auto &point : points)
-                transformPenPoint(point, normalize);
-        };
-        mapPoints(working.points);
-        for (auto &loop : working.loops)
-            mapPoints(loop.points);
-        working.boundaryTolerance = kProposalTolerance;
-        auto proposalOptions = options;
-        proposalOptions.adaptiveBudget = false;
-        proposalOptions.evaluationBudget = proposalEvaluations;
-        proposalOptions.timeBudgetMilliseconds = proposalMilliseconds;
-        proposalOptions.retainFailedFill = true;
-        proposalOptions.workProgress = {};
-        proposalOptions.replacementCandidates.reset();
-        for (auto &polygon : proposalOptions.leeway)
-            polygon = normalize.map(polygon);
-        for (auto &polygon : proposalOptions.thinPreferredCoverage)
-            polygon = normalize.map(polygon);
-        auto proposal = fillNativeAttempt(working, primitives, proposalOptions, cancelled, {});
-        proposalDiagnostics.insert(QStringLiteral("search"), proposal.diagnostics);
-        proposalDiagnostics.insert(QStringLiteral("searchError"), proposal.fill.error);
-        proposalDiagnostics.insert(QStringLiteral("searchCount"), proposal.fill.placements.size());
-        for (auto &placement : proposal.fill.placements)
-            placement.transform = catalog::emittedTransform(placement.transform * restore);
-        if (!proposal.fill.placements.isEmpty() && !stopped(cancelled)) {
-            bool verified = compact::verifyEmittedRegion(region, primitives, options, &proposal);
-            if (!verified) {
-                auto repair = options;
-                repair.initialPlacements = proposal.fill.placements;
-                repair.adaptiveBudget = false;
-                repair.evaluationBudget = proposalEvaluations;
-                repair.timeBudgetMilliseconds = proposalMilliseconds;
-                repair.shapeBudget = std::min(options.shapeBudget, static_cast<int>(repair.initialPlacements.size()));
-                repair.workProgress = {};
-                proposal = compact::fillRegion(request, primitives, repair, cancelled);
-                proposalDiagnostics.insert(QStringLiteral("repair"), proposal.diagnostics);
-                proposalDiagnostics.insert(QStringLiteral("repairError"), proposal.fill.error);
-                verified = proposal.fill.error.isEmpty() && !proposal.fill.cancelled
-                    && compact::verifyEmittedRegion(region, primitives, options, &proposal);
+        *candidates = compact::wholeShapeCandidates(request, region, primitives, options, stopDiscovery);
+        auto cover = compact::selectWholeShapeCover(region, primitives, options, *candidates, stopDiscovery);
+        diagnostics = cover.diagnostics;
+        diagnostics.insert(QStringLiteral("milliseconds"), timer.elapsed());
+        diagnostics.insert(QStringLiteral("deadlineReached"), timer.elapsed() >= discoveryMilliseconds);
+        if (!cover.fill.placements.isEmpty() && !stopped(cancelled)) {
+            cover.diagnostics.insert(QStringLiteral("wholeShapeDiscovery"), diagnostics);
+            cover.diagnostics.insert(QStringLiteral("strategy"), QStringLiteral("joint whole-shape cover"));
+            if (options.workProgress) {
+                const int total = options.evaluationBudget + std::max(1, options.evaluationBudget / 5);
+                options.workProgress(cover.fill.placements.size(), total, total);
             }
-            if (verified) {
-                proposal.fill.error.clear();
-                proposal.diagnostics.insert(QStringLiteral("normalizedProposal"), QJsonObject{
-                    {QStringLiteral("extent"), kProposalExtent},
-                    {QStringLiteral("evaluationAllowance"), proposalEvaluations * 2},
-                    {QStringLiteral("verifiedInOriginalRegion"), true}});
-                checkpoint = std::move(proposal);
-            }
+            if (progress)
+                progress(cover.fill.placements.size(), cover.fill.targetArea-cover.fill.coveredArea, cover.fill.outsideArea);
+
+            return cover;
         }
     } catch (const std::exception &error) {
-        proposalDiagnostics.insert(QStringLiteral("error"), QString::fromUtf8(error.what()));
+        diagnostics.insert(QStringLiteral("error"), QString::fromUtf8(error.what()));
     }
-    if (!checkpoint.fill.placements.isEmpty() && checkpoint.fill.placements.size() <= kLowShapeCount) {
-        if (options.workProgress) {
-            const int totalWork = options.evaluationBudget + std::max(1, options.evaluationBudget / 5);
-            options.workProgress(checkpoint.fill.placements.size(), totalWork, totalWork);
-        }
-        if (progress)
-            progress(checkpoint.fill.placements.size(), checkpoint.fill.targetArea - checkpoint.fill.coveredArea,
-                checkpoint.fill.outsideArea);
-
-        return checkpoint;
-    }
-    auto remaining = options;
-    remaining.evaluationBudget -= proposalEvaluations * 2;
-    const auto originalWorkProgress = options.workProgress;
-    remaining.workProgress = [&](int count, int evaluated, int) {
-        if (originalWorkProgress) {
-            const int totalWork = options.evaluationBudget + std::max(1, options.evaluationBudget / 5);
-            originalWorkProgress(count, std::min(totalWork, evaluated + proposalEvaluations * 2), totalWork);
-        }
-    };
-    auto result = fillNativeAttempt(request, primitives, remaining, cancelled, progress);
-    result.diagnostics.insert(QStringLiteral("proposalSearch"), proposalDiagnostics);
-    if (options.workProgress && !result.fill.cancelled) {
-        const int totalWork = options.evaluationBudget + std::max(1, options.evaluationBudget / 5);
-        options.workProgress(result.fill.placements.size(), totalWork, totalWork);
-    }
-    if (!stopped(cancelled) && !result.fill.cancelled && !checkpoint.fill.placements.isEmpty()
-        && (!result.fill.error.isEmpty() || result.fill.placements.size() > checkpoint.fill.placements.size()))
-        result = std::move(checkpoint);
+    if (options.replacementCandidates)
+        *candidates += *options.replacementCandidates;
+    auto refinement = options;
+    if (options.timeBudgetMilliseconds > 0)
+        refinement.timeBudgetMilliseconds = std::max(1, options.timeBudgetMilliseconds - int(timer.elapsed()));
+    refinement.replacementCandidates = candidates;
+    auto result = fillNativeAttempt(request, primitives, refinement, cancelled, progress);
+    result.diagnostics.insert(QStringLiteral("wholeShapeDiscovery"), diagnostics);
 
     return result;
 }

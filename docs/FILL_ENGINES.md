@@ -88,6 +88,16 @@ Defaults are defined by `compact::FillOptions` in `compact_fit.h`:
 | `timeBudgetMilliseconds` | `0` | Automatic time allowance; a positive value sets the search deadline. |
 | `retainFailedFill` | `false` | Retain available placements after a quality failure. |
 
+The editor scales its coverage defaults once for each region. It uses the
+area-equivalent circle diameter relative to a 256-observation-unit reference;
+cutout area is subtracted. Uniform enlargement therefore increases outward and
+inward distances linearly, while rotation and translation leave them unchanged.
+The dialog shows the resulting world-unit distances and permits an outward
+override. Low-level fill APIs continue to take explicit world-unit allowances.
+`scaleCoverageToRegion` applies the editor's preparation to replay requests.
+It tightens geometry flattening when a smaller corridor needs more precision,
+while preserving observation scale, corner limits and the area-error percentage.
+
 Geometric checks use triangle unions on a `1e-6` clipping grid and reconstructed
 float transforms. Interior support and the exterior envelope constrain accepted
 changes. Boundary measurements compare displacement, protected corners, tangent
@@ -95,6 +105,40 @@ alignment, turning, and component/hole counts. Target and output receive the sam
 observation operator; original geometry remains authoritative for interior
 support and protected-corner distances. These sampled measurements provide
 quality criteria rather than a perceptual-equivalence guarantee.
+
+Authored junction positions and one-sided tangent directions accompany the
+flattened geometry. Polygon-only corners use support at a fixed observation
+distance and retain one prominent turn feature per junction, so short edges,
+curve subdivision and tiny rounded joins do not erase or duplicate a junction. Visible
+target corners match fitted corners one to one within corresponding, equally
+oriented boundary loops. Corner position and local angle have separate checks;
+a nearby smooth boundary cannot substitute for a missing corner.
+
+Matched junctions divide each loop into ordered spans. Smooth-boundary samples
+project onto the corresponding target span rather than another nearby branch.
+Near a junction, comparison samples align their arc distance to the matched
+junction. Junction projection and neighborhoods use the observed boundary;
+the separate position check uses the original geometry.
+The smooth-turn check excludes matched junction neighborhoods, whose position
+and angle remain constrained by the corner checks. Inconsistent junction order
+fails correspondence. Observation distances, the corner-position limit and the
+angular limits remain independent of region size. Diagnostics report matched
+and missing corners, corner displacement, corner-angle error and excess turn
+on smooth spans separately.
+Leeway cut vertices are not authored corners. Corner checks require a fully
+visible observation neighborhood, and turn comparisons omit samples whose
+tangent support is occluded. The occlusion neighborhood uses the fixed
+observation scale; it does not grow with the coverage allowances.
+The hidden coverage guard uses the same integer-grid interior-support operation
+as the coverage checks.
+
+Small placement sets can correct matched junctions with simultaneous affine
+updates. A damped least-squares step uses the junction offsets of the complete
+union; backtracking checks the emitted transforms against coverage, corner and
+topology constraints. Each correction call uses at most 256 trials and four
+iterations, with up to eight placements and sixteen corners. These trials share
+the caller's existing evaluation and cancellation limits. Near-feasible covers
+of three or more shapes remain eligible for this refinement.
 
 The solver can select a tighter outward allowance within the requested maximum.
 Stages share bounded work and retain feasible checkpoints. CPU and GPU trials
@@ -111,13 +155,29 @@ from 3 to 20 seconds. Deadlines are cooperative: an in-progress geometry operati
 and final output verification can finish after the allowance.
 
 Internal deadlines return the best verified checkpoint. Explicit user
-cancellation clears placements. For eligible contours, a bounded proposal search first fits a uniform 256-unit
-frame. CPU proposals use up to 6,000 evaluations and GPU proposals use up to 3,000.
-Mapped placements must pass the original region's complete checks; a bounded
-native-coordinate repair can adjust a failed proposal. A verified fit of one or
-two shapes returns early. Other proposals remain checkpoints while native search
-continues with the unused evaluation allowance. Proposal deadlines are separate
-from native refinement.
+cancellation clears placements. Whole-shape discovery uses an affine frame based
+on the region's area covariance. Ellipse arcs and straight boundary directions
+propose native circles and parallelograms in this frame. The proposals return to
+the original metric before envelope checks, coverage scoring or refinement.
+Conditioning does not change the requested distance allowances.
+
+Discovery retains up to 24 base candidates per primitive, plus up to 24 circle
+candidates adjusted for the native polygon's chord error. Joint selection tests single
+shapes and pairs, followed by up to eight greedy covers of at most eight shapes.
+A beam of up to 16 partial covers searches for shorter alternatives to those
+multi-shape covers.
+Authored straight edges remain eligible as support lines regardless of their
+length. Curve-flattening chords do not replace those edges. Opposing support
+lines can propose all corners of a parallelogram together, including corners
+inside leeway; the complete proposal must pass the same output checks.
+Every accepted cover passes the full original coverage, contour, corner and
+topology checks with reconstructed output transforms. Near-feasible covers can
+use up to four refinement trials, limited to 4,800 evaluations or one fifth of
+the caller's evaluation budget. Discovery has a cooperative four-second deadline;
+an explicit operation deadline reduces that allowance and includes discovery
+time. Unselected candidates remain available to native refinement, which retains
+its evaluation allowance. These bounds limit search work; they do not guarantee
+the minimum shape count for arbitrary contours.
 
 A failed compact search reports its failed checks. Triangulated covers remain
 available to the diagnostic tool and are not substituted for Compact Fit output.
@@ -131,7 +191,8 @@ reduction. Automatic profile seeding and refinement have separate time allowance
 a stopped seed phase retains selected candidates for refinement. An explicit time
 allowance continues to bound the combined seed and refinement phases.
 
-Compact Fit searches in observation units, relative to the first contour anchor.
+Compact Fit searches in observation units, relative to the analytic outer bounds'
+center. Each closed contour starts at its lexicographically smallest anchor.
 Contour tolerances, coverage allowances, leeway, preferred coverage and supplied
 placements use the same coordinate conversion. Equivalent uniform changes of
 units require scaling all distance settings, including `observationScale` and

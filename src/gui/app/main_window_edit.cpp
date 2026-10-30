@@ -23,6 +23,7 @@
 #include <algorithm>
 #include <cmath>
 #include <functional>
+#include <exception>
 #include <optional>
 #include <utility>
 
@@ -31,6 +32,11 @@ namespace gui {
 using namespace mw_detail;
 
 namespace {
+
+constexpr double kMinimumCoverageInput = 0.01;
+constexpr double kMaximumCoverageInput = 1000;
+constexpr int kMinimumCoverageDecimals = 2;
+constexpr int kMaximumCoverageDecimals = 6;
 
 bool usesWorkProgress(const QString &tool) {
 
@@ -210,16 +216,29 @@ void MainWindow::startPenFill(const QVector<PenLoop> &loops,
     const bool compactFit = fillMode == ContourFillMode::CompactFit;
     const QString fillLabel = compactFit ? QStringLiteral("Compact fit") : QStringLiteral("Analytic contour fill");
     const QString fillTool = compactFit ? QStringLiteral("compact") : QStringLiteral("analytic");
+    PenFillRequest request;
+    request.loops = loops;
     compact::FillOptions compactOptions;
+    double coverageScale = 1;
     compactOptions.retainFailedFill = true;
     if (compactFit && !fillMask) {
+        try {
+            coverageScale = compact::scaleCoverageToRegion(request, compactOptions);
+        } catch (const std::exception &error) {
+            canvas_->setPenFillRunning(false);
+            statusBar()->showMessage(QStringLiteral("Compact Fit failed: %1").arg(QString::fromUtf8(error.what())), 5000);
+            return;
+        }
+        const int decimals = std::clamp(kMinimumCoverageDecimals - int(std::floor(std::log10(coverageScale))),
+            kMinimumCoverageDecimals, kMaximumCoverageDecimals);
         bool accepted = false;
         compactOptions.boundaryAllowance = QInputDialog::getDouble(this,
             QStringLiteral("Compact Fit"),
-            QStringLiteral("Outward allowance (world units, per axis):\nInward gap target: %1 world units. Total area error target: %2%.\nSmooth boundaries and sharp corners are checked separately.\nGenerated shapes are kept with a warning if checks fail.")
+            QStringLiteral("Outward allowance (world units, per axis):\nInward gap target: %1 world units. Total area error target: %2%.\nCoverage defaults follow region size. Contour stability limits stay fixed.\nGenerated shapes are kept with a warning if checks fail.")
                 .arg(compactOptions.inwardAllowance, 0, 'g', 3)
                 .arg(compactOptions.areaErrorRatio * 100.0, 0, 'g', 3),
-            compactOptions.boundaryAllowance, 0.01, 1000.0, 2, &accepted);
+            compactOptions.boundaryAllowance, std::min(kMinimumCoverageInput, compactOptions.boundaryAllowance),
+            std::max(kMaximumCoverageInput, compactOptions.boundaryAllowance), decimals, &accepted);
         if (!accepted) {
             canvas_->setPenFillRunning(false);
             return;
@@ -231,8 +250,6 @@ void MainWindow::startPenFill(const QVector<PenLoop> &loops,
     if (fillColor.has_value()) {
         generatedFillGuideSelection_ = state_->selectedGuideLayerIds();
     }
-    PenFillRequest request;
-    request.loops = loops;
     if (compactFit) {
         QString catalogError;
         generatedFillColor_[3] = 255;
@@ -266,13 +283,15 @@ void MainWindow::startPenFill(const QVector<PenLoop> &loops,
             .arg(fillLabel, interactionShortcutText(KeyInteraction::CanvasCancelInteraction)));
         const QString strategy = fillTool + (fillColor.has_value()
             ? QStringLiteral("-bucket") : QStringLiteral("-pen"));
-        startGeneratedFillTask([request = std::move(request), primitives, strategy, compactOptions](
+        startGeneratedFillTask([request = std::move(request), primitives, strategy, compactOptions, coverageScale](
             const std::function<bool()> &cancelled, const GeneratedFillProgress &progress) {
             auto options = compactOptions;
             QElapsedTimer timer;
             timer.start();
             options.workProgress = progress;
             catalog::FillResult result = profile::fillRegion(request, primitives, options, cancelled);
+            result.diagnostics.insert(QStringLiteral("coverageDefaultScale"), coverageScale);
+            result.diagnostics.insert(QStringLiteral("coverageReferenceDiameter"), compact::kCoverageReferenceDiameter);
             const auto replay = writePenFillLog(request, result.fill, strategy);
             QFile log(QDir(QCoreApplication::applicationDirPath()).filePath(
                 QStringLiteral("compact_fit.log")));
