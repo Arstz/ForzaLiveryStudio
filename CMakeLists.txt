@@ -251,6 +251,8 @@ qt_add_library(fls_editor_ui STATIC
     src/gui/fill/svg_vector_objects.cpp
     src/gui/fill/svg_vector_objects.h
     src/gui/fill/compact_fit.cpp
+    src/gui/fill/compact_fit_coordinates.cpp
+    src/gui/fill/compact_fit_coordinates.h
     src/gui/fill/compact_fit_reduction.cpp
     src/gui/fill/profile_fit.cpp
     src/gui/fill/profile_fit.h
@@ -412,6 +414,8 @@ if(FLS_BUILD_TESTS)
         src/gui/fill/thin_fit_spans.cpp
         src/gui/fill/lining_fill.cpp
         src/gui/fill/compact_fit.cpp
+        src/gui/fill/compact_fit_constructive.cpp
+        src/gui/fill/compact_fit_coordinates.cpp
         src/gui/fill/compact_fit_reduction.cpp
         src/gui/fill/profile_fit.cpp
         src/gui/fill/compact_fit_quality.cpp
@@ -454,10 +458,12 @@ if(FLS_BUILD_TESTS)
                 "$<TARGET_FILE_DIR:fls_compact_fit_tests>")
     endif()
     add_test(NAME legacy_catalog_cover COMMAND fls_compact_fit_tests)
+    add_test(NAME compact_adaptive_budget COMMAND fls_compact_fit_tests --adaptive-budget-tests)
     add_test(NAME compact_fit COMMAND fls_compact_fit_tests --compact-tests)
     add_test(NAME compact_shape_configuration COMMAND fls_compact_fit_tests --shape-config-tests)
     add_test(NAME compact_comparison_projects COMMAND fls_compact_fit_tests --comparison-project-tests)
     add_test(NAME profile_fit COMMAND fls_compact_fit_tests --profile-tests)
+    add_test(NAME compact_scale_consistency COMMAND fls_compact_fit_tests --scale-consistency-tests)
     add_test(NAME leeway_contours COMMAND fls_compact_fit_tests --leeway-contour-tests)
     add_test(NAME leeway_geometry COMMAND fls_compact_fit_tests --leeway-geometry-tests)
     add_test(NAME thin_region_fit COMMAND fls_compact_fit_tests --thin-tests)

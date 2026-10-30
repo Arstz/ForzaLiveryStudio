@@ -4,6 +4,7 @@
 #include "compact_fit_budget.h"
 #include "compact_fit_reduction.h"
 #include "compact_fit_gpu_geometry.h"
+#include "compact_fit_coordinates.h"
 #include "profile_fit_batch.h"
 
 #include <algorithm>
@@ -37,6 +38,8 @@ constexpr int kMinimumGpuOwnershipPieces = 16;
 constexpr int kGpuExactRankingCandidates = 12;
 constexpr int kGpuPipelinePasses = 3;
 constexpr int kGpuBalancedPasses = 2;
+constexpr int kGpuRepairBudgetDivisor = 2;
+constexpr double kMinimumGpuSeedCoverage = 0.5;
 constexpr int kGpuGroupCandidates = 8;
 constexpr int kGpuGroupFragments = 12;
 constexpr int kGpuGroupNeighbors = 2;
@@ -3058,6 +3061,105 @@ void compactClusters(QVector<Piece> *pieces, const Objective &objective,
         {QStringLiteral("clusters"), clusters}};
 }
 
+constexpr double kFeasibilityWeight = 32.0;
+constexpr double kBoundaryRepairEnergyWeight = 0.1;
+constexpr int kBoundaryRepairLevels = 4;
+constexpr int kBoundaryRepairMoves = 2;
+constexpr int kBoundaryRepairChunk = 1000;
+constexpr int kBoundaryRepairMilliseconds = 1000;
+constexpr int kEarlyBoundaryRepairPieces = 8;
+
+bool boundaryNeedsRepair(const ReductionState &state, const Objective &objective) {
+    return !acceptableBoundary(state.metrics, objective);
+}
+
+double feasibilityCost(const ReductionState &state, const Objective &objective) {
+    const auto excess = [](double value, double limit) {
+        const double ratio = std::max(0.0, value / limit - 1.0);
+
+        return ratio * ratio;
+    };
+    const auto &metrics = state.metrics;
+    const double scaleArea = objective.cornerAllowance * objective.cornerAllowance;
+    const double violations = excess(state.missingArea + state.spillArea, objective.areaBudget)
+        + excess(objective.boundary->energy(metrics), objective.qualityLimit)
+        + excess(metrics.maximumExcessTurn, kMaximumExcessTurn)
+        + excess(metrics.maximumCornerDistance, objective.cornerAllowance)
+        + excess(metrics.cornerDefects, objective.defectLimit)
+        + std::abs(metrics.components - objective.targetMetrics.components)
+        + std::abs(metrics.holes - objective.targetMetrics.holes)
+        + catalog::area(state.deepMissing) / scaleArea
+        + catalog::area(catalog::subtract(state.coverage, objective.outer)) / scaleArea;
+
+    return kFeasibilityWeight * violations
+        + kBoundaryRepairEnergyWeight * objective.boundary->energy(metrics) / objective.qualityLimit
+        + (state.missingArea + state.spillArea) / objective.areaBudget;
+}
+
+void repairBoundaryDefects(QVector<Piece> *pieces, const Objective &objective,
+    const QVector<catalog::Primitive> &primitives, const std::function<bool()> &cancelled, int round) {
+    QElapsedTimer timer;
+    timer.start();
+    const auto finished = [&] {
+        return stopped(cancelled) || objective.evaluations >= objective.evaluationLimit
+            || timer.elapsed() >= kBoundaryRepairMilliseconds;
+    };
+    auto current = reductionStateFor(support(*pieces), objective);
+    auto order = contourPolishOrder(*pieces, objective, current);
+    const auto cornerWeights = refitWeights(*pieces, objective);
+    std::stable_sort(order.begin(), order.end(), [&](int left, int right) {
+        return cornerWeights[left] > cornerWeights[right];
+    });
+    if (!order.isEmpty())
+        std::rotate(order.begin(), order.begin() + round % order.size(), order.end());
+    double best = feasibilityCost(current, objective);
+    for (int index : order) {
+        if (finished() || acceptable(current, objective))
+            break;
+        const auto context = contextFor(*pieces, {index}, objective);
+        const auto &shape = primitiveFor((*pieces)[index].placement.shapeId, primitives);
+        for (int level = 0; level < kBoundaryRepairLevels; ++level) {
+            for (int move = 0; move < kBoundaryRepairMoves; ++move) {
+                bool changed = false;
+                for (int parameter = 0; parameter < 6; ++parameter) {
+                    for (double sign : {-1.0, 1.0}) {
+                        if (finished())
+                            return;
+                        const auto original = (*pieces)[index];
+                        const double extent = std::max(original.bounds.width(), original.bounds.height());
+                        const double step = std::ldexp(std::min(objective.inwardAllowance * 2.0,
+                            extent * kInitialStepFraction), -level);
+                        const double amount = sign * (parameter < 2 ? step
+                            : parameter == 4 ? std::ldexp(kContourPolishAngle, -level) : step / extent);
+                        const auto candidate = makePiece(shape, contourPolishTransform(original, parameter, amount));
+                        ++objective.evaluations;
+                        if (objective.workProgress && objective.evaluations % kWorkReportInterval == 0)
+                            objective.workProgress(objective.evaluations);
+                        const auto after = reductionStateFor(completeCoverage(context, candidate.polygons), objective);
+                        const double cost = feasibilityCost(after, objective);
+                        if (cost >= best - kScoreEpsilon
+                            || !preservesInterior(after.coverage, current.coverage, objective)
+                            || !preservesCoverage(after, current, objective.targetMetrics, objective.cornerAllowance)
+                            || after.missingArea + after.spillArea > std::max(objective.areaBudget,
+                                current.missingArea + current.spillArea) + kScoreEpsilon
+                            || catalog::area(catalog::subtract(after.coverage, objective.outer))
+                                > catalog::area(catalog::subtract(current.coverage, objective.outer)) + kScoreEpsilon)
+                            continue;
+                        (*pieces)[index] = candidate;
+                        current = after;
+                        best = cost;
+                        changed = true;
+                        if (acceptable(current, objective))
+                            return;
+                    }
+                }
+                if (!changed)
+                    break;
+            }
+        }
+    }
+}
+
 void polishContour(QVector<Piece> *pieces, const Objective &objective,
                    const QVector<catalog::Primitive> &primitives, int evaluationLimit,
                    const std::function<bool()> &cancelled) {
@@ -3988,12 +4090,64 @@ QVector<catalog::Primitive> wholeRegionCatalog(const Objective &objective,
 
 } // namespace
 
-catalog::FillResult fillRegion(const PenFillRequest &request,
+bool verifyEmittedFill(const PenFillRequest &request, const QVector<catalog::Primitive> &primitives,
+    const FillOptions &options, catalog::FillResult *result) {
+
+    return verifyEmittedRegion(catalog::buildRegion(request, {}), primitives, options, result);
+}
+
+bool verifyEmittedRegion(const catalog::Region &region, const QVector<catalog::Primitive> &primitives,
+    const FillOptions &options, catalog::FillResult *result) {
+    const auto objective = makeObjective(region, options);
+    Polygons coverage;
+
+    for (const auto &placement : result->fill.placements)
+        coverage += catalog::mapped(primitiveFor(placement.shapeId, primitives), placement.transform);
+    coverage = catalog::unite(coverage);
+    const auto visible = visibleSupport(coverage, objective);
+    const auto metrics = objective.boundary->measure(visible);
+    const bool verified = result->fill.placements.size() <= options.shapeBudget && acceptable(coverage, objective);
+
+    result->fill.targetArea = catalog::area(objective.visibleTarget);
+    result->fill.coveredArea = catalog::area(catalog::intersect(visible, objective.visibleTarget));
+    result->fill.outsideArea = catalog::area(catalog::subtract(visible, objective.visibleTarget));
+    result->fill.unfilled = catalog::painterPath(catalog::subtract(objective.visibleTarget, visible));
+    result->diagnostics.insert(QStringLiteral("areaErrorLimit"), objective.areaBudget);
+    result->diagnostics.insert(QStringLiteral("maximumExcessTurnLimit"), kMaximumExcessTurn);
+    result->diagnostics.insert(QStringLiteral("boundaryEnergyLimit"), objective.qualityLimit);
+    result->diagnostics.insert(QStringLiteral("cornerDistanceLimit"), objective.cornerAllowance);
+    result->diagnostics.insert(QStringLiteral("cornerDefectLimit"), objective.defectLimit);
+    result->diagnostics.insert(QStringLiteral("targetBoundary"), objective.boundary->diagnostics(objective.targetMetrics));
+    result->diagnostics.insert(QStringLiteral("areaError"), result->fill.targetArea
+        - result->fill.coveredArea + result->fill.outsideArea);
+    result->diagnostics.insert(QStringLiteral("missingInteriorArea"),
+        catalog::area(catalog::subtract(objective.inner, coverage)));
+    result->diagnostics.insert(QStringLiteral("missingBeyondInward"), catalog::area(catalog::subtract(
+        objective.target, catalog::expanded(coverage, objective.inwardAllowance))));
+    result->diagnostics.insert(QStringLiteral("outsideEnvelope"), catalog::area(catalog::subtract(coverage, objective.outer)));
+    result->diagnostics.insert(QStringLiteral("boundaryQuality"), objective.boundary->diagnostics(metrics));
+    result->diagnostics.insert(QStringLiteral("approximationVerified"), verified);
+    result->diagnostics.insert(QStringLiteral("emittedOutputVerified"), verified);
+
+    return verified;
+}
+
+static catalog::FillResult fillInObservationUnits(const PenFillRequest &request,
                                const QVector<catalog::Primitive> &primitives,
                                const FillOptions &options,
-                               const std::function<bool()> &cancelled,
+                               const std::function<bool()> &userCancelled,
                                const std::function<void(int, double, double)> &progress) {
     catalog::FillResult result;
+    QElapsedTimer searchTimer;
+    searchTimer.start();
+    int timeBudget = options.timeBudgetMilliseconds;
+    bool deadlineReached = false;
+    bool searchStarted = false;
+    const std::function<bool()> cancelled = [&] {
+        deadlineReached = searchStarted && timeBudget > 0 && searchTimer.elapsed() >= timeBudget;
+
+        return stopped(userCancelled) || deadlineReached;
+    };
     QJsonObject timings;
     QElapsedTimer stageTimer;
     stageTimer.start();
@@ -4013,7 +4167,17 @@ catalog::FillResult fillRegion(const PenFillRequest &request,
         auto objective = makeObjective(region, options);
         objective.convexShapeIds = convexShapeIds(primitives);
         objective.replacementCandidates = options.replacementCandidates;
-        objective.evaluationLimit = stageLimit(options.evaluationBudget, WorkStage::Recognition);
+        int vertices = request.points.size();
+        for (const auto &loop : request.loops)
+            vertices += loop.points.size();
+        const auto budget = searchBudget(vertices, objective.targetMetrics.holes,
+            objective.targetMetrics.components, options.initialPlacements.size(), options.evaluationBudget);
+        int activeBudget = options.adaptiveBudget ? budget.initialEvaluations : options.evaluationBudget;
+        const int maximumBudget = options.adaptiveBudget ? budget.maximumEvaluations : options.evaluationBudget;
+        if (options.adaptiveBudget && timeBudget == 0)
+            timeBudget = budget.milliseconds;
+        bool optimumReached = false;
+        objective.evaluationLimit = stageLimit(activeBudget, WorkStage::Recognition);
         const auto recognitionCatalog = wholeRegionCatalog(objective, primitives);
         int currentCount = 0;
         int reportedEvaluations = 0;
@@ -4024,7 +4188,7 @@ catalog::FillResult fillRegion(const PenFillRequest &request,
             }
         };
         const auto stopWork = [&] {
-            return stopped(cancelled) || objective.evaluations >= objective.evaluationLimit;
+            return optimumReached || stopped(cancelled) || objective.evaluations >= objective.evaluationLimit;
         };
         QJsonObject stageWork;
         int stageStart = 0;
@@ -4035,7 +4199,8 @@ catalog::FillResult fillRegion(const PenFillRequest &request,
                 {QStringLiteral("available"), objective.evaluationLimit - stageStart},
                 {QStringLiteral("evaluations"), objective.evaluations - stageStart},
                 {QStringLiteral("refitPlacements"), objective.refitPlacements - stageRefitStart},
-                {QStringLiteral("stopReason"), stopped(cancelled) ? QStringLiteral("cancelled")
+                {QStringLiteral("stopReason"), stopped(userCancelled) ? QStringLiteral("cancelled")
+                    : deadlineReached ? QStringLiteral("time budget")
                     : objective.evaluations >= objective.evaluationLimit ? QStringLiteral("stage budget")
                     : QStringLiteral("search completed")}});
             stageStart = objective.evaluations;
@@ -4105,12 +4270,13 @@ catalog::FillResult fillRegion(const PenFillRequest &request,
                     || (pieces.size() == incumbent.size() && error(coverage, objective) < error(support(incumbent), objective)))) {
                 incumbent = pieces;
             }
+            optimumReached = incumbent.size() == 1;
             if (progress) {
                 progress(pieces.size(), missing, spill);
             }
         };
         const auto reduceExact = [&](const QString &diagnostic, bool deletionsOnly) {
-            if (stopped(cancelled) || pieces.size() < 2) {
+            if (stopped(cancelled) || optimumReached || pieces.size() < 2) {
                 return;
             }
             QVector<PenPlacement> placements;
@@ -4143,7 +4309,7 @@ catalog::FillResult fillRegion(const PenFillRequest &request,
         };
         report();
         recordTime(QStringLiteral("setup"));
-        bool fullGpuPipeline = false;
+        searchStarted = true;
         bool gpuPipelineApplied = false;
         int gpuPipelineEvaluations = 0;
         if (pieces.size() > 1 && !recognitionCatalog.isEmpty() && !stopWork()) {
@@ -4158,54 +4324,33 @@ catalog::FillResult fillRegion(const PenFillRequest &request,
         }
         recordTime(QStringLiteral("recognition"));
         finishStage(QStringLiteral("recognition"));
+        if (options.adaptiveBudget && options.evaluationBudget >= kInitialSearchWork && !optimumReached
+            && !stopped(cancelled) && pieces.size() <= kEarlyBoundaryRepairPieces
+            && acceptableGeometry(support(pieces), objective)
+            && boundaryNeedsRepair(reductionStateFor(support(pieces), objective), objective)) {
+            objective.evaluationLimit = std::min(stageLimit(activeBudget, WorkStage::Repair) / 2,
+                objective.evaluations + kBoundaryRepairChunk);
+            repairBoundaryDefects(&pieces, objective, primitives, stopWork, 0);
+            report();
+            recordTime(QStringLiteral("initialBoundaryRepair"));
+            finishStage(QStringLiteral("initialBoundaryRepair"));
+        }
 #ifdef FLS_HAS_CUDA
-        if (options.useGpu && !pieces.isEmpty() && !stopped(cancelled)) {
+        if (options.useGpu && !pieces.isEmpty() && !stopped(cancelled)
+            && catalog::area(catalog::intersect(support(pieces), objective.target))
+                >= catalog::area(objective.target) * kMinimumGpuSeedCoverage) {
             const int gpuStart = objective.evaluations;
-            objective.evaluationLimit = options.evaluationBudget;
-            fullGpuPipeline = optimizeGpu(&pieces, objective, primitives, options.shapeBudget, stopWork);
-            gpuPipelineApplied = fullGpuPipeline;
-            if (!gpuPipelineApplied) {
-                objective.evaluations = gpuStart;
-            } else {
-                gpuPipelineEvaluations = objective.evaluations - gpuStart;
-            }
+            objective.evaluationLimit = stageLimit(activeBudget, WorkStage::Repair) / kGpuRepairBudgetDivisor;
+            gpuPipelineApplied = optimizeGpu(&pieces, objective, primitives, options.shapeBudget, stopWork);
+            gpuPipelineEvaluations = objective.evaluations - gpuStart;
         }
 #endif
-        if (gpuPipelineApplied) {
+        if (gpuPipelineApplied || gpuPipelineEvaluations > 0) {
             report();
             recordTime(QStringLiteral("gpuPipeline"));
             finishStage(QStringLiteral("gpuPipeline"));
-            if (gpuPipelineEvaluations > options.evaluationBudget / 2
-                || acceptable(support(pieces), objective)) {
-                objective.evaluationLimit = objective.evaluations;
-            } else {
-                fullGpuPipeline = false;
-            }
         }
-        if (fullGpuPipeline && !acceptable(support(pieces), objective)
-            && !stopped(cancelled)) {
-            const int start = objective.evaluations;
-            const int limit = std::min(options.evaluationBudget,
-                start + kGpuExactTailTrials);
-            const int before = pieces.size();
-            objective.evaluationLimit = limit;
-            repairInteriorCoverage(&pieces, objective, primitives,
-                options.shapeBudget, limit, stopWork);
-            const auto repaired = reductionStateFor(support(pieces), objective);
-            if (!repaired.deepMissing.isEmpty()
-                || repaired.metrics.components != objective.targetMetrics.components
-                || repaired.metrics.holes != objective.targetMetrics.holes) {
-                repairResiduals(&pieces, objective, searchCatalog,
-                    primitives, options.shapeBudget, limit, stopWork);
-            }
-            result.diagnostics.insert(QStringLiteral("gpuExactTailShapes"),
-                pieces.size() - before);
-            result.diagnostics.insert(QStringLiteral("gpuExactTailEvaluations"),
-                objective.evaluations - start);
-            report();
-        }
-        objective.evaluationLimit = fullGpuPipeline ? objective.evaluations
-            : stageLimit(options.evaluationBudget, WorkStage::Repair);
+        objective.evaluationLimit = stageLimit(activeBudget, WorkStage::Repair);
         if (pieces.size() > 1 && !stopWork()) {
             const auto original = pieces;
             const auto originalState = reductionStateFor(support(original), objective);
@@ -4241,7 +4386,7 @@ catalog::FillResult fillRegion(const PenFillRequest &request,
             }
             report();
         }
-        if (!fullGpuPipeline && !stopWork()) {
+        if (!stopWork()) {
             repairInteriorCoverage(&pieces, objective, primitives, options.shapeBudget,
                 std::min(objective.evaluationLimit, objective.evaluations + kGpuExactTailTrials), stopWork);
             report();
@@ -4269,20 +4414,15 @@ catalog::FillResult fillRegion(const PenFillRequest &request,
             refitFeasible(&pieces, objective, primitives, stopWork);
             report();
         }
-        if (!fullGpuPipeline && !acceptable(support(pieces), objective) && !incumbent.isEmpty()) {
+        if (!acceptable(support(pieces), objective) && !incumbent.isEmpty()) {
             pieces = incumbent;
         }
         recordTime(QStringLiteral("initialRefit"));
         finishStage(QStringLiteral("repair"));
-        if (!fullGpuPipeline || objective.gpuPipelineRestores > 0) {
-            reduceExact(QStringLiteral("exactEarlyReduction"), true);
-        }
+        reduceExact(QStringLiteral("exactEarlyReduction"), true);
         recordTime(QStringLiteral("earlyExactReduction"));
-        if (!fullGpuPipeline) {
-            objective.reductionBaseline = reductionStateFor(support(pieces), objective);
-        }
-        objective.evaluationLimit = fullGpuPipeline ? objective.evaluations
-            : stageLimit(options.evaluationBudget, WorkStage::SpatialReduction);
+        objective.reductionBaseline = reductionStateFor(support(pieces), objective);
+        objective.evaluationLimit = stageLimit(activeBudget, WorkStage::SpatialReduction);
         prune(&pieces, objective, stopWork);
         report();
         for (int round = 0; round < kMergeRounds && pieces.size() > 1 && !stopWork(); ++round) {
@@ -4316,8 +4456,7 @@ catalog::FillResult fillRegion(const PenFillRequest &request,
             report();
         }
         finishStage(QStringLiteral("spatialReduction"));
-        objective.evaluationLimit = fullGpuPipeline ? objective.evaluations
-            : stageLimit(options.evaluationBudget, WorkStage::ExposedReduction);
+        objective.evaluationLimit = stageLimit(activeBudget, WorkStage::ExposedReduction);
         fitBoundaryPairs(&pieces, objective, primitives,
             objective.evaluations + (objective.evaluationLimit - objective.evaluations) / 2, stopWork);
         report();
@@ -4331,12 +4470,11 @@ catalog::FillResult fillRegion(const PenFillRequest &request,
         result.diagnostics.insert(QStringLiteral("exposedBoundaryMerges"), exposedMerges);
         recordTime(QStringLiteral("compaction"));
         finishStage(QStringLiteral("exposedReduction"));
-        objective.evaluationLimit = fullGpuPipeline ? objective.evaluations
-            : stageLimit(options.evaluationBudget, WorkStage::Polish);
-        if (!fullGpuPipeline && !incumbent.isEmpty()) {
+        objective.evaluationLimit = stageLimit(activeBudget, WorkStage::Polish);
+        if (!incumbent.isEmpty()) {
             pieces = incumbent;
         }
-        if (!fullGpuPipeline && !pieces.isEmpty()) {
+        if (!pieces.isEmpty()) {
             auto polished = pieces;
             objective.boundaryWeight *= 4.0;
             refit(&polished, objective, primitives, stopWork, 1);
@@ -4354,47 +4492,121 @@ catalog::FillResult fillRegion(const PenFillRequest &request,
         }
         recordTime(QStringLiteral("polish"));
         finishStage(QStringLiteral("polish"));
-        if (!fullGpuPipeline) {
-            reduceExact(QStringLiteral("exactFinalReduction"), false);
-        }
+        reduceExact(QStringLiteral("exactFinalReduction"), false);
         recordTime(QStringLiteral("exactReduction"));
-        if (pieces.size() > 1 && objective.evaluations < options.evaluationBudget
+        if (pieces.size() > 1 && objective.evaluations < activeBudget
             && !stopped(cancelled)) {
-            objective.evaluationLimit = options.evaluationBudget;
+            objective.evaluationLimit = activeBudget;
             compactSmallSupport(&pieces, objective, primitives,
-                std::min(options.evaluationBudget, objective.evaluations + kGpuExactTailTrials), stopWork);
+                std::min(activeBudget, objective.evaluations + kGpuExactTailTrials), stopWork);
             report();
         }
         recordTime(QStringLiteral("smallSupportCompaction"));
         finishStage(QStringLiteral("smallSupportCompaction"));
-        if (fullGpuPipeline && pieces.size() > 1 && objective.evaluations < options.evaluationBudget
+        if (gpuPipelineApplied && pieces.size() > 1 && objective.evaluations < activeBudget
             && !stopped(cancelled)) {
-            objective.evaluationLimit = std::min(options.evaluationBudget, objective.evaluations + kClusterCompactionTrials);
+            objective.evaluationLimit = std::min(activeBudget, objective.evaluations + kClusterCompactionTrials);
             compactClusters(&pieces, objective, primitives, objective.evaluationLimit, stopWork);
             report();
         }
         recordTime(QStringLiteral("clusterCompaction"));
         finishStage(QStringLiteral("clusterCompaction"));
         result.diagnostics.insert(QStringLiteral("clusterCompaction"), objective.clusterCompactionDiagnostics);
-        if (fullGpuPipeline && !pieces.isEmpty() && objective.evaluations < options.evaluationBudget
+        if (gpuPipelineApplied && !pieces.isEmpty() && objective.evaluations < activeBudget
             && !stopped(cancelled)) {
-            objective.evaluationLimit = std::min(options.evaluationBudget, objective.evaluations + kContourPolishTrials);
+            objective.evaluationLimit = std::min(activeBudget, objective.evaluations + kContourPolishTrials);
             polishContour(&pieces, objective, primitives, objective.evaluationLimit, stopWork);
             report();
         }
         recordTime(QStringLiteral("contourPolish"));
         finishStage(QStringLiteral("contourPolish"));
         result.diagnostics.insert(QStringLiteral("contourPolish"), objective.contourPolishDiagnostics);
-        if (fullGpuPipeline && pieces.size() > 1 && objective.evaluations < options.evaluationBudget
+        if (gpuPipelineApplied && pieces.size() > 1 && objective.evaluations < activeBudget
             && !stopped(cancelled)) {
-            objective.evaluationLimit = options.evaluationBudget;
+            objective.evaluationLimit = activeBudget;
             compactSmallSupport(&pieces, objective, primitives,
-                std::min(options.evaluationBudget, objective.evaluations + kGpuExactTailTrials), stopWork,
+                std::min(activeBudget, objective.evaluations + kGpuExactTailTrials), stopWork,
                 kNeighborCompactionArea, kNeighborCompactionPadding, true);
             report();
         }
         recordTime(QStringLiteral("neighborCompaction"));
         finishStage(QStringLiteral("neighborCompaction"));
+        QJsonArray rounds;
+        int stagnantRounds = 0;
+        int roundIndex = 0;
+        while (options.adaptiveBudget && !optimumReached && !stopped(cancelled)
+            && activeBudget < maximumBudget && stagnantRounds < kStagnantSearchRounds) {
+            const double previousError = feasibilityCost(reductionStateFor(support(pieces), objective), objective);
+            const int roundStart = objective.evaluations;
+            const int previousCount = incumbent.isEmpty() ? options.shapeBudget + 1 : incumbent.size();
+            activeBudget = static_cast<int>(std::min<std::int64_t>(maximumBudget,
+                static_cast<std::int64_t>(activeBudget) * 2));
+            objective.evaluationLimit = activeBudget;
+            if (!incumbent.isEmpty())
+                pieces = incumbent;
+            objective.reductionBaseline = reductionStateFor(support(pieces), objective);
+            if (incumbent.isEmpty()) {
+                const int roundLimit = objective.evaluationLimit;
+                if (!acceptableGeometry(support(pieces), objective)) {
+                    objective.evaluationLimit = objective.evaluations
+                        + (roundLimit - objective.evaluations) / 2;
+                    repairInteriorCoverage(&pieces, objective, primitives, options.shapeBudget,
+                        objective.evaluationLimit, stopWork);
+                    repairResiduals(&pieces, objective, searchCatalog, primitives,
+                        options.shapeBudget, objective.evaluationLimit, stopWork);
+                    report();
+                    objective.evaluationLimit = roundLimit;
+                }
+                const auto state = reductionStateFor(support(pieces), objective);
+                if (!stopWork() && acceptableGeometry(state.coverage, objective) && boundaryNeedsRepair(state, objective)) {
+                    objective.evaluationLimit = objective.evaluations
+                        + (roundLimit - objective.evaluations) / 2;
+                    repairBoundaryDefects(&pieces, objective, primitives, stopWork, roundIndex);
+                    report();
+                    objective.evaluationLimit = roundLimit;
+                }
+                if (!stopWork() && incumbent.isEmpty()) {
+                    refitFeasible(&pieces, objective, primitives, stopWork);
+                    report();
+                }
+            } else {
+                prune(&pieces, objective, stopWork);
+                report();
+                while (pieces.size() > 1 && !stopWork()
+                    && merge(&pieces, objective, searchCatalog, stopWork, roundIndex % 2 != 0, roundIndex % 2 == 0)) {
+                    report();
+                }
+                compactSmallSupport(&pieces, objective, primitives, activeBudget, stopWork);
+                report();
+            }
+            const int nextCount = incumbent.isEmpty() ? options.shapeBudget + 1 : incumbent.size();
+            const bool improved = nextCount < previousCount
+                || (incumbent.isEmpty()
+                    && feasibilityCost(reductionStateFor(support(pieces), objective), objective) < previousError - kScoreEpsilon);
+            stagnantRounds = improved ? 0 : stagnantRounds + 1;
+            rounds.push_back(QJsonObject{{QStringLiteral("ceiling"), activeBudget},
+                {QStringLiteral("evaluations"), objective.evaluations},
+                {QStringLiteral("spent"), objective.evaluations - roundStart},
+                {QStringLiteral("feasibilityCost"), feasibilityCost(reductionStateFor(support(pieces), objective), objective)},
+                {QStringLiteral("verifiedCount"), incumbent.size()},
+                {QStringLiteral("stagnantRounds"), stagnantRounds}});
+            ++roundIndex;
+        }
+        if (!incumbent.isEmpty())
+            pieces = incumbent;
+        result.diagnostics.insert(QStringLiteral("adaptiveSearch"), QJsonObject{
+            {QStringLiteral("enabled"), options.adaptiveBudget},
+            {QStringLiteral("complexity"), budget.complexity},
+            {QStringLiteral("initialEvaluations"), budget.initialEvaluations},
+            {QStringLiteral("maximumEvaluations"), maximumBudget},
+            {QStringLiteral("timeBudgetMilliseconds"), timeBudget},
+            {QStringLiteral("deadlineReached"), deadlineReached},
+            {QStringLiteral("rounds"), rounds},
+            {QStringLiteral("stopReason"), stopped(userCancelled) ? QStringLiteral("cancelled")
+                : optimumReached ? QStringLiteral("one shape")
+                : deadlineReached ? QStringLiteral("time budget")
+                : stagnantRounds >= kStagnantSearchRounds ? QStringLiteral("stagnation")
+                : QStringLiteral("evaluation ceiling")}});
         const auto coverage = support(pieces);
         const auto missingInterior = catalog::subtract(objective.inner, coverage);
         result.diagnostics.insert(QStringLiteral("missingInteriorArea"), catalog::area(missingInterior));
@@ -4449,8 +4661,7 @@ catalog::FillResult fillRegion(const PenFillRequest &request,
         result.diagnostics.insert(QStringLiteral("gpuPipelineCandidate"),
             objective.gpuPipelineCandidate);
         result.diagnostics.insert(QStringLiteral("optimizerBackend"),
-            fullGpuPipeline ? QStringLiteral("CUDA raster")
-            : gpuPipelineApplied ? QStringLiteral("CUDA raster + CPU exact")
+            gpuPipelineApplied ? QStringLiteral("CUDA raster + CPU exact")
             : QStringLiteral("CPU exact"));
         result.diagnostics.insert(QStringLiteral("gpuPipelineEvaluations"), gpuPipelineEvaluations);
         result.diagnostics.insert(QStringLiteral("ownershipMergeTrials"), objective.ownershipMergeTrials);
@@ -4481,7 +4692,7 @@ catalog::FillResult fillRegion(const PenFillRequest &request,
         result.diagnostics.insert(QStringLiteral("feasibleRestores"), objective.feasibleRestores);
         result.diagnostics.insert(QStringLiteral("jointBoundaryMoves"), objective.jointMoves);
         result.diagnostics.insert(QStringLiteral("qualityReference"), QStringLiteral("matched observation support; raw protected corners"));
-        result.fill.cancelled = stopped(cancelled);
+        result.fill.cancelled = stopped(userCancelled);
         result.fill.shapeLimit = options.shapeBudget;
         const Polygons visibleCoverage = visibleSupport(coverage, objective);
         result.fill.targetArea = catalog::area(objective.visibleTarget);
@@ -4577,7 +4788,7 @@ catalog::FillResult fillRegion(const PenFillRequest &request,
         }
     } catch (const std::exception &exception) {
         result.fill.error = QString::fromUtf8(exception.what());
-        result.fill.cancelled = stopped(cancelled);
+        result.fill.cancelled = stopped(userCancelled);
         if (!options.retainFailedFill || result.fill.cancelled) {
             result.fill.placements.clear();
         }
@@ -4587,6 +4798,16 @@ catalog::FillResult fillRegion(const PenFillRequest &request,
     result.diagnostics.insert(QStringLiteral("stageMilliseconds"), timings);
 
     return result;
+}
+
+catalog::FillResult fillRegion(const PenFillRequest &request, const QVector<catalog::Primitive> &primitives,
+    const FillOptions &options, const std::function<bool()> &cancelled,
+    const std::function<void(int, double, double)> &progress) {
+    return fitInObservationUnits(request, primitives, options, cancelled, progress,
+        [&](const PenFillRequest &workingRequest, const FillOptions &workingOptions,
+            const std::function<void(int, double, double)> &workingProgress) {
+            return fillInObservationUnits(workingRequest, primitives, workingOptions, cancelled, workingProgress);
+        });
 }
 
 } // namespace gui::compact

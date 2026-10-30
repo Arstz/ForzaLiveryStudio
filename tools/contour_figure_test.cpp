@@ -23,6 +23,33 @@ fls::scene::ContourFigure *figureIn(gui::EditorState &state) {
     return dynamic_cast<fls::scene::ContourFigure *>(state.sceneNode(QStringLiteral("contour")));
 }
 
+void multiplePathProperties() {
+    fls::Project project;
+    fls::scene::ensureProjectSceneRoot(project);
+    for (int index = 0; index < 2; ++index) {
+        auto figure = std::make_unique<fls::scene::ContourFigure>();
+        figure->id = QString::number(index);
+        figure->scaleX = 0.5 + index;
+        project.root->append(std::move(figure));
+    }
+    gui::EditorState state;
+    state.setProject(std::move(project));
+    state.setSelectedLayerIds({QStringLiteral("0"), QStringLiteral("1")});
+    gui::PropertyPanel properties(&state);
+    properties.setSelection({}, {}, {}, state.selectedContours());
+    auto *scale = properties.findChild<QDoubleSpinBox *>(QStringLiteral("property.scaleX"));
+    require(scale != nullptr && scale->isEnabled() && scale->value() == 1.0 && !scale->styleSheet().isEmpty(),
+            "multiple saved paths lost their mixed transform value");
+    scale->setValue(1.25);
+    require(state.sceneNode(QStringLiteral("0"))->scaleX == 0.75
+                && state.sceneNode(QStringLiteral("1"))->scaleX == 1.75,
+            "multiple saved-path edits did not preserve the transform difference");
+    state.undo();
+    require(state.sceneNode(QStringLiteral("0"))->scaleX == 0.5
+                && state.sceneNode(QStringLiteral("1"))->scaleX == 1.5,
+            "undo did not restore multiple saved-path transforms");
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -30,6 +57,7 @@ int main(int argc, char **argv) {
     QApplication application(argc, argv);
 
     try {
+        multiplePathProperties();
         fls::Project project;
         fls::scene::ensureProjectSceneRoot(project);
         auto group = std::make_unique<fls::scene::Group>();
@@ -76,6 +104,25 @@ int main(int argc, char **argv) {
         require(state.selectedContours().size() == 1, "selected contour cannot be edited in Properties");
         gui::PropertyPanel properties(&state);
         properties.setSelection({}, {}, {}, state.selectedContours());
+        auto *scaleX = properties.findChild<QDoubleSpinBox *>(QStringLiteral("property.scaleX"));
+        auto *scaleY = properties.findChild<QDoubleSpinBox *>(QStringLiteral("property.scaleY"));
+        auto *rotation = properties.findChild<QDoubleSpinBox *>(QStringLiteral("property.rotation"));
+        require(scaleX != nullptr && scaleY != nullptr && rotation != nullptr,
+                "saved-path transform fields are unavailable");
+        require(scaleX->isEnabled() && scaleY->isEnabled() && scaleX->value() == 1.0
+                    && scaleY->value() == 1.0 && rotation->value() == 14.0,
+                "saved-path Properties show stale transform values");
+        scaleX->setValue(0.75);
+        require(figureIn(state)->scaleX == 0.75 && figureIn(state)->scaleY == 1.0,
+                "saved-path scale edit did not reach the stored transform");
+        state.undo();
+        properties.setSelection({}, {}, {}, state.selectedContours());
+        require(scaleX->value() == 1.0, "undo did not restore the saved-path scale field");
+        figureIn(state)->scaleY = 1.25;
+        properties.refreshTransformFields();
+        require(scaleY->value() == 1.25, "live refresh skipped the saved-path transform");
+        figureIn(state)->scaleY = 1.0;
+        properties.refreshTransformFields();
         const std::array<quint8, 4> newColor{37, 61, 219, 255};
         properties.applyColorToSelection(newColor);
         require(figureIn(state)->data.fillColor == QColor(219, 61, 37), "Properties did not set the saved fill color");

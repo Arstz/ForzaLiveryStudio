@@ -84,6 +84,8 @@ Defaults are defined by `compact::FillOptions` in `compact_fit.h`:
 | `shapeBudget` | `3000` | Caller placement-count budget. |
 | `evaluationBudget` | `60000` | Refinement score-evaluation budget. |
 | `profileTrialBudget` | `0` | Automatic profile-search allocation. |
+| `adaptiveBudget` | `true` | Extend search in rounds according to complexity and measured progress. |
+| `timeBudgetMilliseconds` | `0` | Automatic time allowance; a positive value sets the search deadline. |
 | `retainFailedFill` | `false` | Retain available placements after a quality failure. |
 
 Geometric checks use triangle unions on a `1e-6` clipping grid and reconstructed
@@ -98,6 +100,56 @@ The solver can select a tighter outward allowance within the requested maximum.
 Stages share bounded work and retain feasible checkpoints. CPU and GPU trials
 contribute to the operation's work accounting. Progress reflects consumed work;
 setup and verification costs also depend on contour complexity.
+
+Adaptive refinement starts with 3,000 to 12,000 evaluations. Authored anchor count,
+holes, components and seed count increase the initial allowance and ceiling, up to the caller's
+`evaluationBudget`. Remaining work is issued in growing rounds on the same
+objective, caches and placement state. Lower verified shape count or improved
+incomplete coverage resets patience; two stalled rounds stop further extensions.
+A verified one-shape fit stops count search. The automatic search allowance ranges
+from 3 to 20 seconds. Deadlines are cooperative: an in-progress geometry operation
+and final output verification can finish after the allowance.
+
+Internal deadlines return the best verified checkpoint. Explicit user
+cancellation clears placements. For eligible contours, a bounded proposal search first fits a uniform 256-unit
+frame. CPU proposals use up to 6,000 evaluations and GPU proposals use up to 3,000.
+Mapped placements must pass the original region's complete checks; a bounded
+native-coordinate repair can adjust a failed proposal. A verified fit of one or
+two shapes returns early. Other proposals remain checkpoints while native search
+continues with the unused evaluation allowance. Proposal deadlines are separate
+from native refinement.
+
+A failed compact search reports its failed checks. Triangulated covers remain
+available to the diagnostic tool and are not substituted for Compact Fit output.
+Count regression checks constrain successful compact results independently of the
+general shape budget. Geometry validity alone does not establish a compact result.
+
+Extensions repair the current failures: exact boundary transforms address contour
+continuity and protected corners, while coverage repair addresses missing interior
+support. Progress includes constraint improvement as well as verified count
+reduction. Automatic profile seeding and refinement have separate time allowances;
+a stopped seed phase retains selected candidates for refinement. An explicit time
+allowance continues to bound the combined seed and refinement phases.
+
+Compact Fit searches in observation units, relative to the first contour anchor.
+Contour tolerances, coverage allowances, leeway, preferred coverage and supplied
+placements use the same coordinate conversion. Equivalent uniform changes of
+units require scaling all distance settings, including `observationScale` and
+the contour's boundary tolerance. Public distance and area measurements return
+in project units. `coordinateFrame` records the origin and observation unit;
+dimensionless scores and internal diagnostic coordinates remain in solver units.
+Returned placements receive native transform rounding and another coverage check
+in the original project coordinates. Coordinate conversion can change clipping-grid
+rounding. Conversion first tries bounded clearance adjustments, then repairs the
+existing placements in project coordinates within the unused work allowance.
+Conversion repair cannot increase the placement count.
+A bounded clearance adjustment can recover coverage lost during rounding; it
+must pass the complete original quality requirements.
+
+GPU refinement starts from substantially covered seeds and shares a bounded part
+of the repair allocation. Exact repair and
+count reduction continue under the remaining stage allocations after a feasible
+GPU result. Failed GPU attempts retain their consumed work in the shared budget.
 
 The GUI enables failed-fill retention: available Compact Fit placements can be
 inserted with a reported warning when verification fails. Headless callers use

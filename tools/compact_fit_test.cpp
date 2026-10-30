@@ -3,6 +3,9 @@
 #include "project_codec.h"
 #include "layer.h"
 #include "compact_fit.h"
+#include "compact_fit_coordinates.h"
+#include "compact_fit_constructive.h"
+#include <QThread>
 #include "contour_leeway.h"
 #include "profile_fit.h"
 #include "thin_fit.h"
@@ -16,8 +19,9 @@
 #include "greedy_cover.h"
 #include "matrix_math.h"
 #include "shape_registry.h"
+#include "polygon_mesh.h"
 
-#include <clipper2/clipper.engine.h>
+#include <clipper2/clipper.h>
 
 #include <QCoreApplication>
 #include <QDir>
@@ -392,6 +396,204 @@ gui::PenFillRequest readRequest(const QString &path) {
     require(!request.loops.isEmpty(), QStringLiteral("Replay log has no contour loops"));
 
     return request;
+}
+
+#include "compact_fit_constructive_benchmark.inc"
+#include "compact_fit_normalization_benchmark.inc"
+
+void requireApproximation(const gui::PenFillRequest &request, const gui::catalog::FillResult &result,
+                          const QVector<gui::catalog::Primitive> &catalog, const gui::compact::FillOptions &options);
+
+void adaptiveBudgetTests(const QVector<gui::catalog::Primitive> &primitives) {
+    using namespace gui::compact;
+    const auto simple = searchBudget(4, 0, 1, 2, 60000);
+    const auto complex = searchBudget(128, 8, 4, 120, 60000);
+    require(complex.maximumEvaluations > simple.maximumEvaluations && complex.milliseconds > simple.milliseconds,
+        QStringLiteral("Complexity did not increase the search allowance"));
+    require(searchBudget(128, 8, 4, 120, 400).maximumEvaluations == 400,
+        QStringLiteral("Adaptive search exceeded the caller ceiling"));
+    const gui::PenFillRequest rectangle{{}, {polygonLoop({{-40, -30}, {40, -30}, {40, 30}, {-40, 30}})}};
+    FillOptions options;
+    options.useGpu = false;
+    auto cover = constructiveCover(gui::catalog::buildRegion(rectangle, {}), primitives, options);
+    require(cover.fill.error.isEmpty() && verifyEmittedFill(rectangle, primitives, options, &cover),
+        QStringLiteral("Constructive checkpoint is invalid"));
+    options.initialPlacements = cover.fill.placements;
+    options.timeBudgetMilliseconds = 1;
+    options.workProgress = [](int, int, int) { QThread::msleep(2); };
+    auto timed = gui::compact::fillRegion(rectangle, primitives, options);
+    require(!timed.fill.cancelled && timed.fill.error.isEmpty()
+        && timed.fill.placements.size() <= cover.fill.placements.size()
+        && verifyEmittedFill(rectangle, primitives, options, &timed),
+        QStringLiteral("A time limit discarded the verified checkpoint"));
+    auto cancelled = gui::compact::fillRegion(rectangle, primitives, options, [] { return true; });
+    require(cancelled.fill.cancelled && cancelled.fill.placements.isEmpty(),
+        QStringLiteral("Explicit cancellation retained placements"));
+    options.workProgress = {};
+    options.timeBudgetMilliseconds = 0;
+    const auto fitted = gui::compact::fillRegion(rectangle, primitives, options);
+    require(fitted.fill.error.isEmpty() && fitted.fill.placements.size() == 1
+        && fitted.diagnostics.value("adaptiveSearch").toObject().value("stopReason").toString() == "one shape",
+        QStringLiteral("A verified one-shape fit did not stop search"));
+    const gui::PenFillRequest ring{{}, {polygonLoop({{-64,-64},{64,-64},{64,64},{-64,64}}),
+        polygonLoop({{-20,-20},{20,-20},{20,20},{-20,20}}, gui::PenLoopKind::Cutout)}};
+    const auto region = gui::catalog::buildRegion(ring, {});
+    auto ringCover = constructiveCover(region, primitives, options);
+    require(ringCover.fill.error.isEmpty(), ringCover.fill.error);
+    options.initialPlacements = ringCover.fill.placements;
+    options.evaluationBudget = 12000;
+    const auto continued = gui::compact::fillRegion(ring, primitives, options);
+    require(continued.fill.error.isEmpty() && continued.fill.placements.size() <= ringCover.fill.placements.size(),
+        QStringLiteral("Continued search regressed its verified checkpoint"));
+    const auto rounds = continued.diagnostics.value("adaptiveSearch").toObject().value("rounds").toArray();
+    require(!rounds.isEmpty(), QStringLiteral("Complex search did not extend its initial allowance"));
+    int previousEvaluations = 0;
+    for (const auto &value : rounds) {
+        const auto round = value.toObject();
+        const int evaluations = round.value("evaluations").toInt();
+        require(evaluations >= previousEvaluations && evaluations <= round.value("ceiling").toInt()
+            && evaluations <= options.evaluationBudget, QStringLiteral("Continued search reset or exceeded its work"));
+        previousEvaluations = evaluations;
+    }
+    options.shapeBudget = 1;
+    auto limited = constructiveCover(region, primitives, options);
+    require(!limited.fill.error.isEmpty() && limited.fill.placements.isEmpty(),
+        QStringLiteral("Constructive cover exceeded its shape allowance"));
+    FillOptions exhausted;
+    exhausted.evaluationBudget = 1;
+    exhausted.timeBudgetMilliseconds = 1;
+    const auto difficult = readRequest(QStringLiteral(FLS_SOURCE_DIR "/tools/fixtures/compact_fit_small_contour.json"));
+    const auto failed = gui::profile::fillRegion(difficult, primitives, exhausted);
+    require(!failed.fill.cancelled && !failed.fill.error.isEmpty() && failed.fill.placements.isEmpty(),
+        QStringLiteral("An exhausted compact search substituted a cover"));
+    require(!failed.diagnostics.contains("constructiveFallback") && !failed.diagnostics.contains("worldCoordinateFallback"),
+        QStringLiteral("Compact Fit reached a triangulated fallback"));
+    QTextStream(stdout) << "Adaptive complexity, checkpoint, deadline, cancellation and shape-limit checks passed\n";
+}
+
+void constructiveProductionCorpus(const QString &manifest, const QVector<gui::catalog::Primitive> &primitives, bool refine = false) {
+    QFile file(manifest);
+    require(file.open(QIODevice::ReadOnly), file.errorString());
+    const auto cases = QJsonDocument::fromJson(file.readAll()).array();
+    int failures = 0;
+    int automaticMeshSubstitutions = 0;
+    for (const auto &value : cases) {
+        const auto entry = value.toObject();
+        const auto request = readRequest(entry.value("request").toString());
+        gui::catalog::Region region;
+        bool canonical = false;
+        try { region = gui::catalog::buildRegion(request, {}); }
+        catch (...) { region = canonicalConstructiveRegion(request); canonical = true; }
+        QElapsedTimer timer;
+        timer.start();
+        auto result = refine ? gui::profile::fillRegion(request, primitives, gui::compact::FillOptions{})
+            : gui::compact::constructiveCover(region, primitives, {});
+        const bool verified = result.fill.error.isEmpty() && !result.fill.cancelled
+            && gui::compact::verifyEmittedRegion(region, primitives, {}, &result);
+        failures += !verified;
+        if (refine && (result.diagnostics.contains("constructiveFallback")
+            || result.diagnostics.value("worldCoordinateFallback").toBool()
+            || result.diagnostics.value("profileSeed").toObject().contains("constructionMode")))
+            ++automaticMeshSubstitutions;
+        QTextStream(stdout) << QJsonDocument(QJsonObject{{"case", entry.value("name")},
+            {"verified", verified}, {"count", result.fill.placements.size()}, {"ms", timer.elapsed()},
+            {"canonicalInput", canonical}, {"error", result.fill.error}, {"diagnostics", result.diagnostics}})
+            .toJson(QJsonDocument::Compact) << '\n' << Qt::flush;
+    }
+    if (!refine)
+        require(failures == 0, QStringLiteral("Production constructive corpus: %1 failures").arg(failures));
+    else
+        QTextStream(stdout) << "Compact results: " << cases.size() - failures << '/' << cases.size()
+            << " verified; " << failures << " failed; automatic mesh substitutions: "
+            << automaticMeshSubstitutions << '\n';
+    require(automaticMeshSubstitutions == 0, QStringLiteral("Compact corpus used a mesh substitution"));
+}
+
+void scaleConsistencyTests(const QVector<gui::catalog::Primitive> &primitives) {
+    const auto source = readRequest(QStringLiteral(FLS_SOURCE_DIR "/tools/fixtures/compact_fit_scale_consistency.json"));
+    for (bool useGpu : {false, true}) {
+        gui::compact::FillOptions referenceOptions;
+        referenceOptions.useGpu = useGpu;
+        const auto reference = gui::profile::fillRegion(source, primitives, referenceOptions);
+        requireApproximation(source, reference, primitives, referenceOptions);
+        require(reference.fill.error.isEmpty() && reference.diagnostics.value("approximationVerified").toBool(),
+            QStringLiteral("Scale-consistency reference failed: %1").arg(reference.fill.error));
+        QTextStream(stdout) << "Scale reference GPU=" << useGpu << " seed="
+            << reference.diagnostics.value("profileSeed").toObject().value("count").toInt()
+            << " final=" << reference.fill.placements.size() << '\n' << Qt::flush;
+        for (double factor : {0.125, 8.0}) {
+            auto request = source;
+            QTransform transform;
+            transform.translate(37 * factor, -53 * factor);
+            transform.scale(factor, factor);
+            for (auto &loop : request.loops)
+                for (auto &point : loop.points)
+                    gui::transformPenPoint(point, transform);
+            request.boundaryTolerance *= factor;
+            auto options = referenceOptions;
+            options.observationScale *= factor;
+            options.boundaryAllowance *= factor;
+            options.inwardAllowance *= factor;
+            const auto result = gui::profile::fillRegion(request, primitives, options);
+            requireApproximation(request, result, primitives, options);
+            QTextStream(stdout) << "Scale factor=" << factor << " GPU=" << useGpu << " seed="
+                << result.diagnostics.value("profileSeed").toObject().value("count").toInt()
+                << " final=" << result.fill.placements.size() << " error=" << result.fill.error << '\n' << Qt::flush;
+            require(result.fill.error.isEmpty() && result.diagnostics.value("approximationVerified").toBool(),
+                QStringLiteral("Scaled fill failed verification: %1").arg(result.fill.error));
+            require(result.fill.placements.size() == reference.fill.placements.size(),
+                QStringLiteral("Equivalent input units changed the shape count"));
+            for (int index = 0; index < reference.fill.placements.size(); ++index) {
+                const auto &expected = reference.fill.placements[index];
+                const auto &actual = result.fill.placements[index];
+                const auto restored = actual.transform * transform.inverted();
+                require(expected.shapeId == actual.shapeId,
+                    QStringLiteral("Equivalent input units changed the shape catalog choice"));
+                for (QPointF probe : {QPointF{}, QPointF{64, 0}, QPointF{0, 64}})
+                    require(QLineF(expected.transform.map(probe), restored.map(probe)).length() < 0.001,
+                        QStringLiteral("Equivalent input units changed a placement"));
+            }
+            require(result.diagnostics.value("evaluations") == reference.diagnostics.value("evaluations"),
+                QStringLiteral("Equivalent input units changed refinement work"));
+        }
+        if (useGpu && reference.diagnostics.value("gpuPipelineEvaluations").toInt() > 0)
+            require(reference.diagnostics.value("stageWork").toObject().value("spatialReduction")
+                    .toObject().value("evaluations").toInt() > 0,
+                QStringLiteral("GPU acceptance skipped count reduction"));
+        require(reference.fill.placements.size() == 2,
+            QStringLiteral("A combined Circle and Square retained redundant placements"));
+    }
+    const auto square = std::find_if(primitives.begin(), primitives.end(), [](const auto &primitive) {
+        return primitive.shape.shapeId == 101;
+    });
+    require(square != primitives.end(), QStringLiteral("Scale test requires a Square"));
+    for (double factor : {0.125, 1.0, 8.0}) {
+        QTransform transform;
+        transform.translate(37 * factor, -53 * factor);
+        transform.scale(factor, factor);
+        gui::PenFillRequest request{{}, {polygonLoop(transform.map(QPolygonF{{0, 0}, {100, 0}, {100, 100}, {0, 100}}))}};
+        request.boundaryTolerance *= factor;
+        gui::compact::FillOptions options;
+        options.observationScale = factor;
+        options.boundaryAllowance *= factor;
+        options.inwardAllowance *= factor;
+        options.evaluationBudget = 1200;
+        options.leeway = {transform.map(QPolygonF{{40, -10}, {60, -10}, {60, 110}, {40, 110}})};
+        gui::PenPlacement placement;
+        placement.shapeId = 101;
+        placement.transform.translate(50, 50);
+        placement.transform.scale(100 / square->shape.bounds.width(), 100 / square->shape.bounds.height());
+        placement.transform *= transform;
+        options.initialPlacements = {placement};
+        const auto result = gui::profile::fillRegion(request, {*square}, options);
+        require(result.fill.error.isEmpty() && result.fill.placements.size() == 1
+            && result.diagnostics.value("approximationVerified").toBool()
+            && result.diagnostics.value("boundaryQuality").toObject().value("components").toInt() == 2
+            && result.diagnostics.value("outsideEnvelope").toDouble() == 0.0,
+            QStringLiteral("Scale conversion changed supplied placements or occlusion geometry"));
+        require(std::abs(result.fill.targetArea / (factor * factor) - 8000) < 1e-4,
+            QStringLiteral("Scale conversion returned area in solver units"));
+    }
 }
 
 void auditCatalog(const gui::ShapeGeometryStore &geometry, const QString &destination) {
@@ -3265,6 +3467,31 @@ int main(int argc, char **argv) {
             ? gui::catalog::buildCatalog(geometry, &error)
             : gui::catalog::buildCatalog(geometry, configurationPath, &error);
         require(error.isEmpty(), error);
+        if (arguments.size() == 2 && arguments[1] == QStringLiteral("--adaptive-budget-tests")) {
+            adaptiveBudgetTests(fullCatalog);
+            return 0;
+        }
+        if (arguments.size() == 3 && (arguments[1] == QStringLiteral("--constructive-production-corpus")
+            || arguments[1] == QStringLiteral("--adaptive-production-corpus"))) {
+            constructiveProductionCorpus(arguments[2], fullCatalog, arguments[1] == QStringLiteral("--adaptive-production-corpus"));
+            return 0;
+        }
+        if (arguments.size() >= 3 && arguments[1] == QStringLiteral("--constructive-cover")) {
+            constructiveCoverBenchmark(arguments, fullCatalog);
+            return 0;
+        }
+        if (arguments.size() == 3 && arguments[1] == QStringLiteral("--normalization-verify")) {
+            verifyNormalizationPlacements(arguments[2], fullCatalog);
+            return 0;
+        }
+        if (arguments.size() >= 6 && arguments[1] == QStringLiteral("--normalization-benchmark")) {
+            normalizationBenchmark(arguments, fullCatalog);
+            return 0;
+        }
+        if (arguments.size() == 2 && arguments[1] == QStringLiteral("--scale-consistency-tests")) {
+            scaleConsistencyTests(fullCatalog);
+            return 0;
+        }
         if (arguments.size() == 2 && arguments[1] == QStringLiteral("--small-contour-tests")) {
             smallContourTests(fullCatalog);
             return 0;
@@ -3318,6 +3545,9 @@ int main(int argc, char **argv) {
                 QStringLiteral("Cubic contour repair left missing interior support or exceeded the envelope"));
             require(result.diagnostics.value("targetBoundary").toObject().value("protectedCorners").toInt()
                     == (cornered ? 24 : 18), QStringLiteral("Replay changed the protected corners"));
+            auto verifiedResult = result;
+            require(result.fill.error.isEmpty() && gui::compact::verifyEmittedFill(request, fullCatalog, options, &verifiedResult),
+                QStringLiteral("Cubic contour repair failed original-coordinate verification"));
             require(result.fill.placements.size() <= (cornered ? 151 : 174)
                 && result.diagnostics.value("evaluations").toInt() <= options.evaluationBudget,
                 QStringLiteral("Cubic contour repair exceeded its count or work allowance"));

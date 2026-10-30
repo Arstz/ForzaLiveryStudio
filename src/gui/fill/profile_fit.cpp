@@ -4,7 +4,10 @@
 #include "profile_fit_selection.h"
 #include "compact_fit_quality.h"
 #include "compact_fit_gpu_geometry.h"
+#include "compact_fit_coordinates.h"
+#include "compact_fit_budget.h"
 #include "greedy_cover.h"
+#include "cubic_contour.h"
 #include "thin_fit_spans.h"
 
 #include <algorithm>
@@ -2928,7 +2931,7 @@ catalog::FillResult buildSeed(const PenFillRequest &request, const QVector<catal
                                const compact::FillOptions &options, const std::function<bool()> &cancelled,
                                QVector<compact::ReusableCandidate> *reusable,
                                const catalog::Region *prepared = nullptr,
-                               const std::function<void(const QString &)> &phaseProgress = {}) {
+                               const std::function<void(const QString &)> &phaseProgress = {}, bool retainStoppedSeed = false) {
     catalog::FillResult result;
     QJsonObject timings;
     QElapsedTimer stageTimer;
@@ -3149,7 +3152,7 @@ catalog::FillResult buildSeed(const PenFillRequest &request, const QVector<catal
         }
         result.diagnostics.insert(QStringLiteral("selected"), selectedDetails);
         result.diagnostics.insert(QStringLiteral("shapeIds"), counts);
-        if (reusable && !stopped(cancelled)) {
+        if (reusable && (!stopped(cancelled) || retainStoppedSeed)) {
             reusable->reserve(pool.size());
             for (const auto &candidate : pool) {
                 reusable->push_back({candidate.placement, candidate.polygons, candidate.bounds});
@@ -3157,7 +3160,8 @@ catalog::FillResult buildSeed(const PenFillRequest &request, const QVector<catal
         }
         if (stopped(cancelled)) {
             result.fill.cancelled = true;
-            result.fill.placements.clear();
+            if (!retainStoppedSeed)
+                result.fill.placements.clear();
         }
     } catch (const std::exception &exception) {
         result.fill.error = QString::fromUtf8(exception.what());
@@ -3425,12 +3429,26 @@ catalog::FillResult seedRegion(const catalog::Region &region, const QVector<cata
     return buildSeed({}, primitives, options, cancelled, candidates, &region, phaseProgress);
 }
 
-static catalog::FillResult fillAttempt(const PenFillRequest &request, const QVector<catalog::Primitive> &primitives,
+static catalog::FillResult fillNativeAttempt(const PenFillRequest &request, const QVector<catalog::Primitive> &primitives,
                                const compact::FillOptions &options, const std::function<bool()> &cancelled,
                                const std::function<void(int, double, double)> &progress) {
     if (!options.initialPlacements.isEmpty()) {
         return compact::fillRegion(request, primitives, options, cancelled, progress);
     }
+    QElapsedTimer searchTimer;
+    searchTimer.start();
+    int vertices = request.points.size();
+    int holes = 0;
+    for (const auto &loop : request.loops) {
+        vertices += loop.points.size();
+        holes += loop.kind == PenLoopKind::Cutout;
+    }
+    const auto budget = compact::searchBudget(vertices, holes, 1, 0, options.evaluationBudget);
+    int timeBudget = options.timeBudgetMilliseconds > 0 ? options.timeBudgetMilliseconds
+        : options.adaptiveBudget && !options.seedOnly ? budget.milliseconds : 0;
+    const auto stopSeed = [&] {
+        return stopped(cancelled) || (timeBudget > 0 && searchTimer.elapsed() >= timeBudget);
+    };
     const int seedWork = std::max(1, options.evaluationBudget / 5);
     const int totalWork = options.evaluationBudget + seedWork;
     auto seedOptions = options;
@@ -3440,12 +3458,17 @@ static catalog::FillResult fillAttempt(const PenFillRequest &request, const QVec
         }
     };
     auto reusable = std::make_shared<QVector<compact::ReusableCandidate>>();
-    auto seed = buildSeed(request, primitives, seedOptions, cancelled, reusable.get());
-    if (!seed.fill.error.isEmpty() || seed.fill.cancelled) {
+    auto seed = buildSeed(request, primitives, seedOptions, stopSeed, reusable.get(), nullptr, {}, true);
+    if (stopped(cancelled)) {
+        seed.fill.cancelled = true;
+        seed.fill.placements.clear();
+
         return seed;
     }
-    if (seed.fill.placements.isEmpty()) {
-        seed.fill.error = QStringLiteral("Curve-first search could not construct a placement seed");
+    seed.fill.cancelled = false;
+    if (!seed.fill.error.isEmpty() || seed.fill.placements.isEmpty()) {
+        if (seed.fill.error.isEmpty())
+            seed.fill.error = QStringLiteral("Compact Fit profile search ended before a placement seed was available");
 
         return seed;
     }
@@ -3454,14 +3477,24 @@ static catalog::FillResult fillAttempt(const PenFillRequest &request, const QVec
     }
     if (options.seedOnly)
         return seed;
+    if (options.adaptiveBudget && options.timeBudgetMilliseconds == 0)
+        timeBudget = std::max(timeBudget, compact::searchBudget(vertices, holes,
+            std::max(1, static_cast<int>(request.loops.size()) - holes), seed.fill.placements.size(),
+            options.evaluationBudget).milliseconds);
     auto refinement = options;
     refinement.boundaryAllowance = seed.diagnostics.value(QStringLiteral("selectedBoundaryAllowance"))
         .toDouble(options.boundaryAllowance);
     refinement.initialPlacements = seed.fill.placements;
+    if (options.timeBudgetMilliseconds > 0)
+        refinement.timeBudgetMilliseconds = std::max(1, options.timeBudgetMilliseconds - static_cast<int>(searchTimer.elapsed()));
+    else if (timeBudget > 0)
+        refinement.timeBudgetMilliseconds = timeBudget;
     refinement.replacementCandidates = std::move(reusable);
+    int reportedRefinementWork = 0;
     refinement.workProgress = [&](int count, int evaluated, int) {
+        reportedRefinementWork = std::max(reportedRefinementWork, evaluated);
         if (options.workProgress) {
-            options.workProgress(count, seedWork + std::min(evaluated, options.evaluationBudget), totalWork);
+            options.workProgress(count, seedWork + std::min(reportedRefinementWork, options.evaluationBudget), totalWork);
         }
     };
     auto result = compact::fillRegion(request, primitives, refinement, cancelled, progress);
@@ -3485,10 +3518,139 @@ static catalog::FillResult fillAttempt(const PenFillRequest &request, const QVec
     return result;
 }
 
+static catalog::FillResult fillAttempt(const PenFillRequest &request, const QVector<catalog::Primitive> &primitives,
+    const compact::FillOptions &options, const std::function<bool()> &cancelled,
+    const std::function<void(int, double, double)> &progress) {
+    constexpr int kGpuProposalEvaluations = 3000;
+    constexpr int kCpuProposalEvaluations = 6000;
+    constexpr int kGpuProposalMilliseconds = 3000;
+    constexpr int kCpuProposalMilliseconds = 6000;
+#ifdef FLS_HAS_CUDA
+    const bool gpuProposal = options.useGpu;
+#else
+    constexpr bool gpuProposal = false;
+#endif
+    const int proposalEvaluations = gpuProposal ? kGpuProposalEvaluations : kCpuProposalEvaluations;
+    const int proposalMilliseconds = gpuProposal ? kGpuProposalMilliseconds : kCpuProposalMilliseconds;
+    constexpr double kProposalExtent = 256.0;
+    constexpr double kProposalTolerance = 0.1;
+    constexpr int kLowShapeCount = 2;
+    int anchors = request.points.size();
+    for (const auto &loop : request.loops)
+        anchors += loop.points.size();
+    if (!options.adaptiveBudget || options.seedOnly || options.thinRegion || options.thinRegionQuality
+        || !options.initialPlacements.isEmpty() || anchors <= 4
+        || options.evaluationBudget < proposalEvaluations * 2 + compact::kInitialSearchWork || options.timeBudgetMilliseconds > 0)
+        return fillNativeAttempt(request, primitives, options, cancelled, progress);
+    catalog::FillResult checkpoint;
+    QJsonObject proposalDiagnostics;
+    try {
+        const auto region = catalog::buildRegion(request, cancelled);
+        const double extent = std::max(region.bounds.width(), region.bounds.height());
+        const double scale = kProposalExtent / extent;
+        const QTransform normalize(scale, 0, 0, scale,
+            -region.bounds.center().x() * scale, -region.bounds.center().y() * scale);
+        const auto restore = normalize.inverted();
+        auto working = request;
+        const auto mapPoints = [&](QVector<PenPoint> &points) {
+            materializePenHandles(points);
+            for (auto &point : points)
+                transformPenPoint(point, normalize);
+        };
+        mapPoints(working.points);
+        for (auto &loop : working.loops)
+            mapPoints(loop.points);
+        working.boundaryTolerance = kProposalTolerance;
+        auto proposalOptions = options;
+        proposalOptions.adaptiveBudget = false;
+        proposalOptions.evaluationBudget = proposalEvaluations;
+        proposalOptions.timeBudgetMilliseconds = proposalMilliseconds;
+        proposalOptions.retainFailedFill = true;
+        proposalOptions.workProgress = {};
+        proposalOptions.replacementCandidates.reset();
+        for (auto &polygon : proposalOptions.leeway)
+            polygon = normalize.map(polygon);
+        for (auto &polygon : proposalOptions.thinPreferredCoverage)
+            polygon = normalize.map(polygon);
+        auto proposal = fillNativeAttempt(working, primitives, proposalOptions, cancelled, {});
+        proposalDiagnostics.insert(QStringLiteral("search"), proposal.diagnostics);
+        proposalDiagnostics.insert(QStringLiteral("searchError"), proposal.fill.error);
+        proposalDiagnostics.insert(QStringLiteral("searchCount"), proposal.fill.placements.size());
+        for (auto &placement : proposal.fill.placements)
+            placement.transform = catalog::emittedTransform(placement.transform * restore);
+        if (!proposal.fill.placements.isEmpty() && !stopped(cancelled)) {
+            bool verified = compact::verifyEmittedRegion(region, primitives, options, &proposal);
+            if (!verified) {
+                auto repair = options;
+                repair.initialPlacements = proposal.fill.placements;
+                repair.adaptiveBudget = false;
+                repair.evaluationBudget = proposalEvaluations;
+                repair.timeBudgetMilliseconds = proposalMilliseconds;
+                repair.shapeBudget = std::min(options.shapeBudget, static_cast<int>(repair.initialPlacements.size()));
+                repair.workProgress = {};
+                proposal = compact::fillRegion(request, primitives, repair, cancelled);
+                proposalDiagnostics.insert(QStringLiteral("repair"), proposal.diagnostics);
+                proposalDiagnostics.insert(QStringLiteral("repairError"), proposal.fill.error);
+                verified = proposal.fill.error.isEmpty() && !proposal.fill.cancelled
+                    && compact::verifyEmittedRegion(region, primitives, options, &proposal);
+            }
+            if (verified) {
+                proposal.fill.error.clear();
+                proposal.diagnostics.insert(QStringLiteral("normalizedProposal"), QJsonObject{
+                    {QStringLiteral("extent"), kProposalExtent},
+                    {QStringLiteral("evaluationAllowance"), proposalEvaluations * 2},
+                    {QStringLiteral("verifiedInOriginalRegion"), true}});
+                checkpoint = std::move(proposal);
+            }
+        }
+    } catch (const std::exception &error) {
+        proposalDiagnostics.insert(QStringLiteral("error"), QString::fromUtf8(error.what()));
+    }
+    if (!checkpoint.fill.placements.isEmpty() && checkpoint.fill.placements.size() <= kLowShapeCount) {
+        if (options.workProgress) {
+            const int totalWork = options.evaluationBudget + std::max(1, options.evaluationBudget / 5);
+            options.workProgress(checkpoint.fill.placements.size(), totalWork, totalWork);
+        }
+        if (progress)
+            progress(checkpoint.fill.placements.size(), checkpoint.fill.targetArea - checkpoint.fill.coveredArea,
+                checkpoint.fill.outsideArea);
+
+        return checkpoint;
+    }
+    auto remaining = options;
+    remaining.evaluationBudget -= proposalEvaluations * 2;
+    const auto originalWorkProgress = options.workProgress;
+    remaining.workProgress = [&](int count, int evaluated, int) {
+        if (originalWorkProgress) {
+            const int totalWork = options.evaluationBudget + std::max(1, options.evaluationBudget / 5);
+            originalWorkProgress(count, std::min(totalWork, evaluated + proposalEvaluations * 2), totalWork);
+        }
+    };
+    auto result = fillNativeAttempt(request, primitives, remaining, cancelled, progress);
+    result.diagnostics.insert(QStringLiteral("proposalSearch"), proposalDiagnostics);
+    if (options.workProgress && !result.fill.cancelled) {
+        const int totalWork = options.evaluationBudget + std::max(1, options.evaluationBudget / 5);
+        options.workProgress(result.fill.placements.size(), totalWork, totalWork);
+    }
+    if (!stopped(cancelled) && !result.fill.cancelled && !checkpoint.fill.placements.isEmpty()
+        && (!result.fill.error.isEmpty() || result.fill.placements.size() > checkpoint.fill.placements.size()))
+        result = std::move(checkpoint);
+
+    return result;
+}
+
 catalog::FillResult fillRegion(const PenFillRequest &request, const QVector<catalog::Primitive> &primitives,
                                const compact::FillOptions &options, const std::function<bool()> &cancelled,
                                const std::function<void(int, double, double)> &progress) {
-    auto result = fillAttempt(request, primitives, options, cancelled, progress);
+    auto result = compact::fitInObservationUnits(request, primitives, options, cancelled, progress,
+        [&](const PenFillRequest &workingRequest, const compact::FillOptions &workingOptions,
+            const std::function<void(int, double, double)> &workingProgress) {
+            return fillAttempt(workingRequest, primitives, workingOptions, cancelled, workingProgress);
+        });
+    if (stopped(cancelled)) {
+        result.fill.cancelled = true;
+        result.fill.placements.clear();
+    }
     const double allowance = result.diagnostics.value(QStringLiteral("boundaryAllowance"))
         .toDouble(options.boundaryAllowance);
     result.diagnostics.insert(QStringLiteral("requestedBoundaryAllowance"), options.boundaryAllowance);
