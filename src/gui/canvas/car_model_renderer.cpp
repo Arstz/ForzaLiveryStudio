@@ -1734,29 +1734,11 @@ LiveryProjectionData buildLiveryProjectionData(
     return projection;
 }
 
-bool transposedLiverySide(int sideIndex) {
-    return sideIndex == 5 || sideIndex == 6 || sideIndex == 7;
-}
-
 QPointF liverySectionPoint(const fls::LiverySide &side,
                            int sideIndex,
                            const QPointF &maskCanvasPoint) {
-    const bool transpose = transposedLiverySide(sideIndex);
-    double x = transpose
-        ? maskCanvasPoint.y() - side.yOrigin
-        : maskCanvasPoint.x() - side.xOrigin;
-    double y = transpose
-        ? maskCanvasPoint.x() - side.xOrigin
-        : maskCanvasPoint.y() - side.yOrigin;
-    if (sideIndex == 4 || sideIndex == 6
-        || sideIndex == 7 || sideIndex == 10) {
-        x = -x;
-    }
-    if (sideIndex == 4 || sideIndex == 7 || sideIndex == 10) {
-        y = -y;
-    }
 
-    return QPointF(x, y);
+    return liveryMaskToSectionTransform(side, sideIndex).map(maskCanvasPoint);
 }
 
 QPainterPath liveryCoveragePath(const fls::LiverySide &side,

@@ -383,7 +383,8 @@ void ProjectCanvas::applyWorldTransformToDragItems(const QTransform &worldTransf
 
 void ProjectCanvas::applyMoveDrag(const QPointF &screenPoint, Qt::KeyboardModifiers modifiers) {
     updateCursorForPoint(screenPoint);
-    const QPointF delta = constrainDelta(screenToWorld(screenPoint) - drag_.startWorld, modifiers);
+    const QPointF delta = snappedMoveDelta(
+        constrainDelta(screenToWorld(screenPoint) - drag_.startWorld, modifiers), modifiers);
     applyWorldTransformToDragItems(QTransform::fromTranslate(delta.x(), delta.y()));
     setCursorHint(screenPoint, {QStringLiteral("X: %1").arg(formatHintNumber(delta.x())),
                                 QStringLiteral("Y: %1").arg(formatHintNumber(delta.y()))});
@@ -738,6 +739,11 @@ void ProjectCanvas::applyScaleDrag(const QPointF &screenPoint, Qt::KeyboardModif
         sy = s;
     }
 
+    const QPointF factors = snappedScaleFactors(QPointF(sx, sy), anchorLocal,
+                                                axes.left || axes.right, axes.top || axes.bottom, uniform);
+    sx = factors.x();
+    sy = factors.y();
+
     QTransform localScale;
     localScale.translate(anchorLocal.x(), anchorLocal.y());
     localScale.scale(sx, sy);
@@ -928,6 +934,9 @@ void ProjectCanvas::resetDragState() {
     drag_.guides.clear();
     drag_.groupIds.clear();
     drag_.groupStartFrames.clear();
+    drag_.snapOutlines.clear();
+    drag_.snapTargets = {};
+    drag_.snapIndicators.clear();
     updateCursorForPoint(mapFromGlobal(QCursor::pos()));
     update();
 }

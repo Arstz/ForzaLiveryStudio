@@ -110,6 +110,7 @@ private:
     int activeLiverySectionSlot() const;
     void updateCarUnwrapOverlay();
     void exportDialog();
+    void exportProjectSvgDialog();
     bool exportFolderImpl(const QString &folder, fls::ExportGameVersion game, QString *error,
                           const fls::WgsExportTarget *wgsTarget = nullptr);
     void setTargetCarDialog();

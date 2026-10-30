@@ -454,6 +454,15 @@ bool ProjectCanvas::moveToolAutoSelect() const {
     return options_.moveToolAutoSelect;
 }
 
+void ProjectCanvas::setAutomaticSnapping(bool enabled) {
+    if (options_.automaticSnapping == enabled) {
+        return;
+    }
+    options_.automaticSnapping = enabled;
+    drag_.snapIndicators.clear();
+    update();
+}
+
 void ProjectCanvas::setPipetteAutoReturn(bool enabled) {
     options_.pipetteAutoReturn = enabled;
 }

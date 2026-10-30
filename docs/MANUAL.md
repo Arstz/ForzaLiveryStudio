@@ -18,6 +18,8 @@ Save your work as a `.3so` project via `File->Save Project`, and reopen it with 
 
 Exporting the project is done with `File->Export`, select the destination folder, game and format. Supported games are FH2–FH6, FM5–FM7 and Motorsport 2023. The export folder is named according to project metadata. If a livery fails to load ingame on an older title (endless Saving...), exit the game, delete the livery from the folder, ungroup all and export again.
 
+Use `File->Export project to SVG` to save the project's vector shapes as separate SVG elements with flattened transforms and no groups, raster logos will be discarded. To export livery load the car model first, the SVG will match the UV unwrap.
+
 ### Metadata
 
 Metadata is located in `Header` widget, it will be loaded from the imported assets or created by default on new project with the creator name last used. The file would be exported as a local instance, to publish you would need to re-save it ingame and publish with Forza itself. All fields are reactive, car is changed via the button.
@@ -58,7 +60,7 @@ Select multiple shapes intersecting a rectangle on left click and drag. This is 
 
 ### Move
 
-This tool is used, well, to move current selection. You can toggle autoselection via `Tool Settings->Auto Select`. Dragging inside the current selection moves it. With Auto Select disabled you can drag the selection from anywhere, otherwise clicking outside it can select another shape or group.
+This tool is used, well, to move current selection. You can toggle autoselection via `Tool Settings->Auto Select`. Dragging inside the current selection moves it. With Auto Select disabled you can drag the selection from anywhere, otherwise clicking outside it can select another shape or group. `Tool Settings->Automatic snapping` aligns geometry edges and centers with nearby visible guidelines and enables contour contact and axis alignment with other visible shapes in the active section. This option is enabled by default and shared with Transform.
 
 ### Rotate
 
@@ -70,7 +72,7 @@ These tools are opt-in via `Settings` widget, used to control opacity and skew b
 
 ### Transform
 
-All in one tool to move, rotate, scale and skew the selection. Applying `Shift` causes the scale to be uniform, rotate to snap 15 degree intervals. Scaling with `Alt` held would pin the selection.
+All in one tool to move, rotate, scale and skew the selection. Applying `Shift` causes the scale to be uniform, rotate to snap 15 degree intervals. Scaling with `Alt` held would pin the selection. `Tool Settings->Automatic snapping` applies here as well.
 
 ### Pipette
 
@@ -85,6 +87,8 @@ Choose Analytical or Compact from `Tool Settings->Mode`. Pen and Bucket use the 
 With a closed Pen contour in Compact mode, `Alt` + click a group in Layers to mark it as leeway. The fill can continue underneath it and will be inserted below that group.
 
 Saved Pen and Lining paths appear in `Layers`. Use `Edit->Save Pen or Lining Path as Figure` to save the active path, then select it to resume editing. `Properties->Color` changes its outline and fill color. Each tool has its own `Tool Settings->Save Path` checkbox, off by default. Pen saves on contour closure; Lining saves when the line is finished.
+
+>Compact fit works best on big contours with least amount of points, sometimes it might be worth to trace the contour manually
 
 ### Bucket
 

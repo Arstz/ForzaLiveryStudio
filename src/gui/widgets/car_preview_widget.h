@@ -14,6 +14,7 @@
 
 #include <functional>
 #include <memory>
+#include <optional>
 
 class QTemporaryDir;
 class QButtonGroup;
@@ -46,6 +47,7 @@ public:
     QImage renderThumbnail(const QSize &size);
 
     CarUnwrapOverlay unwrapOverlay(int liverySectionSlot = -1) const;
+    std::optional<QTransform> liverySectionToAtlasTransform(int liverySectionSlot) const;
     void setSectionWireframeVisible(bool visible);
     void setCarUnwrapSection(int liverySectionSlot);
 

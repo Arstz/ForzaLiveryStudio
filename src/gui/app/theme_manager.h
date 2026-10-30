@@ -40,6 +40,7 @@ enum class ContourFillMode {
 
 inline constexpr int kDefaultBucketTolerance = 16;
 inline constexpr double kDefaultLiningOutsideMargin = 0.5;
+inline constexpr bool kDefaultAutomaticSnapping = true;
 
 struct BehaviorSettings {
     bool insertShapeWithLastSelectedColor = true;
@@ -52,6 +53,7 @@ struct BehaviorSettings {
     double liningOutsideMargin = kDefaultLiningOutsideMargin;
     bool showPropertyDebug = false;
     bool moveToolAutoSelect = false;
+    bool automaticSnapping = kDefaultAutomaticSnapping;
     bool pipetteAutoReturn = true;
     bool selectionFlashEnabled = true;
     bool displayAnchorsDuringTransformDrag = true;

@@ -378,6 +378,8 @@ void MainWindow::setupFileMenu() {
                  QStringLiteral("import_guide_layer"), QStringLiteral("Import Guide Layer"), &MainWindow::importGuideLayerDialog);
     addIconEntry(QStringLiteral("MenuExportFlat.xpm"), QStringLiteral("&Export..."),
                  QStringLiteral("export"), QStringLiteral("Export"), &MainWindow::exportDialog);
+    addShortcutEntry(QStringLiteral("Export project to SVG..."), QStringLiteral("export_project_svg"),
+                     QStringLiteral("Export project to SVG"), &MainWindow::exportProjectSvgDialog);
     fileMenu->addSeparator();
     addIconEntry(QStringLiteral("MenuExit.xpm"), QStringLiteral("E&xit"),
                  QStringLiteral("exit"), QStringLiteral("Exit"), &QWidget::close);
@@ -900,6 +902,7 @@ void MainWindow::applyBehaviorSettings(const BehaviorSettings &settings, bool sa
     }
     if (canvas_ != nullptr) {
         canvas_->setMoveToolAutoSelect(settings.moveToolAutoSelect);
+        canvas_->setAutomaticSnapping(settings.automaticSnapping);
         canvas_->setPipetteAutoReturn(settings.pipetteAutoReturn);
         canvas_->setSelectionFlashEnabled(settings.selectionFlashEnabled);
         canvas_->setDisplayAnchorsDuringTransformDrag(settings.displayAnchorsDuringTransformDrag);

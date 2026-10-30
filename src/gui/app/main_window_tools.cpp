@@ -46,6 +46,7 @@ struct ToolFlag {
 
 const auto kToolFlags = std::to_array<ToolFlag>({
     {"moveToolAutoSelect", "toggle_move_auto_select", "Move: Auto Select", &BehaviorSettings::moveToolAutoSelect},
+    {"automaticSnapping", "toggle_automatic_snapping", "Automatic snapping", &BehaviorSettings::automaticSnapping},
     {"selectionFlashEnabled", "toggle_selection_flash", "Select: Selection Flash", &BehaviorSettings::selectionFlashEnabled},
     {"pipetteAutoReturn", "toggle_pipette_auto_return", "Pipette: Auto Return", &BehaviorSettings::pipetteAutoReturn},
     {"autoSavePenPaths", "toggle_auto_save_pen_paths", "Pen: Save Path", &BehaviorSettings::autoSavePenPaths},

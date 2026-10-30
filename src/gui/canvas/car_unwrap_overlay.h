@@ -4,10 +4,21 @@
 
 #include <QHash>
 #include <QPainterPath>
+#include <QTransform>
 
 #include <array>
 
 namespace gui {
+
+inline QTransform liveryMaskToSectionTransform(const fls::LiverySide &side, int sideIndex) {
+    const bool transpose = sideIndex == 5 || sideIndex == 6 || sideIndex == 7;
+    const double xSign = sideIndex == 4 || sideIndex == 6 || sideIndex == 7 || sideIndex == 10 ? -1.0 : 1.0;
+    const double ySign = sideIndex == 4 || sideIndex == 7 || sideIndex == 10 ? -1.0 : 1.0;
+
+    return transpose
+        ? QTransform(0.0, ySign, xSign, 0.0, -xSign * side.yOrigin, -ySign * side.xOrigin)
+        : QTransform(xSign, 0.0, 0.0, ySign, -xSign * side.xOrigin, -ySign * side.yOrigin);
+}
 
 struct CarUnwrapSide {
     QPainterPath path;

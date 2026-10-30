@@ -182,6 +182,9 @@ BehaviorSettings loadBehaviorSettings() {
     result.liningOutsideMargin = std::clamp(result.liningOutsideMargin, 0.0, 2.0);
     result.showPropertyDebug = settings.value(QStringLiteral("ui/behavior/showPropertyDebug"), result.showPropertyDebug).toBool();
     result.moveToolAutoSelect = settings.value(QStringLiteral("ui/behavior/moveToolAutoSelect"), result.moveToolAutoSelect).toBool();
+    const bool previousSnapping = settings.value(QStringLiteral("ui/behavior/snapToGuidelines"), result.automaticSnapping).toBool()
+        || settings.value(QStringLiteral("ui/behavior/snapToShapes"), result.automaticSnapping).toBool();
+    result.automaticSnapping = settings.value(QStringLiteral("ui/behavior/automaticSnapping"), previousSnapping).toBool();
     result.pipetteAutoReturn = settings.value(
         QStringLiteral("ui/behavior/pipetteAutoReturn"), result.pipetteAutoReturn).toBool();
     result.selectionFlashEnabled = settings.value(QStringLiteral("ui/behavior/selectionFlashEnabled"), result.selectionFlashEnabled).toBool();
@@ -252,6 +255,9 @@ void saveBehaviorSettings(const BehaviorSettings &settings) {
     qsettings.setValue(QStringLiteral("ui/behavior/liningOutsideMargin"), settings.liningOutsideMargin);
     qsettings.setValue(QStringLiteral("ui/behavior/showPropertyDebug"), settings.showPropertyDebug);
     qsettings.setValue(QStringLiteral("ui/behavior/moveToolAutoSelect"), settings.moveToolAutoSelect);
+    qsettings.setValue(QStringLiteral("ui/behavior/automaticSnapping"), settings.automaticSnapping);
+    qsettings.remove(QStringLiteral("ui/behavior/snapToGuidelines"));
+    qsettings.remove(QStringLiteral("ui/behavior/snapToShapes"));
     qsettings.remove(QStringLiteral("ui/behavior/allowMoveOutsideBoundingBox"));
     qsettings.setValue(QStringLiteral("ui/behavior/pipetteAutoReturn"), settings.pipetteAutoReturn);
     qsettings.setValue(QStringLiteral("ui/behavior/selectionFlashEnabled"), settings.selectionFlashEnabled);

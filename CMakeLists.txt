@@ -219,6 +219,7 @@ qt_add_library(fls_editor_ui STATIC
     src/gui/app/main_window_internal.h
     src/gui/app/main_window_edit.cpp
     src/gui/app/main_window_io.cpp
+    src/gui/app/main_window_svg_export.cpp
     src/gui/app/main_window_project.cpp
     src/gui/app/main_window_ui.cpp
     src/gui/app/main_window_tools.cpp
@@ -293,6 +294,9 @@ qt_add_library(fls_editor_ui STATIC
     src/gui/canvas/project_canvas_internal.h
     src/gui/canvas/selection_geometry.cpp
     src/gui/canvas/selection_geometry.h
+    src/gui/canvas/geometry_snap.cpp
+    src/gui/canvas/geometry_snap.h
+    src/gui/canvas/project_canvas_snapping.cpp
     src/gui/canvas/project_canvas_hit.cpp
     src/gui/canvas/project_canvas_drag.cpp
     src/gui/canvas/project_canvas_cursor.cpp

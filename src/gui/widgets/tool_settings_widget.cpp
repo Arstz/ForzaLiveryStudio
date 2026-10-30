@@ -20,6 +20,8 @@ ToolSettingsWidget::ToolSettingsWidget(QWidget *parent) : QWidget(parent) {
     layout_->setSpacing(kOptionSpacing);
     addNumber(QStringLiteral("bucketTolerance"), QStringLiteral("Tolerance"), 0, 255, 0, 1, {QStringLiteral("bucket")});
     addCheck(QStringLiteral("moveToolAutoSelect"), QStringLiteral("Auto Select"), {QStringLiteral("move")});
+    addCheck(QStringLiteral("automaticSnapping"), QStringLiteral("Automatic snapping"),
+             {QStringLiteral("move"), QStringLiteral("transform")});
     const QStringList selectionTools{QStringLiteral("select"), QStringLiteral("marquee")};
     addCheck(QStringLiteral("selectionFlashEnabled"), QStringLiteral("Selection Flash"), selectionTools);
     addCheck(QStringLiteral("selectShapesByBoundingBox"), QStringLiteral("Pick by bounding box"), selectionTools);

@@ -299,6 +299,7 @@ bool ProjectCanvas::startToolDrag(const QPointF &screenPoint, Qt::KeyboardModifi
             }
         }
         captureDragStarts();
+        captureDragSnapGeometry();
         if (!drag_.usesProjectEdit) {
             state_->beginTransformCommand(dragTransformTargetIds());
         }

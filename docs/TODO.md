@@ -1,9 +1,9 @@
 Small changes:
+    -State corruption on paste to empty section
 
 Medium changes:
 
 Big changes:
-    -Move header setting to a proper export menu
     -Color aware point snapping for Pen contours
 
 Manual tasks:

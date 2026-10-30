@@ -806,6 +806,7 @@ void ProjectCanvas::drawOverlay(QPainter &painter) {
     drawContourFigures(painter);
     drawPenOverlay(painter);
     drawLiningOverlay(painter);
+    drawSnapIndicators(painter);
     drawCursorHint(painter);
     painter.restore();
 }

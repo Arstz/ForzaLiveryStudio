@@ -6,6 +6,14 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
+$buildSearchPath = [Environment]::GetEnvironmentVariable("PATH", "Process")
+if ($null -ne $buildSearchPath) {
+    do {
+        [Environment]::SetEnvironmentVariable("PATH", $null, "Process")
+    } while ($null -ne [Environment]::GetEnvironmentVariable("PATH", "Process"))
+    [Environment]::SetEnvironmentVariable("Path", $buildSearchPath, "Process")
+}
+
 $buildProgressLineWidth = 99
 try {
     $buildProgressLineWidth = [Math]::Max(72, $Host.UI.RawUI.WindowSize.Width - 1)
@@ -120,7 +128,7 @@ try {
     $buildStatus = "Compiled $compiledCppCount/$cppFileTotal C++ files"
     Write-BuildProgress -Percent $buildPercent -Status $buildStatus
     $ErrorActionPreference = "Continue"
-    cmake --build build --config Release --parallel $parallelThreads 2>&1 | ForEach-Object {
+    cmake --build build --config Release --parallel $parallelThreads -- /nodeReuse:false 2>&1 | ForEach-Object {
         $line = $_.ToString()
         if ($line -match '^\s+.*\.cpp\s*$') {
             $compiledCppCount = [Math]::Min(

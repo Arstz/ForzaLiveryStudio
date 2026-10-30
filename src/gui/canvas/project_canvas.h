@@ -5,6 +5,7 @@
 #include "svg_vector_objects.h"
 #include "car_unwrap_overlay.h"
 #include "canvas_camera.h"
+#include "geometry_snap.h"
 #include "core_types.h"
 #include "layer.h"
 #include "lining_fill.h"
@@ -66,6 +67,7 @@ public:
     void setBucketToleranceChangedCallback(std::function<void(int)> callback);
     void setMoveToolAutoSelect(bool enabled);
     bool moveToolAutoSelect() const;
+    void setAutomaticSnapping(bool enabled);
     void setPipetteAutoReturn(bool enabled);
     void setSelectionFlashEnabled(bool enabled);
     bool selectionFlashEnabled() const;
@@ -306,6 +308,9 @@ private:
         QHash<QString, EntryStart> starts;
         QHash<QString, EntryStart> guideStarts;
         QHash<QString, QTransform> groupStartFrames;
+        QVector<GeometrySnapOutline> snapOutlines;
+        GeometrySnapTargets snapTargets;
+        QVector<GeometrySnapIndicator> snapIndicators;
         QVector<fls::scene::Shape *> layers;
         QVector<fls::scene::ContourFigure *> contours;
         QVector<fls::scene::GuideLayer *> guides;
@@ -381,6 +386,7 @@ private:
         QSize borderResolution = kDefaultVisibilityBorderResolution;
         bool transformRelativeMode = false;
         bool moveToolAutoSelect = false;
+        bool automaticSnapping = kDefaultAutomaticSnapping;
         bool pipetteAutoReturn = true;
         bool displayAnchorsDuringTransformDrag = true;
         bool separateSelectAndMarqueeTools = false;
@@ -421,6 +427,7 @@ private:
     QVector<fls::scene::Shape *> selectedLayers() const;
     QVector<fls::scene::GuideLayer *> selectedGuideLayers() const;
     void captureDragStarts();
+    void captureDragSnapGeometry();
     void collectDragGroups(QVector<QString> &groupIds,
                            QHash<QString, QTransform> &startFrames,
                            QSet<QString> &groupedLayerIds,
@@ -431,10 +438,14 @@ private:
     bool startToolDrag(const QPointF &screenPoint, Qt::KeyboardModifiers modifiers);
     void beginRotateDrag(const QPointF &boxCenterWorld);
     void applyMoveDrag(const QPointF &screenPoint, Qt::KeyboardModifiers modifiers);
+    QPointF snappedMoveDelta(const QPointF &delta, Qt::KeyboardModifiers modifiers);
     bool nudgeSelection(const QPointF &delta);
     bool applyAlignDistribute(const std::function<QVector<QPointF>(const QVector<QRectF> &)> &computeDeltas,
                               bool descendSoleGroup = false);
     void applyScaleDrag(const QPointF &screenPoint, Qt::KeyboardModifiers modifiers);
+    QPointF snappedScaleFactors(const QPointF &factors, const QPointF &anchorLocal, bool scaleX, bool scaleY,
+                                bool uniform);
+    void drawSnapIndicators(QPainter &painter) const;
     void applySkewDrag(const QPointF &screenPoint);
     void applyOpacityDrag(const QPointF &screenPoint);
     void applyDragTransform(const QTransform &transform, bool preMultiply);

@@ -1592,6 +1592,23 @@ CarUnwrapOverlay CarPreviewWidget::unwrapOverlay(int liverySectionSlot) const {
     return overlay;
 }
 
+std::optional<QTransform> CarPreviewWidget::liverySectionToAtlasTransform(int liverySectionSlot) const {
+    if (modelLoadPending_ || !hasModel() || !liveryMasks_.valid()
+        || liverySectionSlot < 0 || liverySectionSlot >= fls::kLiverySideCount) {
+        return std::nullopt;
+    }
+    const int maskSlot = kLiverySectionMaskSlots[liverySectionSlot];
+    const fls::LiverySide &side = liveryMasks_.sides[maskSlot];
+    const QTransform maskToAtlas(1.0, 0.0, 0.0, -1.0,
+                                 fls::kLiveryCanvasHalfWidth, fls::kLiveryCanvasHalfHeight);
+
+    if (!side.valid || !side.mask.valid()) {
+        return std::nullopt;
+    }
+
+    return liveryMaskToSectionTransform(side, maskSlot).inverted() * maskToAtlas;
+}
+
 void CarPreviewWidget::setSectionWireframeVisible(bool visible) {
     if (carRenderer_.wireframeVisible() == visible) {
         return;

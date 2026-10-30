@@ -116,6 +116,14 @@ canvas, layer model, and preview. Reparenting preserves world placement through
 recalculated local transforms. Authored visibility is stored independently of
 active-section isolation.
 
+Move and resize snapping cache scene outlines at drag start. `geometry_snap.*`
+indexes stationary contour segments and geometry alignment coordinates. Drag
+corrections are measured in canvas pixels and solved within the active movement
+or scale constraints, using each selected leaf's transformed geometry. The solver
+returns active alignment and contact indicators with the correction; the canvas
+draws this feedback during the drag. One persisted Automatic snapping option
+controls both shape and guideline snapping.
+
 The `.3so` container is gzip-compressed scene-tree JSON, currently document
 version 4. Project serialization includes guides, figures, swatches, retained
 header data, and livery paint state. Autosave writes associated projects; locked
