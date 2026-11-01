@@ -55,13 +55,12 @@ void ProjectCanvas::drawContourFigures(QPainter &painter) {
     painter.setRenderHint(QPainter::Antialiasing, true);
     painter.setBrush(Qt::NoBrush);
     for (const SceneRenderEntry &entry : state_->renderEntries()) {
-        if (entry.kind != fls::scene::LayerKind::Contour || !isSectionActive(entry.sectionGroupId)
-            || (entry.nodeId == pathFigureId_ && (pathFigureKind_ == fls::scene::ContourPathKind::Lining
+        if (!fls::scene::isContourGeometry(entry.kind) || !isSectionActive(entry.sectionGroupId)
+            || (entry.kind == fls::scene::LayerKind::Contour && entry.nodeId == pathFigureId_ && (pathFigureKind_ == fls::scene::ContourPathKind::Lining
                 ? tool_ == QStringLiteral("lining") : tool_ == QStringLiteral("pen")))) {
             continue;
         }
-        const auto &figure = static_cast<const fls::scene::ContourFigure &>(*entry.node);
-        bool visible = figure.visible;
+        bool visible = entry.node->visible;
 
         for (const QString &ancestor : entry.ancestorGroupIds) {
             const auto *group = state_->sceneNode(ancestor);
@@ -70,9 +69,16 @@ void ProjectCanvas::drawContourFigures(QPainter &painter) {
         if (!visible) {
             continue;
         }
-        painter.setOpacity(figure.opacity);
-        paintContourOutline(painter, (entry.worldTransform * camera_.matrix()).map(contourFigurePath(figure)),
-                            fls::scene::contourFillColor(figure.data));
+        int contourIndex = 0;
+        forEachContour(*entry.node, [&](const fls::scene::ContourData &data, bool contourVisible, double opacity) {
+            const int index = contourIndex++;
+            if (entry.kind == fls::scene::LayerKind::Mesh && entry.nodeId == pathFigureId_ && index == meshContourIndex_
+                && (pathFigureKind_ == fls::scene::ContourPathKind::Lining ? tool_ == QStringLiteral("lining") : tool_ == QStringLiteral("pen"))) return;
+            if (!contourVisible) return;
+            painter.setOpacity(opacity);
+            paintContourOutline(painter, (entry.worldTransform * camera_.matrix()).map(contourDataPath(data)),
+                                fls::scene::contourFillColor(data));
+        });
     }
     painter.restore();
 }

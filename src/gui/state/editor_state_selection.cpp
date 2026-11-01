@@ -25,12 +25,18 @@ QVector<fls::scene::Shape *> EditorState::selectedLayers() {
     return selectedNodes(selectedLayerIds_, projectIndexCache().layers);
 }
 
-QVector<fls::scene::ContourFigure *> EditorState::selectedContours() {
+QVector<fls::scene::Layer *> EditorState::selectedContours() {
     if (!hasProject_) {
         return {};
     }
 
-    return selectedNodes(selectedLayerIds_, projectIndexCache().contours);
+    QVector<fls::scene::Layer *> result;
+    for (const auto &id : selectedLayerIds_) {
+        auto *node = sceneNode(id);
+        if (node != nullptr && fls::scene::isContourGeometry(node->kind())) result.push_back(node);
+    }
+
+    return result;
 }
 
 QVector<fls::scene::GuideLayer *> EditorState::selectedGuideLayers() {

@@ -86,7 +86,7 @@ QVector<QString> EditorState::propertyTargets(const QVector<QString> &entries, c
             const fls::scene::Layer *child = sceneNode(id);
             const auto *shape = dynamic_cast<const fls::scene::Shape *>(child);
             if (seen.contains(id)
-                || (property == QStringLiteral("contourData") && child->kind() != fls::scene::LayerKind::Contour)
+                || (property == QStringLiteral("contourData") && !fls::scene::isContourGeometry(child->kind()))
                 || ((property == QStringLiteral("mask") || property == QStringLiteral("shapeId")) && shape == nullptr)
                 || (property == QStringLiteral("color") && (child->kind() == fls::scene::LayerKind::Group
                     || child->kind() == fls::scene::LayerKind::Guide || (shape != nullptr && shape->isRaster())))
@@ -143,11 +143,16 @@ bool EditorState::applyPropertyCommand(const EditorCommand &command, QString *er
         fls::scene::Layer *node = sceneNode(id);
         auto *shape = dynamic_cast<fls::scene::Shape *>(node);
         auto *contour = dynamic_cast<fls::scene::ContourFigure *>(node);
+        auto *mesh = dynamic_cast<fls::scene::Mesh *>(node);
         const double number = command.values.value(id, command.value.toDouble());
         const auto adjusted = [&](double current) { return command.relative ? current + number : number; };
 
         if (property == QStringLiteral("contourData")) {
-            contour->data = *command.contourData;
+            if (mesh != nullptr) {
+                if (!mesh->data.replaceContour(command.meshContourIndex, *command.contourData, error)) return false;
+            } else {
+                contour->data = *command.contourData;
+            }
         } else if (property == QStringLiteral("name")) {
             node->name = command.value.toString();
         } else if (property == QStringLiteral("visible")) {
@@ -183,6 +188,8 @@ bool EditorState::applyPropertyCommand(const EditorCommand &command, QString *er
                 shape->opacity = color.alphaF();
             } else if (contour != nullptr) {
                 contour->data.fillColor = color;
+            } else if (mesh != nullptr) {
+                for (auto &entry : mesh->data.contours) entry.style.fillColor = color;
             }
         } else if (property == QStringLiteral("opacity")) {
             const double current = shape != nullptr ? shape->color[3] / 255.0 : node->opacity;
@@ -230,6 +237,9 @@ bool EditorState::canMoveEntries(const QVector<QString> &entries, const QString 
         const auto *group = dynamic_cast<const fls::scene::Group *>(node);
         if (node == nullptr || (group != nullptr && group->isLiverySection) || entryHasLockedLayer(id)) {
             return reject(error, QStringLiteral("Selection contains a locked or structural layer"));
+        }
+        if (fls::scene::isContourGeometry(node->kind()) && parent != project_.root.get() && !parent->isLiverySection) {
+            return reject(error, QStringLiteral("Contours and meshes cannot be placed inside ordinary groups"));
         }
         for (const fls::scene::Layer *ancestor = parent; ancestor != nullptr; ancestor = ancestor->parent()) {
             if (ancestor == node) {
@@ -443,14 +453,14 @@ bool EditorState::executeCommand(const EditorCommand &request, QString *error) {
         for (const QString &id : command.entries) {
             if (parentGroupForEntry(id) != parentId || entryIsGuide(id)
                 || (entryIsGroup(id) && groupForId(id)->isLiverySection)) {
-                reason = QStringLiteral("Select adjacent sibling shapes or groups");
+                reason = QStringLiteral("Select adjacent sibling layers");
                 return fail();
             }
             rows.push_back(projectIndexCache().orderByChild.value(id));
         }
         std::sort(rows.begin(), rows.end());
         if (rows.back() - rows.front() + 1 != rows.size()) {
-            reason = QStringLiteral("Select adjacent sibling shapes or groups");
+            reason = QStringLiteral("Select adjacent sibling layers");
             return fail();
         }
     }
@@ -521,9 +531,12 @@ bool EditorState::executeCommand(const EditorCommand &request, QString *error) {
         accepted = duplicateEntriesInPlace(command.entries);
         break;
     case EditorCommandType::Group:
-        groupEntries(command.entries);
-        selectedEntryIds_.clear();
-        selectedEntryIds_ = fullySelectedTopGroupIds();
+        accepted = groupEntries(command.entries, &reason);
+        if (accepted && (selectedEntryIds_.size() != 1
+            || sceneNode(selectedEntryIds_.front())->kind() != fls::scene::LayerKind::Mesh)) {
+            selectedEntryIds_.clear();
+            selectedEntryIds_ = fullySelectedTopGroupIds();
+        }
         break;
     case EditorCommandType::Ungroup:
         ungroupEntries(command.entries, command.flatten);

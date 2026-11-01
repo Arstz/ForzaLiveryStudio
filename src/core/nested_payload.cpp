@@ -232,7 +232,7 @@ bool entryAllMasked(const GroupEntry &entry) {
 }
 
 bool containsContourFigure(const scene::Layer &node) {
-    if (node.kind() == scene::LayerKind::Contour) {
+    if (scene::isContourGeometry(node.kind())) {
         return true;
     }
     if (node.kind() != scene::LayerKind::Group) {

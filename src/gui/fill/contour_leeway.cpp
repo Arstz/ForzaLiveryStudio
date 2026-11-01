@@ -1,5 +1,6 @@
 #include "contour_leeway.h"
 #include "pen_fill.h"
+#include "matrix_math.h"
 
 namespace gui {
 namespace {
@@ -26,6 +27,24 @@ bool appendLeeway(const fls::scene::Layer &node, const ShapeGeometryStore &geome
     if (!opaque) {
         *error = QStringLiteral("Leeway requires fully opaque shapes and saved paths");
         return false;
+    }
+    if (node.kind() == LayerKind::Mesh) {
+        const auto &mesh = static_cast<const Mesh &>(node);
+        if (node.id == excludedContourId) {
+            *error = QStringLiteral("The active mesh cannot be used as its own leeway");
+            return false;
+        }
+        for (int index = 0; index < mesh.data.contours.size(); ++index) {
+            const auto &contour = mesh.data.contours[index];
+            ContourFigure figure;
+            if (!contour.visible) continue;
+            figure.data = mesh.data.contourData(index);
+            figure.transform = fls::decomposeTransform2D(node.worldMatrix());
+            figure.opacity = contour.opacity;
+            if (!appendLeeway(figure, geometry, excludedContourId, result, error)) return false;
+        }
+
+        return true;
     }
     if (node.kind() == LayerKind::Group) {
         for (const auto &child : static_cast<const Group &>(node).children)

@@ -24,7 +24,7 @@ void walkNode(LayerType &node, const Fn &fn) {
 
 void collectLeafIds(const fls::scene::Layer &node, QSet<QString> &layers, QSet<QString> &guides) {
     if (node.kind() == fls::scene::LayerKind::Shape
-        || node.kind() == fls::scene::LayerKind::Contour) {
+        || fls::scene::isContourGeometry(node.kind())) {
         layers.insert(node.id);
     } else if (node.kind() == fls::scene::LayerKind::Guide) {
         guides.insert(node.id);
@@ -189,6 +189,7 @@ void EditorState::insertClipboardAt(const ProjectClipboard &clipboard,
             QString prefix;
             int *counter = nullptr;
             switch (node.kind()) {
+            case fls::scene::LayerKind::Mesh:
             case fls::scene::LayerKind::Contour:
             case fls::scene::LayerKind::Shape:
                 prefix = QStringLiteral("layer_copy");

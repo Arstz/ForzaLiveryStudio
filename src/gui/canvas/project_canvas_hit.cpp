@@ -62,6 +62,24 @@ QVector<ProjectCanvas::HitEntry> ProjectCanvas::hitEntries() {
         hitCache_.push_back({drawOrder, shape.id, polygon, polygon.boundingRect(), body});
         return true;
     }, /*reverse=*/true);
+    if (state_ != nullptr) {
+        for (const auto &entry : state_->activeRenderEntries()) {
+            if (!fls::scene::isContourGeometry(entry.kind)) continue;
+            bool visible = true;
+            for (const auto *node = entry.node; node != nullptr; node = node->parent()) visible &= node->visible;
+            if (!visible) continue;
+            const auto path = (entry.worldTransform * camera_.matrix()).map(contourGeometryPath(*entry.node));
+            QPainterPathStroker stroker;
+            constexpr double kContourHitWidth = 8.0;
+            stroker.setWidth(kContourHitWidth);
+            const auto body = path.united(stroker.createStroke(path));
+            const auto polygon = screenQuad(entry.worldTransform, sceneLocalRect(*entry.node, geometry_));
+            hitCache_.push_back({entry.drawOrder, entry.nodeId, polygon, body.boundingRect(), body});
+        }
+        std::stable_sort(hitCache_.begin(), hitCache_.end(), [](const HitEntry &a, const HitEntry &b) {
+            return a.layerIndex > b.layerIndex;
+        });
+    }
     hitCacheDirty_ = false;
     return hitCache_;
 }
@@ -278,7 +296,7 @@ const QRectF &ProjectCanvas::cachedSelectionWorldBounds() const {
                 }, /*reverse=*/false);
             }
             for (const SceneRenderEntry &entry : state_->renderEntries()) {
-                if (entry.kind == fls::scene::LayerKind::Contour && selected.contains(entry.nodeId)) {
+                if (fls::scene::isContourGeometry(entry.kind) && selected.contains(entry.nodeId)) {
                     acc.add(entry.worldTransform, sceneLocalRect(*entry.node, geometry_));
                 }
             }
@@ -370,7 +388,7 @@ ProjectCanvas::SelectionBox ProjectCanvas::currentSelectionBox() const {
                     if (entry.shape != nullptr && effective.groupedLayerIds.contains(entry.shape->id)) {
                         acc.add(entry.worldTransform * groupWorldInverse,
                                 flatEntryVisualRect(*entry.shape, geometry_));
-                    } else if (entry.kind == fls::scene::LayerKind::Contour && effective.groupedLayerIds.contains(entry.nodeId)) {
+                    } else if (fls::scene::isContourGeometry(entry.kind) && effective.groupedLayerIds.contains(entry.nodeId)) {
                         acc.add(entry.worldTransform * groupWorldInverse, sceneLocalRect(*entry.node, geometry_));
                     } else if (entry.guide != nullptr && effective.groupedGuideIds.contains(entry.guide->id)) {
                         acc.add(entry.worldTransform * groupWorldInverse, flatEntryRect(*entry.guide));
@@ -385,7 +403,7 @@ ProjectCanvas::SelectionBox ProjectCanvas::currentSelectionBox() const {
             }
         } else if (!effective.looseLayerIds.isEmpty()) {
             const QString id = *effective.looseLayerIds.constBegin();
-            if (auto *figure = dynamic_cast<fls::scene::ContourFigure *>(state_->sceneNode(id))) {
+            if (auto *figure = state_->sceneNode(id); figure != nullptr && fls::scene::isContourGeometry(figure->kind())) {
                 box.valid = true;
                 box.localRect = sceneLocalRect(*figure, geometry_);
                 box.localToWorld = sceneWorldTransform(*figure);
@@ -493,6 +511,9 @@ ProjectCanvas::SelectionBox ProjectCanvas::currentSelectionBox() const {
                 accumulate(sceneWorldTransform(*figure), sceneLocalRect(*figure, geometry_));
             }
         }
+        for (const auto *mesh : sceneLeaves<fls::scene::Mesh, fls::scene::LayerKind::Mesh>(*project_->root)) {
+            if (selLayers.contains(mesh->id)) accumulate(sceneWorldTransform(*mesh), sceneLocalRect(*mesh, geometry_));
+        }
         for (const fls::scene::GuideLayer *guide : sceneGuideLeaves(*project_->root)) {
             if (!selGuides.contains(guide->id)) {
                 continue;
@@ -561,8 +582,8 @@ QRectF ProjectCanvas::selectedWorldBounds() const {
     }
     if (state_ != nullptr) {
         for (const QString &id : state_->selectedLayerIds()) {
-            const auto *figure = dynamic_cast<const fls::scene::ContourFigure *>(state_->sceneNode(id));
-            if (figure != nullptr) {
+            const auto *figure = state_->sceneNode(id);
+            if (figure != nullptr && fls::scene::isContourGeometry(figure->kind())) {
                 acc.add(sceneWorldTransform(*figure), sceneLocalRect(*figure, geometry_));
             }
         }

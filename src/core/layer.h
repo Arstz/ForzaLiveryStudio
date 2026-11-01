@@ -3,6 +3,7 @@
 #include "core_types.h"
 #include "visual_container.h"
 #include "contour_data.h"
+#include "mesh_data.h"
 
 #include <QByteArray>
 #include <QString>
@@ -15,7 +16,11 @@
 
 namespace fls::scene {
 
-enum class LayerKind { Shape, Guide, Group, Contour };
+enum class LayerKind { Shape, Guide, Group, Contour, Mesh };
+
+inline bool isContourGeometry(LayerKind kind) {
+    return kind == LayerKind::Contour || kind == LayerKind::Mesh;
+}
 
 // Transform order is translate, rotate, shear, then scale.
 struct Transform2D {
@@ -98,6 +103,16 @@ public:
     std::unique_ptr<Layer> clone() const override;
 };
 
+class Mesh : public Layer {
+public:
+    Mesh() { name = QStringLiteral("Mesh"); }
+
+    MeshData data;
+
+    LayerKind kind() const override { return LayerKind::Mesh; }
+    std::unique_ptr<Layer> clone() const override;
+};
+
 class GuideLayer : public Layer {
 public:
     GuideLayer() {
@@ -141,5 +156,7 @@ public:
     Layer *insert(int index, std::unique_ptr<Layer> child);
     std::unique_ptr<Layer> takeAt(int index);
 };
+
+bool containsContourGeometry(const Layer &node);
 
 } // namespace fls::scene

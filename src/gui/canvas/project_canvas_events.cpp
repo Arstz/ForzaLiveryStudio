@@ -437,6 +437,26 @@ void ProjectCanvas::mouseDoubleClickEvent(QMouseEvent *event) {
         return;
     }
     updateViewTransform();
+    if (event->button() == Qt::LeftButton && state_ != nullptr) {
+        const auto *mesh = dynamic_cast<const fls::scene::Mesh *>(state_->sceneNode(pathFigureId_));
+        if (mesh != nullptr) {
+            QPainterPathStroker stroker;
+            constexpr double kMeshContourPickWidth = 10.0;
+            stroker.setWidth(kMeshContourPickWidth);
+            for (int index = mesh->data.contours.size() - 1; index >= 0; --index) {
+                if (!mesh->data.contours[index].visible) continue;
+                const auto data = mesh->data.contourData(index);
+                const auto path = (sceneWorldTransform(*mesh) * camera_.matrix()).map(contourDataPath(data));
+                if (!stroker.createStroke(path).contains(event->position())) continue;
+                if (index == meshContourIndex_) break;
+                editMeshContour(index);
+                event->accept();
+                update();
+
+                return;
+            }
+        }
+    }
     if (activeTool_ != nullptr && activeTool_->handleDoubleClick(event)) {
         return;
     }

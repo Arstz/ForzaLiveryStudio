@@ -12,6 +12,7 @@ materials, and livery masks.
 | [Code style](CODESTYLE.md) | Conventions for new and edited code. |
 | [User manual](MANUAL.md) | Editor workflows and tool controls. |
 | [Fill engines](FILL_ENGINES.md) | Contour conversion, fitting contracts, region generation, and diagnostics. |
+| [Contour meshes](MESH.md) | Shared contour topology, connection inference, grouping, and persistence. |
 | [Shape configuration](COMPACT_FIT_CONFIG.md) | Compact Fit and Lining catalogs, validation, and deployment. |
 | [Group encoding](CGROUP.md) | Group records, transforms, shapes, masks, and game dialects. |
 | [Livery encoding](CLIVERY.md) | Sections, paint descriptors, compression, and native export profiles. |
@@ -125,7 +126,7 @@ draws this feedback during the drag. One persisted Automatic snapping option
 controls both shape and guideline snapping.
 
 The `.3so` container is gzip-compressed scene-tree JSON, currently document
-version 4. Project serialization includes guides, figures, swatches, retained
+version 5. Project serialization includes guides, figures, meshes, swatches, retained
 header data, and livery paint state. Autosave writes associated projects; locked
 per-instance scratch documents support crash recovery, including unsaved work.
 

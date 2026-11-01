@@ -270,6 +270,9 @@ const EditorState::ProjectIndexCache &EditorState::projectIndexCache() const {
                         cache.orderByChild.insert(node.id, row);
                     }
                     switch (node.kind()) {
+                    case fls::scene::LayerKind::Mesh:
+                        cache.meshes.insert(node.id, static_cast<fls::scene::Mesh *>(&node));
+                        break;
                     case fls::scene::LayerKind::Contour:
                         cache.contours.insert(node.id, static_cast<fls::scene::ContourFigure *>(&node));
                         break;
@@ -304,7 +307,7 @@ QVector<QString> EditorState::leafLayerIdsForEntryCached(const QString &entryId,
         return cached.value();
     }
     QVector<QString> ids;
-    if (cache.layers.contains(entryId) || cache.contours.contains(entryId)) {
+    if (cache.layers.contains(entryId) || cache.contours.contains(entryId) || cache.meshes.contains(entryId)) {
         ids.push_back(entryId);
     } else if (fls::scene::Group *group = cache.groups.value(entryId, nullptr)) {
         for (const auto &child : group->children) {
@@ -396,7 +399,7 @@ QSet<QString> EditorState::lockedLayerIds() const {
         std::function<void(const fls::scene::Layer &, bool)> walk = [&](const fls::scene::Layer &node, bool inherited) {
             const bool effective = inherited || node.locked;
             if ((node.kind() == fls::scene::LayerKind::Shape
-                 || node.kind() == fls::scene::LayerKind::Contour) && effective) {
+                 || fls::scene::isContourGeometry(node.kind())) && effective) {
                 locked.insert(node.id);
             } else if (node.kind() == fls::scene::LayerKind::Group) {
                 for (const auto &child : static_cast<const fls::scene::Group &>(node).children) {
@@ -484,7 +487,7 @@ void EditorState::setGroupDescendantVisible(const QString &groupId, bool visible
     if (fls::scene::Group *group = groupForId(groupId)) {
         walkGroup(*group, [&](fls::scene::Layer &node) {
             if (node.kind() == fls::scene::LayerKind::Shape
-                || node.kind() == fls::scene::LayerKind::Contour) {
+                || fls::scene::isContourGeometry(node.kind())) {
                 node.visible = visible;
             }
         });
@@ -735,7 +738,8 @@ QSet<QString> EditorState::existingLayerIds(const QSet<QString> &ids) const {
     }
 
     return existingIds(ids, projectIndexCache().layers)
-        + existingIds(ids, projectIndexCache().contours);
+        + existingIds(ids, projectIndexCache().contours)
+        + existingIds(ids, projectIndexCache().meshes);
 }
 
 QSet<QString> EditorState::existingGuideLayerIds(const QSet<QString> &ids) const {

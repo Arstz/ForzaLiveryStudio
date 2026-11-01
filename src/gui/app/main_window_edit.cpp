@@ -1345,7 +1345,8 @@ bool MainWindow::importGuideLayer(const QString &path, QString *error) {
 void MainWindow::groupOrUngroupSelection() {
     EditorCommand command;
     command.entries = state_->selectionEntries();
-    command.type = command.entries.size() == 1 && state_->entryIsGroup(command.entries.front())
+    command.type = command.entries.size() == 1 && (state_->entryIsGroup(command.entries.front())
+        || state_->sceneNode(command.entries.front())->kind() == fls::scene::LayerKind::Mesh)
         ? EditorCommandType::Ungroup : EditorCommandType::Group;
     QString error;
     if (!state_->executeCommand(command, &error)) {

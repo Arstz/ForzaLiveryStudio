@@ -2,6 +2,7 @@
 
 #include "matrix_math.h"
 
+#include <algorithm>
 #include <cmath>
 #include <utility>
 
@@ -94,6 +95,15 @@ std::unique_ptr<Layer> ContourFigure::clone() const {
     return copy;
 }
 
+std::unique_ptr<Layer> Mesh::clone() const {
+    auto copy = std::make_unique<Mesh>();
+
+    copyBaseTo(*copy);
+    copy->data = data;
+
+    return copy;
+}
+
 std::unique_ptr<Layer> GuideLayer::clone() const {
     auto copy = std::make_unique<GuideLayer>();
     copyBaseTo(*copy);
@@ -160,6 +170,16 @@ std::unique_ptr<Layer> Group::takeAt(int index) {
         child->parent_ = nullptr;
     }
     return child;
+}
+
+bool containsContourGeometry(const Layer &node) {
+    if (isContourGeometry(node.kind())) return true;
+    if (node.kind() != LayerKind::Group) return false;
+    const auto &group = static_cast<const Group &>(node);
+
+    return std::any_of(group.children.cbegin(), group.children.cend(), [](const auto &child) {
+        return containsContourGeometry(*child);
+    });
 }
 
 } // namespace fls::scene

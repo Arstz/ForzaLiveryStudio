@@ -88,6 +88,8 @@ With a closed Pen contour in Compact mode, `Alt` + click a group in Layers to ma
 
 Saved Pen and Lining paths appear in `Layers`. Use `Edit->Save Pen or Lining Path as Figure` to save the active path, then select it to resume editing. `Properties->Color` changes its outline and fill color. Each tool has its own `Tool Settings->Save Path` checkbox, off by default. Pen saves on contour closure; Lining saves when the line is finished.
 
+Group adjacent saved contours to create a Mesh, or group contours with a Mesh to append them. Closed Pen regions resolve overlap ownership first, then grow equally toward their external neighbours to form shared collision boundaries. Uncontacted exterior geometry retains its dimensions, while internal holes can contract and collapse. Open paths use arc correspondence. Combined material and contour winding are retained; ambiguous or invalid reconstruction is rejected. Reconstruction diagnostics are written beside the executable. Disconnected results and grouping with other object types are rejected. Select the Mesh to edit its first contour; double-click a contour boundary to switch the active contour. Moving a shared anchor updates all connected contours. Shared connection anchors must be retained while editing. Ungroup dissolves the Mesh into independent contours. See [Contour meshes](MESH.md) for the storage and connection rules.
+
 >Compact fit works best on big contours with least amount of points, sometimes it might be worth to trace the contour manually
 
 ### Bucket

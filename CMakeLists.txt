@@ -88,6 +88,8 @@ add_library(fls_core STATIC
     src/core/layer.cpp
     src/core/layer.h
     src/core/contour_data.h
+    src/core/mesh_data.cpp
+    src/core/mesh_data.h
     src/core/visual_container.h
     src/core/flat_payload.cpp
     src/core/flat_payload.h
@@ -282,6 +284,14 @@ qt_add_library(fls_editor_ui STATIC
     src/gui/fill/thin_fit.h
     src/gui/fill/cubic_contour.cpp
     src/gui/fill/pen_fill.cpp
+    src/gui/fill/contour_mesh.cpp
+    src/gui/fill/contour_mesh.h
+    src/gui/fill/contour_partition.cpp
+    src/gui/fill/contour_partition.h
+    src/gui/fill/contour_mesh_diagnostics.cpp
+    src/gui/fill/contour_mesh_diagnostics.h
+    src/gui/fill/contour_transform.cpp
+    src/gui/fill/contour_transform.h
     src/gui/fill/pen_fill.h
     src/gui/fill/polygon_mesh.cpp
     src/gui/fill/polygon_mesh.h
@@ -384,6 +394,7 @@ target_include_directories(fls_editor_ui PUBLIC
     src/gui/fill
     src/gui/widgets
 )
+target_include_directories(fls_editor_ui SYSTEM PRIVATE third_party/cdt/include)
 
 target_link_libraries(fls_editor_ui
     PUBLIC
@@ -497,6 +508,12 @@ if(FLS_BUILD_TESTS)
     target_link_libraries(fls_selection_geometry_tests PRIVATE Qt6::Core Qt6::Gui)
     add_test(NAME selection_geometry COMMAND fls_selection_geometry_tests)
     add_executable(fls_gui_command_tests tools/gui_command_test.cpp)
+    add_executable(fls_contour_mesh_tests tools/contour_mesh_test.cpp)
+    target_link_libraries(fls_contour_mesh_tests PRIVATE fls_editor_ui)
+    target_compile_definitions(fls_contour_mesh_tests PRIVATE FLS_CONTOUR_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tools/fixtures")
+    add_test(NAME contour_mesh COMMAND fls_contour_mesh_tests)
+    add_test(NAME contour_mesh_logged_growth COMMAND fls_contour_mesh_tests --logged-growth)
+    add_test(NAME contour_mesh_logged_divergence COMMAND fls_contour_mesh_tests --logged-divergence)
     target_link_libraries(fls_gui_command_tests PRIVATE fls_editor_ui)
     if(WIN32)
         add_custom_command(TARGET fls_gui_command_tests POST_BUILD
@@ -523,7 +540,7 @@ if(FLS_BUILD_TESTS)
         src/gui/state/editor_state_grouping.cpp)
     set_target_properties(fls_editor_selection_tests PROPERTIES AUTOMOC OFF AUTOUIC OFF)
     target_include_directories(fls_editor_selection_tests PRIVATE src/gui/state src/gui/widgets src/gui/fill src/gui/app)
-    target_link_libraries(fls_editor_selection_tests PRIVATE fls_core Qt6::Gui)
+    target_link_libraries(fls_editor_selection_tests PRIVATE fls_editor_ui)
     add_test(NAME editor_selection COMMAND fls_editor_selection_tests)
     add_test(NAME profile_fit_manual COMMAND fls_compact_fit_tests --profile-fit
         "${CMAKE_CURRENT_SOURCE_DIR}/tools/fixtures/catalog_cover_manual.json" 8)
@@ -592,7 +609,7 @@ if(FLS_BUILD_TESTS)
         src/gui/state/editor_state_snapshot.cpp)
     target_include_directories(fls_game_roundtrip_tests PRIVATE
         src/gui/app src/gui/state src/gui/widgets src/gui/fill)
-    target_link_libraries(fls_game_roundtrip_tests PRIVATE fls_core Qt6::Gui)
+    target_link_libraries(fls_game_roundtrip_tests PRIVATE fls_editor_ui)
     add_test(NAME game_project_roundtrip COMMAND fls_game_roundtrip_tests)
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/Forza Livery.3so")
         add_test(NAME game_project_roundtrip_affine_fixture COMMAND fls_game_roundtrip_tests
@@ -639,7 +656,7 @@ if(FLS_BUILD_TESTS)
     set_target_properties(fls_contour_figure_tests PROPERTIES AUTOMOC OFF AUTOUIC OFF)
     target_include_directories(fls_contour_figure_tests PRIVATE
         src/gui/state src/gui/app src/gui/widgets src/gui/fill src/gui/canvas)
-    target_link_libraries(fls_contour_figure_tests PRIVATE fls_core Qt6::Widgets)
+    target_link_libraries(fls_contour_figure_tests PRIVATE fls_editor_ui)
     if(WIN32)
         add_custom_command(TARGET fls_contour_figure_tests POST_BUILD
             COMMAND "${CMAKE_COMMAND}" -E make_directory

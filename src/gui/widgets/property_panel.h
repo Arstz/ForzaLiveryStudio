@@ -29,7 +29,7 @@ public:
     void setSelection(const QVector<fls::scene::Shape *> &layers,
                       const QVector<fls::scene::GuideLayer *> &guides,
                       const QVector<fls::scene::Group *> &groups,
-                      const QVector<fls::scene::ContourFigure *> &contours = {});
+                      const QVector<fls::scene::Layer *> &contours = {});
     void refreshTransformFields();
     void refreshTransformFieldsFromBox(const QPointF &center,
                                        double width,
@@ -89,7 +89,7 @@ private:
     QVector<fls::scene::Shape *> layers_;
     QVector<fls::scene::GuideLayer *> guides_;
     QVector<fls::scene::Group *> groups_;
-    QVector<fls::scene::ContourFigure *> contours_;
+    QVector<fls::scene::Layer *> contours_;
     bool loading_ = false;
     bool applyingChange_ = false;
     QHash<QWidget *, double> baselines_;

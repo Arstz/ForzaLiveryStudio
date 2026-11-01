@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <stdexcept>
 
 namespace fls::scene {
 namespace {
@@ -158,6 +159,80 @@ std::unique_ptr<ContourFigure> contourFromJson(const QJsonObject &object) {
     return figure;
 }
 
+QJsonArray meshPointIndices(const QVector<MeshPoint> &points) {
+    QJsonArray indices;
+
+    for (const auto &point : points) indices.append(point.vertex);
+
+    return indices;
+}
+
+QJsonObject meshToJson(const Mesh &mesh) {
+    QJsonObject object;
+    QJsonArray vertices;
+    QJsonArray contours;
+
+    writeBase(object, mesh);
+    object.insert(QStringLiteral("kind"), QStringLiteral("mesh"));
+    for (const auto &vertex : mesh.data.vertices) vertices.append(QJsonArray{vertex.x(), vertex.y()});
+    for (int index = 0; index < mesh.data.contours.size(); ++index) {
+        const auto &contour = mesh.data.contours[index];
+        ContourFigure figure;
+        QJsonArray cutouts;
+        figure.name = contour.name;
+        figure.visible = contour.visible;
+        figure.opacity = contour.opacity;
+        figure.data = mesh.data.contourData(index);
+        auto entry = contourToJson(figure);
+        entry.insert(QStringLiteral("vertices"), meshPointIndices(contour.points));
+        for (const auto &cutout : contour.cutouts) cutouts.append(meshPointIndices(cutout));
+        entry.insert(QStringLiteral("cutout_vertices"), cutouts);
+        contours.append(entry);
+    }
+    object.insert(QStringLiteral("vertices"), vertices);
+    object.insert(QStringLiteral("contours"), contours);
+
+    return object;
+}
+
+std::unique_ptr<Mesh> meshFromJson(const QJsonObject &object) {
+    auto mesh = std::make_unique<Mesh>();
+    QVector<QPointF> vertices;
+    const auto restoreIndices = [&](QVector<MeshPoint> &points, const QJsonArray &indices) {
+        if (indices.size() != points.size()) throw std::runtime_error("Invalid mesh point references");
+        for (int index = 0; index < points.size(); ++index) {
+            const int vertex = indices[index].toInt(-1);
+            if (vertex < 0 || vertex >= vertices.size() || indices[index].toDouble(-1.0) != vertex) {
+                throw std::runtime_error("Invalid mesh vertex reference");
+            }
+            points[index].vertex = vertex;
+        }
+    };
+
+    readBase(object, *mesh);
+    for (const auto &value : object.value(QStringLiteral("vertices")).toArray()) {
+        const auto pair = value.toArray();
+        if (pair.size() != 2 || !pair[0].isDouble() || !pair[1].isDouble()) {
+            throw std::runtime_error("Invalid mesh vertex");
+        }
+        vertices.push_back(QPointF(pair[0].toDouble(), pair[1].toDouble()));
+    }
+    for (const auto &value : object.value(QStringLiteral("contours")).toArray()) {
+        const auto entry = value.toObject();
+        const auto figure = contourFromJson(entry);
+        mesh->data.appendContour(figure->data, figure->name, figure->visible, figure->opacity);
+        auto &contour = mesh->data.contours.back();
+        const auto cutouts = entry.value(QStringLiteral("cutout_vertices")).toArray();
+        restoreIndices(contour.points, entry.value(QStringLiteral("vertices")).toArray());
+        if (cutouts.size() != contour.cutouts.size()) throw std::runtime_error("Invalid mesh cutout references");
+        for (int index = 0; index < cutouts.size(); ++index) restoreIndices(contour.cutouts[index], cutouts[index].toArray());
+    }
+    mesh->data.vertices = std::move(vertices);
+    if (!mesh->data.valid()) throw std::runtime_error("Invalid or disconnected mesh");
+
+    return mesh;
+}
+
 QJsonObject shapeToJson(const Shape &s) {
     QJsonObject o;
     o.insert(QStringLiteral("kind"), QStringLiteral("shape"));
@@ -260,6 +335,8 @@ QJsonObject nodeToJson(const Layer &node) {
         return groupToJson(static_cast<const Group &>(node));
     case LayerKind::Contour:
         return contourToJson(static_cast<const ContourFigure &>(node));
+    case LayerKind::Mesh:
+        return meshToJson(static_cast<const Mesh &>(node));
     }
     return {};
 }
@@ -354,6 +431,9 @@ std::unique_ptr<Layer> nodeFromJson(const QJsonObject &o) {
     }
     if (kind == QLatin1String("contour")) {
         return contourFromJson(o);
+    }
+    if (kind == QLatin1String("mesh")) {
+        return meshFromJson(o);
     }
     return shapeFromJson(o);
 }

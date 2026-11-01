@@ -13,6 +13,7 @@ namespace gui {
 struct ProjectLookup {
     QHash<QString, const fls::scene::Shape *> layers;
     QHash<QString, const fls::scene::ContourFigure *> contours;
+    QHash<QString, const fls::scene::Mesh *> meshes;
     QHash<QString, const fls::scene::GuideLayer *> guides;
     QHash<QString, const fls::scene::Group *> groups;
 };

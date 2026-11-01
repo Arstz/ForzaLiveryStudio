@@ -312,7 +312,7 @@ private:
         GeometrySnapTargets snapTargets;
         QVector<GeometrySnapIndicator> snapIndicators;
         QVector<fls::scene::Shape *> layers;
-        QVector<fls::scene::ContourFigure *> contours;
+        QVector<fls::scene::Layer *> contours;
         QVector<fls::scene::GuideLayer *> guides;
         QVector<QString> groupIds;
         DragMode mode = DragMode::None;
@@ -512,6 +512,7 @@ private:
     void drawPenOverlay(QPainter &painter);
     void drawContourFigures(QPainter &painter);
     void syncPathFigureSelection();
+    bool editMeshContour(int index);
     void releaseSavedFigure();
     void reloadPathFigure();
     void storePathFigure();
@@ -609,6 +610,7 @@ private:
     std::function<void(int)> bucketToleranceChangedCallback_;
     PathInteraction pen_;
     QString pathFigureId_;
+    int meshContourIndex_ = -1;
     std::optional<PathInteractionState> penDraft_;
     std::optional<PathInteractionState> liningDraft_;
     fls::scene::ContourPathKind pathFigureKind_ = fls::scene::ContourPathKind::Pen;

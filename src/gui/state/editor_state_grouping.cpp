@@ -1,6 +1,8 @@
 #include "editor_state.h"
 
 #include "matrix_math.h"
+#include "contour_mesh.h"
+#include "contour_mesh_diagnostics.h"
 
 #include <algorithm>
 #include <cmath>
@@ -10,7 +12,7 @@ namespace {
 
 void collectLeafIds(const fls::scene::Layer &node, QSet<QString> &out) {
     if (node.kind() == fls::scene::LayerKind::Shape
-        || node.kind() == fls::scene::LayerKind::Contour) {
+        || fls::scene::isContourGeometry(node.kind())) {
         out.insert(node.id);
         return;
     }
@@ -62,32 +64,82 @@ QVector<QString> childIds(const fls::scene::Group &group,
 
 } // namespace
 
-void EditorState::groupEntries(const QVector<QString> &entryIds) {
+bool EditorState::groupEntries(const QVector<QString> &entryIds, QString *error) {
+    const auto reject = [&](const QString &reason) {
+        if (error != nullptr) *error = reason;
+
+        return false;
+    };
     if (!hasProject_) {
-        return;
+        return reject(QStringLiteral("Open a project first"));
     }
     QVector<QString> entries = normalizeEntrySelection(entryIds);
-    if (entries.isEmpty()) {
-        return;
+    if (entries.size() < 2) {
+        return reject(QStringLiteral("Select at least two adjacent layers to group"));
     }
     const ProjectIndexCache &cache = projectIndexCache();
     QString parentId = cache.parentByChild.value(entries.front());
     for (const QString &entryId : entries) {
         if (cache.parentByChild.value(entryId) != parentId) {
-            return;
+            return reject(QStringLiteral("Select adjacent sibling layers to group"));
         }
     }
     std::sort(entries.begin(), entries.end(), [&](const QString &a, const QString &b) {
         return cache.orderByChild.value(a, 0) < cache.orderByChild.value(b, 0);
     });
     if (!isContiguous(entries, cache)) {
-        return;
+        return reject(QStringLiteral("Select adjacent sibling layers to group"));
     }
     fls::scene::Group *parent = groupForId(parentId);
     if (parent == nullptr) {
-        return;
+        return reject(QStringLiteral("Invalid group parent"));
     }
     const int insertAt = cache.orderByChild.value(entries.front(), 0);
+    bool hasContour = false;
+    bool hasOther = false;
+    fls::scene::Mesh *existingMesh = nullptr;
+    for (const auto &id : entries) {
+        auto *node = sceneNode(id);
+        if (node == nullptr || entryHasLockedLayer(id)) return reject(QStringLiteral("Invalid or locked grouping target"));
+        hasContour |= fls::scene::containsContourGeometry(*node);
+        hasOther |= !fls::scene::isContourGeometry(node->kind());
+        if (node->kind() == fls::scene::LayerKind::Mesh && existingMesh == nullptr) {
+            existingMesh = static_cast<fls::scene::Mesh *>(node);
+        }
+    }
+    if (hasContour && hasOther) {
+        return reject(QStringLiteral("Contours and meshes can only be grouped with contours or meshes"));
+    }
+    if (hasContour) {
+        auto mesh = std::make_unique<fls::scene::Mesh>();
+        const QTransform frame = existingMesh != nullptr ? sceneLocalTransform(*existingMesh) : QTransform();
+        bool invertible = false;
+        const QTransform inverse = frame.inverted(&invertible);
+        if (!invertible) return reject(QStringLiteral("The mesh has a zero scale"));
+        mesh->id = existingMesh != nullptr ? existingMesh->id : uniqueLayerId();
+        mesh->name = existingMesh != nullptr ? existingMesh->name : QStringLiteral("Mesh");
+        if (existingMesh != nullptr) mesh->transform = existingMesh->transform;
+        if (existingMesh != nullptr) appendMeshGeometry(mesh->data, *existingMesh, QTransform());
+        for (const auto &id : entries) {
+            const auto *node = sceneNode(id);
+            if (node == existingMesh) continue;
+            appendMeshGeometry(mesh->data, *node, sceneLocalTransform(*node) * inverse);
+        }
+        const auto input = mesh->data;
+        QJsonObject diagnostics;
+        const bool connected = connectMeshContours(mesh->data, error, &diagnostics);
+        writeMeshReconstructionDiagnostics(input, connected ? &mesh->data : nullptr, diagnostics, entries);
+        if (!connected) return false;
+        const QString meshId = mesh->id;
+        for (int index = entries.size() - 1; index >= 0; --index) takeEntry(entries[index]);
+        parent->insert(insertAt, std::move(mesh));
+        selectedLayerIds_ = {meshId};
+        selectedGuideLayerIds_.clear();
+        selectedEntryIds_ = {meshId};
+        invalidateProjectIndexCache();
+
+        return true;
+    }
     auto group = std::make_unique<fls::scene::Group>();
     group->id = uniqueGroupId();
     group->name = QStringLiteral("Group");
@@ -101,7 +153,10 @@ void EditorState::groupEntries(const QVector<QString> &entryIds) {
     }
     parent->insert(insertAt, std::move(group));
     selectedLayerIds_ = selectedLeaves;
+    selectedEntryIds_.clear();
     invalidateProjectIndexCache();
+
+    return true;
 }
 
 void EditorState::ungroupEntries(const QVector<QString> &entryIds, bool flatten) {
@@ -115,6 +170,26 @@ void EditorState::ungroupEntries(const QVector<QString> &entryIds, bool flatten)
     QSet<QString> selectedLeaves;
     for (const QString &entryId : entries) {
         fls::scene::Group *parent = groupForId(parentGroupForEntry(entryId));
+        const auto *mesh = dynamic_cast<const fls::scene::Mesh *>(sceneNode(entryId));
+        if (parent != nullptr && mesh != nullptr) {
+            const int row = projectIndexCache().orderByChild.value(entryId, -1);
+            const auto removed = takeEntry(entryId);
+            for (int index = 0; index < mesh->data.contours.size(); ++index) {
+                const auto &contour = mesh->data.contours[index];
+                auto figure = std::make_unique<fls::scene::ContourFigure>();
+                invalidateProjectIndexCache();
+                figure->id = uniqueLayerId();
+                figure->name = contour.name;
+                figure->transform = mesh->transform;
+                figure->visible = mesh->visible && contour.visible;
+                figure->opacity = mesh->opacity * contour.opacity;
+                figure->data = mesh->data.contourData(index);
+                selectedLeaves.insert(figure->id);
+                parent->insert(row + index, std::move(figure));
+            }
+            invalidateProjectIndexCache();
+            continue;
+        }
         fls::scene::Group *group = groupForId(entryId);
         if (parent == nullptr || group == nullptr || group->isLiverySection) {
             continue;

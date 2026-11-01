@@ -1,6 +1,7 @@
 #include "project_canvas.h"
 #include "thin_fit.h"
 #include "contour_leeway.h"
+#include "contour_transform.h"
 
 #include "project_canvas_internal.h"
 
@@ -26,61 +27,6 @@ PathInteractionState capturePathState(const PathInteraction &path) {
         path.strokeWidth,
     };
     state.cutouts.detach();
-    return state;
-}
-
-bool penTransformNeedsExplicitHandles(const QTransform &transform) {
-    constexpr double kSimilarityTolerance = 1e-10;
-    const double horizontalLengthSquared = transform.m11() * transform.m11() + transform.m12() * transform.m12();
-    const double verticalLengthSquared = transform.m21() * transform.m21() + transform.m22() * transform.m22();
-    const double axisProduct = transform.m11() * transform.m21() + transform.m12() * transform.m22();
-    const double tolerance = kSimilarityTolerance * std::max(horizontalLengthSquared, verticalLengthSquared);
-
-    return std::abs(horizontalLengthSquared - verticalLengthSquared) > tolerance
-        || std::abs(axisProduct) > tolerance;
-}
-
-PathInteractionState transformedPathState(PathInteractionState state, const QTransform &transform) {
-    const auto transformPoints = [&transform, needsExplicitHandles = penTransformNeedsExplicitHandles(transform)](
-                                     QVector<PenPoint> &points, bool closed) {
-        if (needsExplicitHandles) {
-            materializePenHandles(points, closed);
-        }
-        for (PenPoint &point : points) {
-            transformPenPoint(point, transform);
-        }
-    };
-
-    if (state.pathKind == fls::scene::ContourPathKind::Lining) {
-        const auto segments = penSegments(state.points, false);
-        const double determinant = std::abs(transform.determinant());
-        const double widthScale = std::sqrt(determinant);
-        for (int pointIndex = 0; pointIndex < state.points.size(); ++pointIndex) {
-            QPointF tangent;
-            for (int segmentIndex : {pointIndex - 1, pointIndex}) {
-                if (segmentIndex >= 0 && segmentIndex < segments.size()) {
-                    const QPointF direction = segments[segmentIndex].derivative(segmentIndex == pointIndex ? 0.0 : 1.0);
-                    const double length = QLineF({}, direction).length();
-                    if (length > 0.0) {
-                        tangent += direction / length;
-                    }
-                }
-            }
-            const double length = QLineF({}, tangent).length();
-            const double mappedLength = length > 0.0
-                ? QLineF(transform.map(QPointF()), transform.map(tangent / length)).length() : 0.0;
-            auto &point = state.points[pointIndex];
-            const double normalScale = mappedLength > 0.0 ? determinant / mappedLength : widthScale;
-            point.strokeWidth = liningPointWidth(point, state.strokeWidth) * normalScale;
-            if (normalScale > 0.0) point.endCap *= mappedLength / normalScale;
-        }
-        state.strokeWidth *= widthScale;
-    }
-    transformPoints(state.points, state.pathKind == fls::scene::ContourPathKind::Pen && state.closed);
-    for (int index = 0; index < state.cutouts.size(); ++index) {
-        transformPoints(state.cutouts[index], state.cutoutClosed || index + 1 < state.cutouts.size());
-    }
-
     return state;
 }
 
@@ -965,7 +911,7 @@ bool ProjectCanvas::savePathFigure(bool selectFigure) {
     EditorCommand data;
     data.entries = {id};
     data.property = QStringLiteral("contourData");
-    data.contourData = transformedPathState(inserted->data, inverse);
+    data.contourData = transformedContourData(inserted->data, inverse);
     state_->executeCommand(data);
     pathFigureId_ = id;
     pathFigureKind_ = path.pathKind;
@@ -1003,7 +949,8 @@ void ProjectCanvas::syncPathFigureSelection() {
     const bool selectedFigureEntry = state_->selectedEntryIds_.isEmpty()
         || (state_->selectedEntryIds_.size() == 1 && selected.contains(state_->selectedEntryIds_.front()));
     const auto *figure = selected.size() == 1 && state_->selectedGuideLayerIds().isEmpty() && selectedFigureEntry
-        ? dynamic_cast<const fls::scene::ContourFigure *>(state_->sceneNode(*selected.constBegin())) : nullptr;
+        ? state_->sceneNode(*selected.constBegin()) : nullptr;
+    if (figure != nullptr && !fls::scene::isContourGeometry(figure->kind())) figure = nullptr;
     const QString nextId = figure != nullptr ? figure->id : QString();
 
     if (nextId == pathFigureId_) {
@@ -1012,7 +959,11 @@ void ProjectCanvas::syncPathFigureSelection() {
     }
     releaseSavedFigure();
     if (figure != nullptr) {
-        pathFigureKind_ = figure->data.pathKind;
+        meshContourIndex_ = figure->kind() == fls::scene::LayerKind::Mesh ? 0 : -1;
+        const auto data = meshContourIndex_ >= 0
+            ? static_cast<const fls::scene::Mesh *>(figure)->data.contourData(meshContourIndex_)
+            : static_cast<const fls::scene::ContourFigure *>(figure)->data;
+        pathFigureKind_ = data.pathKind;
         PathInteraction &path = savedFigurePath();
         commitPathEdit(path);
         (pathFigureKind_ == fls::scene::ContourPathKind::Lining ? liningDraft_ : penDraft_) = capturePathState(path);
@@ -1022,6 +973,25 @@ void ProjectCanvas::syncPathFigureSelection() {
     }
     invalidatePenGeometryCache();
     update();
+}
+
+bool ProjectCanvas::editMeshContour(int index) {
+    const auto *mesh = state_ != nullptr ? dynamic_cast<const fls::scene::Mesh *>(state_->sceneNode(pathFigureId_)) : nullptr;
+
+    if (mesh == nullptr || index < 0 || index >= mesh->data.contours.size()) return false;
+    if (meshContourIndex_ == index) return true;
+    const QString meshId = mesh->id;
+    const auto kind = mesh->data.contours[index].style.pathKind;
+    releaseSavedFigure();
+    meshContourIndex_ = index;
+    pathFigureKind_ = kind;
+    auto &interaction = savedFigurePath();
+    (kind == fls::scene::ContourPathKind::Lining ? liningDraft_ : penDraft_) = capturePathState(interaction);
+    pathFigureId_ = meshId;
+    reloadPathFigure();
+    setTool(kind == fls::scene::ContourPathKind::Lining ? QStringLiteral("lining") : QStringLiteral("pen"));
+
+    return true;
 }
 
 void ProjectCanvas::releaseSavedFigure() {
@@ -1046,6 +1016,7 @@ void ProjectCanvas::releaseSavedFigure() {
         liningWidthChangedCallback_(previous.strokeWidth);
     }
     pathFigureId_.clear();
+    meshContourIndex_ = -1;
 }
 
 void ProjectCanvas::reloadPathFigure() {
@@ -1056,16 +1027,19 @@ void ProjectCanvas::reloadPathFigure() {
     if (path.pendingEdit.has_value() || path.fillRunning) {
         return;
     }
-    const auto *figure = dynamic_cast<const fls::scene::ContourFigure *>(state_->sceneNode(pathFigureId_));
-    if (figure == nullptr) {
+    const auto *figure = state_->sceneNode(pathFigureId_);
+    if (figure == nullptr || !fls::scene::isContourGeometry(figure->kind())) {
         syncPathFigureSelection();
         return;
     }
-    PathInteractionState data = figure->data;
+    const auto *mesh = dynamic_cast<const fls::scene::Mesh *>(figure);
+    if (mesh != nullptr && (meshContourIndex_ < 0 || meshContourIndex_ >= mesh->data.contours.size())) meshContourIndex_ = 0;
+    PathInteractionState data = mesh != nullptr ? mesh->data.contourData(meshContourIndex_)
+        : static_cast<const fls::scene::ContourFigure *>(figure)->data;
     const QTransform world = sceneWorldTransform(*figure);
 
     data.fillColor = fls::scene::contourFillColor(data);
-    restorePathState(path, transformedPathState(std::move(data), world));
+    restorePathState(path, transformedContourData(std::move(data), world));
     path.undoStack.clear();
     path.redoStack.clear();
     invalidatePenGeometryCache();
@@ -1073,7 +1047,7 @@ void ProjectCanvas::reloadPathFigure() {
 }
 
 void ProjectCanvas::storePathFigure() {
-    auto *figure = dynamic_cast<fls::scene::ContourFigure *>(state_->sceneNode(pathFigureId_));
+    auto *figure = state_->sceneNode(pathFigureId_);
     PathInteractionState data = capturePathState(savedFigurePath());
     bool invertible = false;
     const QTransform inverse = figure != nullptr
@@ -1082,13 +1056,20 @@ void ProjectCanvas::storePathFigure() {
     if (figure == nullptr || state_->isLayerLocked(pathFigureId_) || !invertible) {
         return;
     }
-    data = transformedPathState(std::move(data), inverse);
+    data = transformedContourData(std::move(data), inverse);
     syncingPathFigure_ = true;
     EditorCommand command;
     command.entries = {pathFigureId_};
     command.property = QStringLiteral("contourData");
     command.contourData = std::move(data);
-    state_->executeCommand(command);
+    command.meshContourIndex = meshContourIndex_;
+    if (!state_->executeCommand(command)) {
+        const auto *mesh = dynamic_cast<const fls::scene::Mesh *>(figure);
+        if (mesh != nullptr) {
+            restorePathState(savedFigurePath(), transformedContourData(mesh->data.contourData(meshContourIndex_), sceneWorldTransform(*mesh)));
+            invalidatePenGeometryCache();
+        }
+    }
     syncingPathFigure_ = false;
 }
 
@@ -1096,6 +1077,9 @@ bool ProjectCanvas::pathFigureVisible(const PathInteraction &path) const {
     if (!isSavedFigurePath(path) || state_ == nullptr) {
         return true;
     }
+    const auto *mesh = dynamic_cast<const fls::scene::Mesh *>(state_->sceneNode(pathFigureId_));
+    if (mesh != nullptr && meshContourIndex_ >= 0 && meshContourIndex_ < mesh->data.contours.size()
+        && !mesh->data.contours[meshContourIndex_].visible) return false;
     for (const fls::scene::Layer *node = state_->sceneNode(pathFigureId_); node != nullptr; node = node->parent()) {
         if (!node->visible) {
             return false;
@@ -1323,7 +1307,7 @@ QRectF ProjectCanvas::projectBounds() const {
     }, /*reverse=*/false);
     if (state_ != nullptr) {
         for (const SceneRenderEntry &entry : state_->renderEntries()) {
-            if (entry.kind == fls::scene::LayerKind::Contour && entry.node->visible
+            if (fls::scene::isContourGeometry(entry.kind) && entry.node->visible
                 && isSectionActive(entry.sectionGroupId)) {
                 acc.add(entry.worldTransform, sceneLocalRect(*entry.node, geometry_));
             }

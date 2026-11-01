@@ -646,7 +646,7 @@ QVector<QString> transformTargetIdsForSelection(EditorState *state,
                                                 const QVector<fls::scene::Shape *> &layers,
                                                 const QVector<fls::scene::GuideLayer *> &guides,
                                                 const QVector<fls::scene::Group *> &groups,
-                                                const QVector<fls::scene::ContourFigure *> &contours = {}) {
+                                                const QVector<fls::scene::Layer *> &contours = {}) {
     QVector<QString> ids;
     QSet<QString> seen;
     const auto add = [&](const QString &id) {
@@ -671,7 +671,7 @@ QVector<QString> transformTargetIdsForSelection(EditorState *state,
             add(guide->id);
         }
     }
-    for (const fls::scene::ContourFigure *contour : contours) {
+    for (const fls::scene::Layer *contour : contours) {
         if (contour != nullptr && !groupedLayerIds.contains(contour->id)) {
             add(contour->id);
         }
@@ -890,7 +890,7 @@ void PropertyPanel::setLayers(const QVector<fls::scene::Shape *> &layers) {
 void PropertyPanel::setSelection(const QVector<fls::scene::Shape *> &layers,
                                  const QVector<fls::scene::GuideLayer *> &guides,
                                  const QVector<fls::scene::Group *> &groups,
-                                 const QVector<fls::scene::ContourFigure *> &contours) {
+                                 const QVector<fls::scene::Layer *> &contours) {
     if (applyingChange_ || valueLabelDragging_) {
         return;
     }
@@ -1532,7 +1532,7 @@ void PropertyPanel::setSelectionByIds(const QSet<QString> &layerIds,
     QVector<fls::scene::Shape *> layers;
     QVector<fls::scene::GuideLayer *> guides;
     QVector<fls::scene::Group *> groups;
-    QVector<fls::scene::ContourFigure *> contours;
+    QVector<fls::scene::Layer *> contours;
     for (const QString &id : layerIds) {
         if (auto *layer = dynamic_cast<fls::scene::Shape *>(state_->sceneNode(id))) {
             layers.push_back(layer);
@@ -1562,11 +1562,13 @@ QVector<std::array<quint8, 4>> PropertyPanel::selectionColors(bool colorableOnly
             if (!colorableOnly || isColorableShape(layer)) {
                 colors.push_back(layer->color);
             }
-        } else if (const auto *contour = dynamic_cast<const fls::scene::ContourFigure *>(node);
-                   contour != nullptr && (!colorableOnly || !state_->isLayerLocked(contour->id))) {
-            const QColor color = fls::scene::contourFillColor(contour->data);
-            colors.push_back({static_cast<quint8>(color.blue()), static_cast<quint8>(color.green()),
-                              static_cast<quint8>(color.red()), static_cast<quint8>(color.alpha())});
+        } else if (node != nullptr && fls::scene::isContourGeometry(node->kind())
+                   && (!colorableOnly || !state_->isLayerLocked(node->id))) {
+            forEachContour(*node, [&](const fls::scene::ContourData &data, bool, double) {
+                const QColor color = fls::scene::contourFillColor(data);
+                colors.push_back({static_cast<quint8>(color.blue()), static_cast<quint8>(color.green()),
+                                  static_cast<quint8>(color.red()), static_cast<quint8>(color.alpha())});
+            });
         }
     };
     const auto ids = state_->propertyTargets(selectionEntryIds_, colorableOnly ? QStringLiteral("color") : QStringLiteral("opacity"));

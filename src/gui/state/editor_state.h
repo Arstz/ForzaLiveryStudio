@@ -95,6 +95,7 @@ struct EditorCommand {
     bool deferRefresh = false;
     std::optional<ProjectClipboard> clipboard;
     std::optional<fls::scene::ContourData> contourData;
+    int meshContourIndex = -1;
 };
 
 class EditorState final : public QObject {
@@ -117,7 +118,7 @@ public:
     bool canMoveEntries(const QVector<QString> &entries, const QString &parentId, QString *error = nullptr) const;
 
     QVector<fls::scene::Shape *> selectedLayers();
-    QVector<fls::scene::ContourFigure *> selectedContours();
+    QVector<fls::scene::Layer *> selectedContours();
     QVector<fls::scene::GuideLayer *> selectedGuideLayers();
     QVector<fls::scene::Group *> selectedGroups(const QVector<QString> &entryIds);
     bool isLayerLocked(const QString &layerId) const;
@@ -197,7 +198,7 @@ public:
     void insertLayerAboveSelection(std::unique_ptr<fls::scene::Layer> layer, const QVector<QString> &selectedEntries);
     bool insertLayerBelowEntry(std::unique_ptr<fls::scene::Layer> &layer,
                                const QString &entryId);
-    void groupEntries(const QVector<QString> &entryIds);
+    bool groupEntries(const QVector<QString> &entryIds, QString *error = nullptr);
     void ungroupEntries(const QVector<QString> &entryIds, bool flatten);
     bool reorderEntries(const QString &parentGroupId, const QVector<QString> &entryIds, int insertRow);
     bool reorderGuideLayers(const QVector<QString> &guideIds, int insertRow);
@@ -258,6 +259,7 @@ private:
     struct ProjectIndexCache {
         QHash<QString, fls::scene::Shape *> layers;
         QHash<QString, fls::scene::ContourFigure *> contours;
+        QHash<QString, fls::scene::Mesh *> meshes;
         QHash<QString, fls::scene::GuideLayer *> guides;
         QHash<QString, fls::scene::Group *> groups;
         QHash<QString, fls::scene::Layer *> nodes;

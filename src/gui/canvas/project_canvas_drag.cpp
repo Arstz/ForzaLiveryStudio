@@ -291,8 +291,8 @@ void ProjectCanvas::captureDragStarts() {
         }
     }
     for (const QString &id : state_->selectedLayerIds()) {
-        auto *figure = dynamic_cast<fls::scene::ContourFigure *>(state_->sceneNode(id));
-        if (figure != nullptr && !groupedLayerIds.contains(id) && !state_->isLayerLocked(id)) {
+        auto *figure = state_->sceneNode(id);
+        if (figure != nullptr && fls::scene::isContourGeometry(figure->kind()) && !groupedLayerIds.contains(id) && !state_->isLayerLocked(id)) {
             drag_.contours.push_back(figure);
             drag_.starts.insert(id, {figure->x, figure->y, figure->scaleX, figure->scaleY,
                                     figure->rotation, figure->skew, figure->opacity});
@@ -397,7 +397,8 @@ bool ProjectCanvas::nudgeSelection(const QPointF &delta) {
     }
     const QVector<QString> targets = state_->selectedTransformTargetIds();
     const bool includesContour = std::any_of(targets.cbegin(), targets.cend(), [this](const QString &id) {
-        return dynamic_cast<const fls::scene::ContourFigure *>(state_->sceneNode(id)) != nullptr;
+        const auto *node = state_->sceneNode(id);
+        return node != nullptr && fls::scene::isContourGeometry(node->kind());
     });
 
     if (includesContour) {

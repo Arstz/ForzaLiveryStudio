@@ -57,19 +57,47 @@ inline QRectF sceneLocalRect(const QSizeF &size) {
     return QRectF(-size.width() * 0.5, -size.height() * 0.5, size.width(), size.height());
 }
 
-inline QPainterPath contourFigurePath(const fls::scene::ContourFigure &figure) {
-    auto points = figure.data.points;
-    if (figure.data.pathKind == fls::scene::ContourPathKind::Lining && !points.isEmpty()) {
+inline QPainterPath contourDataPath(const fls::scene::ContourData &data) {
+    auto points = data.points;
+    if (data.pathKind == fls::scene::ContourPathKind::Lining && !points.isEmpty()) {
         points.front().kind = points.back().kind = PenPointKind::Hard;
     }
     QPainterPath path = penPath(points,
-        figure.data.pathKind == fls::scene::ContourPathKind::Pen && figure.data.closed);
+        data.pathKind == fls::scene::ContourPathKind::Pen && data.closed);
 
     path.setFillRule(Qt::OddEvenFill);
-    for (int index = 0; index < figure.data.cutouts.size(); ++index) {
-        path.addPath(penPath(figure.data.cutouts[index],
-                            figure.data.cutoutClosed || index + 1 < figure.data.cutouts.size()));
+    for (int index = 0; index < data.cutouts.size(); ++index) {
+        path.addPath(penPath(data.cutouts[index],
+                            data.cutoutClosed || index + 1 < data.cutouts.size()));
     }
+
+    return path;
+}
+
+inline QPainterPath contourFigurePath(const fls::scene::ContourFigure &figure) {
+    return contourDataPath(figure.data);
+}
+
+template <typename Fn>
+void forEachContour(const fls::scene::Layer &node, const Fn &function) {
+    if (node.kind() == fls::scene::LayerKind::Contour) {
+        const auto &figure = static_cast<const fls::scene::ContourFigure &>(node);
+        function(figure.data, node.visible, node.opacity);
+    } else if (node.kind() == fls::scene::LayerKind::Mesh) {
+        const auto &mesh = static_cast<const fls::scene::Mesh &>(node);
+        for (int index = 0; index < mesh.data.contours.size(); ++index) {
+            const auto &contour = mesh.data.contours[index];
+            function(mesh.data.contourData(index), node.visible && contour.visible, node.opacity * contour.opacity);
+        }
+    }
+}
+
+inline QPainterPath contourGeometryPath(const fls::scene::Layer &node) {
+    QPainterPath path;
+
+    forEachContour(node, [&](const fls::scene::ContourData &data, bool visible, double) {
+        if (visible) path.addPath(contourDataPath(data));
+    });
 
     return path;
 }
@@ -93,6 +121,17 @@ inline void paintContourOutline(QPainter &painter, const QPainterPath &path, con
 }
 
 inline QRectF sceneLocalRect(const fls::scene::Layer &node, const ShapeGeometryStore &geometry) {
+    if (node.kind() == fls::scene::LayerKind::Mesh) {
+        QRectF bounds;
+        const auto &mesh = static_cast<const fls::scene::Mesh &>(node);
+        for (int index = 0; index < mesh.data.contours.size(); ++index) {
+            fls::scene::ContourFigure figure;
+            figure.data = mesh.data.contourData(index);
+            bounds = bounds.united(sceneLocalRect(figure, geometry));
+        }
+
+        return bounds;
+    }
     if (node.kind() == fls::scene::LayerKind::Contour) {
         const auto &figure = static_cast<const fls::scene::ContourFigure &>(node);
         QRectF bounds = contourFigurePath(figure).boundingRect();

@@ -62,10 +62,12 @@ void ProjectCanvas::captureDragSnapGeometry() {
             body = shapeSelectionBody(*entry.shape);
         } else if (moving && entry.guide != nullptr) {
             body.addRect(sceneLocalRect(*entry.guide, geometry_));
-        } else if (moving && entry.kind == fls::scene::LayerKind::Contour) {
-            const auto &figure = static_cast<const fls::scene::ContourFigure &>(*entry.node);
-            body = figure.data.pathKind == fls::scene::ContourPathKind::Lining
-                ? buildLiningRibbon(figure.data.points, figure.data.strokeWidth) : contourFigurePath(figure);
+        } else if (fls::scene::isContourGeometry(entry.kind)) {
+            forEachContour(*entry.node, [&](const fls::scene::ContourData &data, bool visible, double) {
+                if (!visible) return;
+                body.addPath(data.pathKind == fls::scene::ContourPathKind::Lining
+                    ? buildLiningRibbon(data.points, data.strokeWidth) : contourDataPath(data));
+            });
         }
         if (body.isEmpty()) continue;
         auto outline = geometrySnapOutline(entry.worldTransform.map(body), camera_.scale());

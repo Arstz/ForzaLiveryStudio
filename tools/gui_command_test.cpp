@@ -107,7 +107,10 @@ QByteArray fingerprint(const fls::scene::Layer &node) {
 
 void sameWorld(const QTransform &expected, const QTransform &actual, const QString &label) {
     for (const QPointF point : {QPointF(), QPointF(1, 0), QPointF(0, 1), QPointF(43, -29)}) {
-        require(QLineF(expected.map(point), actual.map(point)).length() < 1e-7, label + " changed its world transform");
+        require(QLineF(expected.map(point), actual.map(point)).length() < 1e-7,
+                QStringLiteral("%1 changed its world transform: expected (%2, %3), actual (%4, %5)")
+                    .arg(label).arg(expected.map(point).x()).arg(expected.map(point).y())
+                    .arg(actual.map(point).x()).arg(actual.map(point).y()));
     }
 }
 
@@ -620,6 +623,7 @@ void moveAutoSelection(Harness &h) {
         h.reset(std::move(project));
         canvas->setTool("move");
         canvas->setMoveToolAutoSelect(true);
+        canvas->setAutomaticSnapping(false);
         canvas->setTransformRelativeMode(false);
         h.select({"selection"});
     };
