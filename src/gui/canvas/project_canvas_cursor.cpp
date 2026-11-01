@@ -319,6 +319,12 @@ void ProjectCanvas::updateCursorForPoint(const QPointF &point) {
         setCursor(assetCursor(QStringLiteral("CursorOpenHand.xpm")));
         return;
     }
+    if (meshEditActive() && meshEditable()) {
+        setCursor(meshEdit_.before.has_value() ? Qt::ClosedHandCursor
+            : meshPointAtScreen(point, false).valid() ? Qt::OpenHandCursor : Qt::ArrowCursor);
+
+        return;
+    }
     if (activeTool_ != nullptr) {
         QCursor toolCursor;
         if (activeTool_->hoverCursor(point, &toolCursor)) {

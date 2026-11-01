@@ -164,11 +164,20 @@ displacement tolerance, and timing.
 
 ## Editing and persistence
 
-Select a Mesh to edit its first contour with Pen or Lining. Double-click a
-contour boundary to edit that contour. Mesh transforms and appearance remain
-available through the regular editing controls. Anchor edits preserve shared
-vertex references. Removing shared connection anchors is rejected. Ungrouping
-dissolves the Mesh into independent contours with their current geometry.
+Selecting a Mesh exposes its canonical anchors across all faces and holes.
+Shared edges are drawn and picked once. Drag an anchor to move it, and use
+Shift-click to extend the point selection. Selected anchors expose their curve
+handles. Anchor movement updates each canonical position once; shared handle
+edits update the oriented controls of every incident face.
+
+Ctrl-click a boundary to split its curve and insert one shared anchor. Right-click
+an anchor, or press Backspace with points selected, to remove anchors from all
+incident loops. Deletion retains shared junctions, closed-loop cardinality, and
+mesh connectivity. Coordinate changes pass through the complete Mesh world
+transform. Each gesture has one project history entry; cancelling restores its
+original geometry. Mesh transforms and appearance remain available through the
+regular editing controls. Ungrouping dissolves the Mesh into independent contours
+with their current geometry.
 
 Project document version 5 stores meshes, canonical vertices, contour references,
 and per-contour attributes. Loading validates references and connectivity.

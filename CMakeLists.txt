@@ -287,6 +287,8 @@ qt_add_library(fls_editor_ui STATIC
     src/gui/fill/contour_mesh.cpp
     src/gui/fill/contour_mesh_simplify.cpp
     src/gui/fill/contour_mesh_simplify.h
+    src/gui/fill/mesh_edit.cpp
+    src/gui/fill/mesh_edit.h
     src/gui/fill/contour_mesh.h
     src/gui/fill/contour_partition.cpp
     src/gui/fill/contour_partition.h
@@ -307,6 +309,7 @@ qt_add_library(fls_editor_ui STATIC
     src/gui/canvas/project_canvas.cpp
     src/gui/canvas/project_canvas_bucket.cpp
     src/gui/canvas/project_canvas_pen.cpp
+    src/gui/canvas/project_canvas_mesh.cpp
     src/gui/canvas/project_canvas.h
     src/gui/canvas/project_canvas_internal.h
     src/gui/canvas/selection_geometry.cpp
@@ -510,6 +513,9 @@ if(FLS_BUILD_TESTS)
     target_link_libraries(fls_selection_geometry_tests PRIVATE Qt6::Core Qt6::Gui)
     add_test(NAME selection_geometry COMMAND fls_selection_geometry_tests)
     add_executable(fls_gui_command_tests tools/gui_command_test.cpp)
+    add_executable(fls_mesh_edit_tests tools/mesh_edit_test.cpp)
+    target_link_libraries(fls_mesh_edit_tests PRIVATE fls_editor_ui)
+    add_test(NAME mesh_edit COMMAND fls_mesh_edit_tests)
     add_executable(fls_contour_mesh_tests tools/contour_mesh_test.cpp)
     target_link_libraries(fls_contour_mesh_tests PRIVATE fls_editor_ui)
     target_compile_definitions(fls_contour_mesh_tests PRIVATE FLS_CONTOUR_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tools/fixtures")
@@ -522,11 +528,13 @@ if(FLS_BUILD_TESTS)
     add_test(NAME contour_mesh_logged_overlap_simplification COMMAND fls_contour_mesh_tests --logged-overlap-simplification)
     target_link_libraries(fls_gui_command_tests PRIVATE fls_editor_ui)
     if(WIN32)
-        add_custom_command(TARGET fls_gui_command_tests POST_BUILD
-            COMMAND "${CMAKE_COMMAND}" -E make_directory "$<TARGET_FILE_DIR:fls_gui_command_tests>/platforms"
-            COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-                "${Qt6_DIR}/../../Qt6/plugins/platforms/qminimal.dll"
-                "$<TARGET_FILE_DIR:fls_gui_command_tests>/platforms/qminimal.dll")
+        foreach(gui_test_target IN ITEMS fls_gui_command_tests fls_mesh_edit_tests)
+            add_custom_command(TARGET ${gui_test_target} POST_BUILD
+                COMMAND "${CMAKE_COMMAND}" -E make_directory "$<TARGET_FILE_DIR:${gui_test_target}>/platforms"
+                COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+                    "${Qt6_DIR}/../../Qt6/plugins/platforms/qminimal.dll"
+                    "$<TARGET_FILE_DIR:${gui_test_target}>/platforms/qminimal.dll")
+        endforeach()
     endif()
     add_test(NAME gui_commands COMMAND fls_gui_command_tests)
     set_tests_properties(gui_commands PROPERTIES WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")

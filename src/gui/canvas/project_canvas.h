@@ -12,6 +12,7 @@
 #include "gui/key_bindings.h"
 #include "native_shape_renderer.h"
 #include "path_interaction.h"
+#include "mesh_edit.h"
 #include "theme_manager.h"
 #include "pen_fill.h"
 #include "region_extract.h"
@@ -272,6 +273,24 @@ private:
         bool valid() const { return pointIndex >= 0; }
     };
 
+    struct MeshEditHit {
+        int vertex = -1;
+        int edge = -1;
+        int handle = -1;
+        double parameter = 0.0;
+        bool valid() const { return vertex >= 0 || edge >= 0; }
+    };
+
+    struct MeshInteraction {
+        QSet<int> vertices;
+        QVector<MeshEditEdge> edges;
+        MeshEditHit hover;
+        MeshEditHit drag;
+        QPointF startWorld;
+        QTransform inverse;
+        std::optional<fls::scene::MeshData> before;
+    };
+
     struct EntryStart {
         double x = 0.0;
         double y = 0.0;
@@ -512,7 +531,19 @@ private:
     void drawPenOverlay(QPainter &painter);
     void drawContourFigures(QPainter &painter);
     void syncPathFigureSelection();
-    bool editMeshContour(int index);
+    const fls::scene::Mesh *selectedMesh() const;
+    bool meshEditActive() const;
+    bool meshVisible() const;
+    bool meshEditable() const;
+    MeshEditHit meshPointAtScreen(const QPointF &point, bool includeEdges = true) const;
+    void refreshMeshHover(const QPointF &point);
+    bool storeMeshData(fls::scene::MeshData data);
+    bool handleMeshPress(QMouseEvent *event);
+    bool handleMeshMove(QMouseEvent *event);
+    bool handleMeshRelease(QMouseEvent *event);
+    void finishMeshEdit(bool cancel = false);
+    bool handleMeshKey(KeyInteraction interaction);
+    void drawMeshOverlay(QPainter &painter);
     void releaseSavedFigure();
     void reloadPathFigure();
     void storePathFigure();
@@ -610,7 +641,7 @@ private:
     std::function<void(int)> bucketToleranceChangedCallback_;
     PathInteraction pen_;
     QString pathFigureId_;
-    int meshContourIndex_ = -1;
+    MeshInteraction meshEdit_;
     std::optional<PathInteractionState> penDraft_;
     std::optional<PathInteractionState> liningDraft_;
     fls::scene::ContourPathKind pathFigureKind_ = fls::scene::ContourPathKind::Pen;

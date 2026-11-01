@@ -452,6 +452,11 @@ void ProjectCanvas::validatePenInteraction() {
 
 void ProjectCanvas::refreshPenInteractionHint(const QPointF &screenPoint,
                                               Qt::KeyboardModifiers modifiers) {
+    if (selectedMesh() != nullptr) {
+        refreshMeshHover(screenPoint);
+
+        return;
+    }
     const bool drawingCutout = pen_.closed && !pen_.cutoutClosed;
     const QVector<PenPoint> &drawingPoints = drawingCutout
         ? pen_.cutouts[pen_.activeCutout]

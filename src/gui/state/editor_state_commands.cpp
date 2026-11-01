@@ -87,6 +87,7 @@ QVector<QString> EditorState::propertyTargets(const QVector<QString> &entries, c
             const auto *shape = dynamic_cast<const fls::scene::Shape *>(child);
             if (seen.contains(id)
                 || (property == QStringLiteral("contourData") && !fls::scene::isContourGeometry(child->kind()))
+                || (property == QStringLiteral("meshData") && child->kind() != fls::scene::LayerKind::Mesh)
                 || ((property == QStringLiteral("mask") || property == QStringLiteral("shapeId")) && shape == nullptr)
                 || (property == QStringLiteral("color") && (child->kind() == fls::scene::LayerKind::Group
                     || child->kind() == fls::scene::LayerKind::Guide || (shape != nullptr && shape->isRaster())))
@@ -125,11 +126,15 @@ bool EditorState::applyPropertyCommand(const EditorCommand &command, QString *er
 
     if (!flag && !numeric && property != QStringLiteral("name")
         && property != QStringLiteral("shapeId") && property != QStringLiteral("color")
-        && !(property == QStringLiteral("contourData") && command.contourData.has_value())) {
+        && !(property == QStringLiteral("contourData") && command.contourData.has_value())
+        && !(property == QStringLiteral("meshData") && command.meshData.has_value())) {
         return reject(error, QStringLiteral("Unknown property"));
     }
     if (targets.isEmpty()) {
         return reject(error, QStringLiteral("Selection has no applicable layers"));
+    }
+    if (property == QStringLiteral("meshData") && !command.meshData->valid()) {
+        return reject(error, QStringLiteral("Mesh edits must retain valid shared topology"));
     }
     for (const QString &id : targets) {
         if (!flag && isLayerLocked(id)) {
@@ -147,7 +152,9 @@ bool EditorState::applyPropertyCommand(const EditorCommand &command, QString *er
         const double number = command.values.value(id, command.value.toDouble());
         const auto adjusted = [&](double current) { return command.relative ? current + number : number; };
 
-        if (property == QStringLiteral("contourData")) {
+        if (property == QStringLiteral("meshData")) {
+            mesh->data = *command.meshData;
+        } else if (property == QStringLiteral("contourData")) {
             if (mesh != nullptr) {
                 if (!mesh->data.replaceContour(command.meshContourIndex, *command.contourData, error)) return false;
             } else {

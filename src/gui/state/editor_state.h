@@ -95,6 +95,7 @@ struct EditorCommand {
     bool deferRefresh = false;
     std::optional<ProjectClipboard> clipboard;
     std::optional<fls::scene::ContourData> contourData;
+    std::optional<fls::scene::MeshData> meshData;
     int meshContourIndex = -1;
 };
 

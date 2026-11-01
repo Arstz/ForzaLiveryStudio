@@ -56,6 +56,7 @@ void ProjectCanvas::drawContourFigures(QPainter &painter) {
     painter.setBrush(Qt::NoBrush);
     for (const SceneRenderEntry &entry : state_->renderEntries()) {
         if (!fls::scene::isContourGeometry(entry.kind) || !isSectionActive(entry.sectionGroupId)
+            || (entry.kind == fls::scene::LayerKind::Mesh && entry.nodeId == pathFigureId_)
             || (entry.kind == fls::scene::LayerKind::Contour && entry.nodeId == pathFigureId_ && (pathFigureKind_ == fls::scene::ContourPathKind::Lining
                 ? tool_ == QStringLiteral("lining") : tool_ == QStringLiteral("pen")))) {
             continue;
@@ -69,11 +70,7 @@ void ProjectCanvas::drawContourFigures(QPainter &painter) {
         if (!visible) {
             continue;
         }
-        int contourIndex = 0;
         forEachContour(*entry.node, [&](const fls::scene::ContourData &data, bool contourVisible, double opacity) {
-            const int index = contourIndex++;
-            if (entry.kind == fls::scene::LayerKind::Mesh && entry.nodeId == pathFigureId_ && index == meshContourIndex_
-                && (pathFigureKind_ == fls::scene::ContourPathKind::Lining ? tool_ == QStringLiteral("lining") : tool_ == QStringLiteral("pen"))) return;
             if (!contourVisible) return;
             painter.setOpacity(opacity);
             paintContourOutline(painter, (entry.worldTransform * camera_.matrix()).map(contourDataPath(data)),
@@ -84,6 +81,7 @@ void ProjectCanvas::drawContourFigures(QPainter &painter) {
 }
 
 void ProjectCanvas::drawPenOverlay(QPainter &painter) {
+    if (selectedMesh() != nullptr) return;
     if (!pathFigureVisible(pen_)) {
         return;
     }
@@ -243,6 +241,7 @@ QPainterPath ProjectCanvas::liningPreviewPath() const {
 }
 
 void ProjectCanvas::drawLiningOverlay(QPainter &painter) {
+    if (selectedMesh() != nullptr) return;
     if (!pathFigureVisible(lining_) || (tool_ != QStringLiteral("lining") && !lining_.fillRunning)) {
         return;
     }
@@ -810,6 +809,7 @@ void ProjectCanvas::drawOverlay(QPainter &painter) {
                       countImage);
 
     drawContourFigures(painter);
+    drawMeshOverlay(painter);
     drawPenOverlay(painter);
     drawLiningOverlay(painter);
     drawSnapIndicators(painter);

@@ -111,6 +111,8 @@ ProjectCanvas::ProjectCanvas(QWidget *parent)
 ProjectCanvas::~ProjectCanvas() = default;
 
 void ProjectCanvas::setProject(fls::Project *project) {
+    finishMeshEdit();
+    releaseSavedFigure();
     cancelPenInteraction();
     cancelLiningInteraction();
     clearBucketPreview();
@@ -130,6 +132,7 @@ void ProjectCanvas::setProject(fls::Project *project) {
 }
 
 void ProjectCanvas::setEditorState(EditorState *state) {
+    finishMeshEdit();
     if (state_ != nullptr) {
         disconnect(state_, nullptr, this, nullptr);
     }
@@ -178,6 +181,7 @@ void ProjectCanvas::setTool(const QString &requestedTool) {
     if (next == nullptr) {
         return;
     }
+    finishMeshEdit();
     cancelDrag();
     if (tool_ == QStringLiteral("pen") && tool != tool_) {
         commitPathEdit(pen_);
@@ -804,6 +808,11 @@ bool ProjectCanvas::applyPathHistory(PathInteraction &path, bool undo) {
 }
 
 bool ProjectCanvas::undoContourEdit() {
+    if (meshEdit_.before.has_value()) {
+        finishMeshEdit(true);
+
+        return true;
+    }
     if (tool_ == QStringLiteral("pen")) {
         return applyPathHistory(pen_, true);
     }
@@ -842,7 +851,7 @@ PathInteraction &ProjectCanvas::savedFigurePath() {
 
 bool ProjectCanvas::isSavedFigurePath(const PathInteraction &path) const {
 
-    return !pathFigureId_.isEmpty() && path.pathKind == pathFigureKind_;
+    return !pathFigureId_.isEmpty() && selectedMesh() == nullptr && path.pathKind == pathFigureKind_;
 }
 
 void ProjectCanvas::setPathProjectRequestedCallback(std::function<bool()> callback) {
@@ -959,10 +968,19 @@ void ProjectCanvas::syncPathFigureSelection() {
     }
     releaseSavedFigure();
     if (figure != nullptr) {
-        meshContourIndex_ = figure->kind() == fls::scene::LayerKind::Mesh ? 0 : -1;
-        const auto data = meshContourIndex_ >= 0
-            ? static_cast<const fls::scene::Mesh *>(figure)->data.contourData(meshContourIndex_)
-            : static_cast<const fls::scene::ContourFigure *>(figure)->data;
+        if (figure->kind() == fls::scene::LayerKind::Mesh) {
+            pathFigureKind_ = fls::scene::ContourPathKind::Pen;
+            commitPathEdit(pen_);
+            penDraft_ = capturePathState(pen_);
+            pen_.reset();
+            meshEdit_ = {};
+            pathFigureId_ = nextId;
+            setTool(QStringLiteral("pen"));
+            update();
+
+            return;
+        }
+        const auto data = static_cast<const fls::scene::ContourFigure *>(figure)->data;
         pathFigureKind_ = data.pathKind;
         PathInteraction &path = savedFigurePath();
         commitPathEdit(path);
@@ -975,29 +993,12 @@ void ProjectCanvas::syncPathFigureSelection() {
     update();
 }
 
-bool ProjectCanvas::editMeshContour(int index) {
-    const auto *mesh = state_ != nullptr ? dynamic_cast<const fls::scene::Mesh *>(state_->sceneNode(pathFigureId_)) : nullptr;
-
-    if (mesh == nullptr || index < 0 || index >= mesh->data.contours.size()) return false;
-    if (meshContourIndex_ == index) return true;
-    const QString meshId = mesh->id;
-    const auto kind = mesh->data.contours[index].style.pathKind;
-    releaseSavedFigure();
-    meshContourIndex_ = index;
-    pathFigureKind_ = kind;
-    auto &interaction = savedFigurePath();
-    (kind == fls::scene::ContourPathKind::Lining ? liningDraft_ : penDraft_) = capturePathState(interaction);
-    pathFigureId_ = meshId;
-    reloadPathFigure();
-    setTool(kind == fls::scene::ContourPathKind::Lining ? QStringLiteral("lining") : QStringLiteral("pen"));
-
-    return true;
-}
-
 void ProjectCanvas::releaseSavedFigure() {
     if (pathFigureId_.isEmpty()) {
         return;
     }
+    finishMeshEdit();
+    meshEdit_ = {};
     PathInteraction &previous = savedFigurePath();
     auto &draft = pathFigureKind_ == fls::scene::ContourPathKind::Lining ? liningDraft_ : penDraft_;
     const auto &cancel = pathFigureKind_ == fls::scene::ContourPathKind::Lining
@@ -1016,7 +1017,6 @@ void ProjectCanvas::releaseSavedFigure() {
         liningWidthChangedCallback_(previous.strokeWidth);
     }
     pathFigureId_.clear();
-    meshContourIndex_ = -1;
 }
 
 void ProjectCanvas::reloadPathFigure() {
@@ -1032,10 +1032,16 @@ void ProjectCanvas::reloadPathFigure() {
         syncPathFigureSelection();
         return;
     }
-    const auto *mesh = dynamic_cast<const fls::scene::Mesh *>(figure);
-    if (mesh != nullptr && (meshContourIndex_ < 0 || meshContourIndex_ >= mesh->data.contours.size())) meshContourIndex_ = 0;
-    PathInteractionState data = mesh != nullptr ? mesh->data.contourData(meshContourIndex_)
-        : static_cast<const fls::scene::ContourFigure *>(figure)->data;
+    if (const auto *mesh = dynamic_cast<const fls::scene::Mesh *>(figure)) {
+        for (auto vertex = meshEdit_.vertices.begin(); vertex != meshEdit_.vertices.end();) {
+            if (*vertex >= mesh->data.vertices.size()) vertex = meshEdit_.vertices.erase(vertex);
+            else ++vertex;
+        }
+        update();
+
+        return;
+    }
+    PathInteractionState data = static_cast<const fls::scene::ContourFigure *>(figure)->data;
     const QTransform world = sceneWorldTransform(*figure);
 
     data.fillColor = fls::scene::contourFillColor(data);
@@ -1053,7 +1059,7 @@ void ProjectCanvas::storePathFigure() {
     const QTransform inverse = figure != nullptr
         ? sceneWorldTransform(*figure).inverted(&invertible) : QTransform();
 
-    if (figure == nullptr || state_->isLayerLocked(pathFigureId_) || !invertible) {
+    if (figure == nullptr || figure->kind() != fls::scene::LayerKind::Contour || state_->isLayerLocked(pathFigureId_) || !invertible) {
         return;
     }
     data = transformedContourData(std::move(data), inverse);
@@ -1062,14 +1068,7 @@ void ProjectCanvas::storePathFigure() {
     command.entries = {pathFigureId_};
     command.property = QStringLiteral("contourData");
     command.contourData = std::move(data);
-    command.meshContourIndex = meshContourIndex_;
-    if (!state_->executeCommand(command)) {
-        const auto *mesh = dynamic_cast<const fls::scene::Mesh *>(figure);
-        if (mesh != nullptr) {
-            restorePathState(savedFigurePath(), transformedContourData(mesh->data.contourData(meshContourIndex_), sceneWorldTransform(*mesh)));
-            invalidatePenGeometryCache();
-        }
-    }
+    state_->executeCommand(command);
     syncingPathFigure_ = false;
 }
 
@@ -1077,9 +1076,6 @@ bool ProjectCanvas::pathFigureVisible(const PathInteraction &path) const {
     if (!isSavedFigurePath(path) || state_ == nullptr) {
         return true;
     }
-    const auto *mesh = dynamic_cast<const fls::scene::Mesh *>(state_->sceneNode(pathFigureId_));
-    if (mesh != nullptr && meshContourIndex_ >= 0 && meshContourIndex_ < mesh->data.contours.size()
-        && !mesh->data.contours[meshContourIndex_].visible) return false;
     for (const fls::scene::Layer *node = state_->sceneNode(pathFigureId_); node != nullptr; node = node->parent()) {
         if (!node->visible) {
             return false;
@@ -1090,6 +1086,7 @@ bool ProjectCanvas::pathFigureVisible(const PathInteraction &path) const {
 }
 
 bool ProjectCanvas::pathFigureEditable(const PathInteraction &path) const {
+    if (selectedMesh() != nullptr) return false;
     if (!isSavedFigurePath(path)) {
         return true;
     }

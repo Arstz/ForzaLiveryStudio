@@ -8,6 +8,11 @@ using namespace pc_detail;
 
 
 void ProjectCanvas::refreshHover(const QPointF &point, Qt::KeyboardModifiers modifiers) {
+    if (meshEditActive()) {
+        refreshMeshHover(point);
+
+        return;
+    }
     if (tool_ == QStringLiteral("pen")) {
         if (pen_.fillRunning) {
             return;
@@ -189,9 +194,10 @@ void ProjectCanvas::mousePressEvent(QMouseEvent *event) {
         && (drag_.mode != DragMode::None
             || guidelines_.rulerPressActive
             || pen_.dragPoint >= 0
+            || meshEdit_.before.has_value()
             || lining_.dragPoint >= 0);
     const bool stalePanGesture = event->button() == Qt::MiddleButton
-        && drag_.mode == DragMode::Pan;
+        && (drag_.mode == DragMode::Pan || meshEdit_.before.has_value());
     if (stalePrimaryGesture || stalePanGesture) {
         cancelActiveInput();
     }
@@ -209,6 +215,11 @@ void ProjectCanvas::mousePressEvent(QMouseEvent *event) {
         drag_.mode = DragMode::Pan;
         updateCursorForPoint(event->position());
         event->accept();
+        return;
+    }
+    if (handleMeshPress(event)) {
+        event->accept();
+
         return;
     }
     if (project_ != nullptr
@@ -318,7 +329,7 @@ void ProjectCanvas::mouseMoveEvent(QMouseEvent *event) {
     const bool dragButtonLost = drag_.mode != DragMode::None
         && drag_.mode != DragMode::Pan
         && !(event->buttons() & Qt::LeftButton);
-    const bool pathButtonLost = (pen_.dragPoint >= 0 || lining_.dragPoint >= 0)
+    const bool pathButtonLost = (pen_.dragPoint >= 0 || lining_.dragPoint >= 0 || meshEdit_.before.has_value())
         && !(event->buttons() & Qt::LeftButton);
     if (guidelineButtonLost || panButtonLost || dragButtonLost || pathButtonLost) {
         cancelActiveInput();
@@ -385,6 +396,11 @@ void ProjectCanvas::mouseMoveEvent(QMouseEvent *event) {
         event->accept();
         return;
     }
+    if (handleMeshMove(event)) {
+        event->accept();
+
+        return;
+    }
     if (activeTool_ != nullptr && activeTool_->handleMove(event)) {
         return;
     }
@@ -394,6 +410,11 @@ void ProjectCanvas::mouseMoveEvent(QMouseEvent *event) {
 }
 
 void ProjectCanvas::mouseReleaseEvent(QMouseEvent *event) {
+    if (handleMeshRelease(event)) {
+        event->accept();
+
+        return;
+    }
     if (event->button() == Qt::LeftButton
         && guidelines_.draggedOrientation != GuidelineOrientation::None) {
         commitGuidelineDrag();
@@ -437,25 +458,10 @@ void ProjectCanvas::mouseDoubleClickEvent(QMouseEvent *event) {
         return;
     }
     updateViewTransform();
-    if (event->button() == Qt::LeftButton && state_ != nullptr) {
-        const auto *mesh = dynamic_cast<const fls::scene::Mesh *>(state_->sceneNode(pathFigureId_));
-        if (mesh != nullptr) {
-            QPainterPathStroker stroker;
-            constexpr double kMeshContourPickWidth = 10.0;
-            stroker.setWidth(kMeshContourPickWidth);
-            for (int index = mesh->data.contours.size() - 1; index >= 0; --index) {
-                if (!mesh->data.contours[index].visible) continue;
-                const auto data = mesh->data.contourData(index);
-                const auto path = (sceneWorldTransform(*mesh) * camera_.matrix()).map(contourDataPath(data));
-                if (!stroker.createStroke(path).contains(event->position())) continue;
-                if (index == meshContourIndex_) break;
-                editMeshContour(index);
-                event->accept();
-                update();
+    if (event->button() == Qt::LeftButton && meshEditActive()) {
+        event->accept();
 
-                return;
-            }
-        }
+        return;
     }
     if (activeTool_ != nullptr && activeTool_->handleDoubleClick(event)) {
         return;
@@ -502,6 +508,7 @@ bool ProjectCanvas::handleKeyBinding(KeyInteraction interaction, KeyEventPhase p
     if (phase != KeyEventPhase::Press) {
         return false;
     }
+    if (handleMeshKey(interaction)) return true;
     if (interaction == KeyInteraction::CanvasRemovePathPoint
         && tool_ == QStringLiteral("pen") && !pen_.fillRunning && pathFigureEditable(pen_)
         && (!pen_.closed || !pen_.cutoutClosed)) {
@@ -605,7 +612,8 @@ bool ProjectCanvas::handleKeyBinding(KeyInteraction interaction, KeyEventPhase p
 
         return true;
     }
-    const bool nudgeTool = tool_ == QStringLiteral("move") || tool_ == QStringLiteral("transform");
+    const bool meshNudge = meshEditActive() && meshEditable() && !meshEdit_.vertices.isEmpty() && !meshEdit_.before.has_value();
+    const bool nudgeTool = meshNudge || tool_ == QStringLiteral("move") || tool_ == QStringLiteral("transform");
     if (!nudgeTool || drag_.mode != DragMode::None) {
         return false;
     }
@@ -636,10 +644,21 @@ bool ProjectCanvas::handleKeyBinding(KeyInteraction interaction, KeyEventPhase p
         return false;
     }
 
+    if (meshNudge) {
+        const auto *mesh = selectedMesh();
+        const auto inverse = sceneWorldTransform(*mesh).inverted();
+        const auto localDelta = inverse.map(delta) - inverse.map(QPointF());
+        auto data = mesh->data;
+        translateMeshVertices(data, meshEdit_.vertices, localDelta);
+
+        return storeMeshData(std::move(data));
+    }
+
     return nudgeSelection(delta);
 }
 
 void ProjectCanvas::cancelActiveInput() {
+    finishMeshEdit(true);
     spaceDown_ = false;
     if (pen_.dragPoint >= 0) {
         cancelPathEdit(pen_);
