@@ -1,5 +1,7 @@
 #include "contour_mesh.h"
 #include "contour_mesh_diagnostics.h"
+#include "contour_mesh_simplify.h"
+#include "cubic_contour.h"
 #include "editor_state.h"
 #include "project_codec.h"
 #include "scene_codec.h"
@@ -131,9 +133,16 @@ void regionTopology() {
     double rightArea = 0.0;
     for (const auto &segment : gui::penSegments(curved.contourData(0).points)) leftArea += segment.signedArea();
     for (const auto &segment : gui::penSegments(curved.contourData(1).points)) rightArea += segment.signedArea();
-    require(leftArea >= 10500.0 && rightArea >= 9300.0
-            && std::abs((leftArea - 10500.0) - (rightArea - 9300.0)) < 1.0,
+    const auto growth = curvedDiagnostics.value(QStringLiteral("regionGrowth")).toArray();
+    const double leftGrowth = growth[0].toObject().value(QStringLiteral("growthArea")).toDouble();
+    const double rightGrowth = growth[1].toObject().value(QStringLiteral("growthArea")).toDouble();
+    QTextStream(stdout) << "Curved partition areas: " << leftArea << ", " << rightArea << "; growth: " << leftGrowth << ", " << rightGrowth << '\n';
+    require(std::abs(leftGrowth - rightGrowth) < 1.0,
             "closed-curve reconstruction must distribute growth between both neighbors");
+    require(leftArea >= 10500.0 * (1.0 - gui::kCubicMaskMissingAreaFraction)
+            && rightArea >= 9300.0 * (1.0 - gui::kCubicMaskMissingAreaFraction)
+            && curvedDiagnostics.value(QStringLiteral("lostUnionFraction")).toDouble(1) <= gui::kCubicMaskMissingAreaFraction,
+            "the fitted partition must retain bucket-quality region coverage");
     require(gui::buildPenContour(curved.contourData(0).points).valid() && gui::buildPenContour(curved.contourData(1).points).valid(),
             "reconstructed curved boundaries must remain simple");
     const auto leftRegion = filledContour(curved.contourData(0));
@@ -361,13 +370,121 @@ void multiRegionPartitions() {
                     require(diagnostics.value(QStringLiteral("maximumCoverage")).toInt() == 4,
                             "the subdivision must retain the complete coverage set at multi-region intersections");
                 } else {
+                    const auto center = polygons(filledContour(box(100.0 * scale, 100.0 * scale, 2.0 * scale, 2.0 * scale)));
+                    require(std::abs(Clipper2Lib::Area(Clipper2Lib::Difference(center, polygons(rebuilt), Clipper2Lib::FillRule::NonZero, 8))) < 1e-6,
+                            "the enclosed junction must have no unassigned interior pocket");
                     for (int index = 0; index < mesh.contours.size(); ++index) {
                         require(contourArea(mesh.contourData(index)) / (scale * scale) > 10000.0,
                                 "all neighboring regions must participate in growth at a shared junction");
+                        require(std::abs(Clipper2Lib::Area(Clipper2Lib::Intersect(center, polygons(regions[index]), Clipper2Lib::FillRule::NonZero, 8)) - 1.0) < 0.05,
+                                "all four fronts must contribute equally to the enclosed junction");
                     }
                 }
             }
         }
+    }
+}
+
+void preservedInteriorVoids() {
+    MeshData ring;
+    for (const auto &contour : {box(0, 0, 100, 10), box(0, 90, 100, 10), box(0, 10, 10, 80), box(90, 10, 10, 80)}) {
+        ring.appendContour(contour, QStringLiteral("Ring"), true, 1.0);
+    }
+    require(gui::connectMeshContours(ring), "existing contacts must remain connectable around an opening");
+    for (int contour = 0; contour < ring.contours.size(); ++contour) {
+        require(!filledContour(ring.contourData(contour)).contains(QPointF(50, 50)), "an existing opening without new growth must remain intact");
+    }
+    MeshData small;
+    auto frame = rectangle(0, 0, 100);
+    frame.cutouts.push_back(rectangle(50, 50, 0.002).points);
+    small.appendContour(frame, QStringLiteral("Frame"), true, 1.0);
+    small.appendContour(rectangle(100, 0, 100), QStringLiteral("Neighbor"), true, 1.0);
+    require(gui::connectMeshContours(small), "small valid source holes must be validated in their own coordinate frame");
+    require(!filledContour(small.contourData(0)).contains(QPointF(50.001, 50.001)), "a surviving authored hole must remain protected during interior completion");
+}
+
+void sharedBoundarySimplification() {
+    for (const double scale : {0.001, 1.0, 1000.0}) {
+        QPolygonF seam;
+        for (int index = 0; index <= 256; ++index) {
+            const double parameter = double(index) / 256.0;
+            seam.push_back(QPointF(100.0 + 8.0 * std::sin(parameter * std::acos(-1.0)), parameter * 100.0) * scale + QPointF(17, -23));
+        }
+        const auto polygon = [&](QPolygonF outline) {
+            ContourData data;
+            data.closed = true;
+            for (int index = 0; index < outline.size(); ++index) {
+                const QPointF previous = outline[(index + outline.size() - 1) % outline.size()];
+                const QPointF next = outline[(index + 1) % outline.size()];
+                data.points.push_back({outline[index], ContourPointKind::Hard, (previous - outline[index]) / 3.0,
+                                       (next - outline[index]) / 3.0, true});
+            }
+            return data;
+        };
+        QPolygonF left{QPointF(17, -23)};
+        left += seam;
+        left.push_back(QPointF(17, -23 + 100.0 * scale));
+        QPolygonF right{seam.front(), QPointF(17 + 200.0 * scale, -23), QPointF(17 + 200.0 * scale, -23 + 100.0 * scale)};
+        for (int point = seam.size() - 1; point > 0; --point) right.push_back(seam[point]);
+        MeshData mesh;
+        mesh.appendContour(polygon(left), QStringLiteral("Left"), true, 1.0);
+        MeshData second;
+        second.appendContour(polygon(right), QStringLiteral("Right"), true, 1.0);
+        auto neighbor = second.contours.front();
+        for (auto &point : neighbor.points) {
+            const QPointF position = second.vertices[point.vertex];
+            const auto existing = std::find(mesh.vertices.cbegin(), mesh.vertices.cend(), position);
+            if (existing != mesh.vertices.cend()) point.vertex = static_cast<int>(existing - mesh.vertices.cbegin());
+            else {
+                point.vertex = static_cast<int>(mesh.vertices.size());
+                mesh.vertices.push_back(position);
+            }
+        }
+        mesh.contours.push_back(neighbor);
+        require(mesh.valid(), "dense shared boundary fixture must start with canonical topology");
+        const auto before = mesh;
+        QJsonObject diagnostics;
+        QSet<int> anchors;
+        for (int point = 0; point < mesh.vertices.size(); ++point) {
+            const auto &position = mesh.vertices[point];
+            if (position.x() == 17 || position.x() == 17 + 200.0 * scale) anchors.insert(point);
+        }
+        gui::simplifyMeshBoundaries(mesh, 0.02 * scale, anchors, [&](const MeshData &candidate, QSet<int> &unsafe) {
+            for (int contour = 0; contour < candidate.contours.size(); ++contour) {
+                if (!gui::buildPenContour(candidate.contourData(contour).points).valid()) unsafe.insert(contour);
+            }
+            return unsafe.isEmpty();
+        }, &diagnostics);
+        require(mesh.valid() && mesh.vertices.size() < before.vertices.size() / 4, "cubic fitting must remove dense internal anchors");
+        QHash<quint64, gui::PenBoundarySegment> shared;
+        int matched = 0;
+        for (int contour = 0; contour < mesh.contours.size(); ++contour) {
+            const auto &points = mesh.contours[contour].points;
+            const auto curves = gui::penSegments(mesh.contourData(contour).points, true);
+            for (int point = 0; point < points.size(); ++point) {
+                const int first = points[point].vertex;
+                const int last = points[(point + 1) % points.size()].vertex;
+                const quint64 key = (quint64(quint32(std::min(first, last))) << 32) | quint32(std::max(first, last));
+                if (!shared.contains(key)) shared.insert(key, curves[point]);
+                else {
+                    const auto &other = shared[key];
+                    for (const double parameter : {0.0, 0.2, 0.5, 0.8, 1.0}) {
+                        require(QLineF(curves[point].point(parameter), other.point(1.0 - parameter)).length() < scale * 1e-8,
+                                "both incident contours must share identical cubic geometry");
+                    }
+                    ++matched;
+                }
+            }
+        }
+        require(matched > 0, "the fitted mesh must retain a complete shared seam");
+        const auto stable = mesh;
+        QSet<int> stableAnchors;
+        for (int point = 0; point < mesh.vertices.size(); ++point) {
+            if (mesh.vertices[point].x() == 17 || mesh.vertices[point].x() == 17 + 200.0 * scale) stableAnchors.insert(point);
+        }
+        gui::simplifyMeshBoundaries(mesh, 0.02 * scale, stableAnchors, {}, nullptr);
+        require(mesh == stable, "simplifying an already fitted seam must retain its topology");
+        require(mesh.vertices.contains(before.vertices.front()), "exterior anchors must remain fixed");
     }
 }
 
@@ -415,11 +532,14 @@ void curvedRegionJunction() {
             "a curved junction must resolve all covering regions in one subdivision");
     require(contourArea(mesh.contourData(0)) >= 10500.0 - 1e-4,
             "multi-region overlap must retain the canonical owner's original material");
+    const double fittingBand = diagnostics.value(QStringLiteral("boundarySimplification")).toObject().value(QStringLiteral("tolerance")).toDouble();
+    require(diagnostics.value(QStringLiteral("lostUnionFraction")).toDouble(1) <= gui::kCubicMaskMissingAreaFraction,
+            "curved-junction simplification must retain bucket-quality source coverage");
     const auto retained = filledContour(mesh.contourData(0));
     for (const double y : {1.0, 10.0, 25.0, 50.0, 75.0, 90.0, 99.0}) {
         const double parameter = y / 100.0;
-        require(retained.contains(QPointF(100.0 + 30.0 * parameter * (1.0 - parameter) - 0.01, y)),
-                "the shared partition must preserve material along the original curved boundary");
+        require(retained.contains(QPointF(100.0 + 30.0 * parameter * (1.0 - parameter) - 2.0 * fittingBand, y)),
+                "the shared partition must retain curved material beyond the fitting band");
     }
     for (int index = 0; index < mesh.contours.size(); ++index) {
         require(gui::buildPenContour(mesh.contourData(index).points).valid(), "curved junction boundaries must remain geometrically valid");
@@ -806,14 +926,29 @@ void stateAndPersistence() {
 
 } // namespace
 
-void loggedGrowthFixture(bool divergence = false) {
-    QFile fixture(QStringLiteral(FLS_CONTOUR_FIXTURE_DIR) + (divergence ? QStringLiteral("/contour_mesh_diverging_input.json")
-                                                                     : QStringLiteral("/contour_mesh_growth_input.json")));
+enum class LoggedScene { Growth, Divergence, Interior, InteriorSubset, Simplification, OverlapSimplification };
+
+void loggedGrowthFixture(LoggedScene variant = LoggedScene::Growth) {
+    const bool divergence = variant == LoggedScene::Divergence;
+    const bool interior = variant == LoggedScene::Interior || variant == LoggedScene::InteriorSubset;
+    const bool subset = variant == LoggedScene::InteriorSubset;
+    const bool overlapSimplification = variant == LoggedScene::OverlapSimplification;
+    const bool simplification = variant == LoggedScene::Simplification || overlapSimplification;
+    const QString fixtureName = overlapSimplification ? QStringLiteral("/contour_mesh_overlap_simplification_input.json")
+        : simplification ? QStringLiteral("/contour_mesh_simplification_input.json") : interior ? QStringLiteral("/contour_mesh_interior_input.json")
+        : divergence ? QStringLiteral("/contour_mesh_diverging_input.json") : QStringLiteral("/contour_mesh_growth_input.json");
+    QFile fixture(QStringLiteral(FLS_CONTOUR_FIXTURE_DIR) + fixtureName);
     require(fixture.open(QIODevice::ReadOnly), "the logged source fixture must be readable");
     const auto record = QJsonDocument::fromJson(fixture.readAll()).object();
     auto scene = record.value(QStringLiteral("inputScene")).toObject();
     const auto encoded = scene.value(QStringLiteral("children")).toArray()[0].toObject();
     auto contours = encoded.value(QStringLiteral("contours")).toArray();
+    if (subset) {
+        QJsonArray selected;
+        const auto selection = record.value(QStringLiteral("selections")).toArray().first().toObject().value(QStringLiteral("contours")).toArray();
+        for (const auto &index : selection) selected.append(contours[index.toInt()]);
+        contours = selected;
+    }
     for (int index = 0; index < contours.size(); ++index) {
         auto contour = contours[index].toObject();
         contour.insert(QStringLiteral("id"), QStringLiteral("fixture_%1").arg(index));
@@ -832,7 +967,8 @@ void loggedGrowthFixture(bool divergence = false) {
     QString error;
     const bool connected = gui::connectMeshContours(mesh, &error, &diagnostics);
     gui::writeMeshReconstructionDiagnostics(input, connected ? &mesh : nullptr, diagnostics, {QStringLiteral("logged_growth_fixture")},
-        QDir(QCoreApplication::applicationDirPath()).filePath(divergence ? QStringLiteral("divergence_diagnostics") : QStringLiteral("wavefront_diagnostics")));
+        QDir(QCoreApplication::applicationDirPath()).filePath(overlapSimplification ? QStringLiteral("overlap_simplification_diagnostics") : simplification ? QStringLiteral("simplification_diagnostics") : subset ? QStringLiteral("interior_subset_diagnostics") : interior ? QStringLiteral("interior_diagnostics")
+            : divergence ? QStringLiteral("divergence_diagnostics") : QStringLiteral("wavefront_diagnostics")));
     QTextStream(stdout) << "Logged growth fixture: " << connected << ", stage=" << diagnostics.value(QStringLiteral("stage")).toString()
                         << ", vertices=" << mesh.vertices.size() << ", elapsed=" << diagnostics.value(QStringLiteral("elapsedMs")).toInt() << '\n';
     if (!connected) throw std::runtime_error(error.toStdString());
@@ -841,6 +977,35 @@ void loggedGrowthFixture(bool divergence = false) {
     require(growth.size() == input.contours.size(), "growth diagnostics must account for every source region");
     double total = 0.0;
     for (const auto &entry : growth) total += entry.toObject().value(QStringLiteral("growthArea")).toDouble();
+    if (simplification) {
+        const auto reduction = diagnostics.value(QStringLiteral("boundarySimplification")).toObject();
+        const int before = reduction.value(QStringLiteral("verticesBefore")).toInt();
+        const int after = reduction.value(QStringLiteral("verticesAfter")).toInt();
+        const int budgetAllowance = overlapSimplification ? gui::kMeshSoftVertexLimit / 10 : 0;
+        QTextStream(stdout) << "Shared boundary simplification: " << before << " -> " << after << '\n';
+        require(before > 2000 && after <= gui::kMeshSoftVertexLimit + budgetAllowance, "the logged mesh must stay close to its soft canonical vertex budget");
+        require(reduction.value(QStringLiteral("metSoftLimit")).toBool() == (after <= gui::kMeshSoftVertexLimit),
+                "budget diagnostics must reflect the accepted mesh");
+        require(mesh.contours.size() == input.contours.size() + (overlapSimplification ? 1 : 0), "simplification must preserve the region topology");
+        if (overlapSimplification) {
+            int holes = 0;
+            for (const auto &contour : mesh.contours) holes += contour.cutouts.size();
+            require(holes == 1, "simplification must retain the reconstructed enclosed void");
+        }
+        require(diagnostics.value(QStringLiteral("remainingOverlapArea")).toDouble(-1) < 0.01, "simplified shared boundaries must retain disjoint regions");
+        require(diagnostics.value(QStringLiteral("lostUnionFraction")).toDouble(1) <= gui::kCubicMaskMissingAreaFraction,
+                "simplification must retain bucket-quality source coverage");
+        require(diagnostics.value(QStringLiteral("maximumRegionMismatchFraction")).toDouble(1) <= gui::kCubicMaskMismatchFraction,
+                "every region must respect the bucket fitter's area error bound");
+        return;
+    }
+    if (interior) {
+        require(diagnostics.value(QStringLiteral("filledInteriorVoids")).toInt() > 0, "the logged interior pockets must be completed");
+        require(diagnostics.value(QStringLiteral("remainingOverlapArea")).toDouble(-1) < 1.0, "interior completion must preserve disjoint ownership");
+        require(diagnostics.value(QStringLiteral("reassignedArtifactComponents")).toInt() > 0, "unsupported ownership fragments must be repaired");
+        require(mesh.contours.size() == input.contours.size() + 1, "only the source piece separated by overlap trimming may remain as an additional contour");
+        return;
+    }
     if (divergence) {
         require(diagnostics.value(QStringLiteral("discardedCorridorLength")).toDouble() > 0.0
                 && diagnostics.value(QStringLiteral("interiorSourceArcCuts")).toInt() > 0,
@@ -874,7 +1039,32 @@ int main(int argc, char **argv) {
             return 0;
         }
         if (application.arguments().contains(QStringLiteral("--logged-divergence"))) {
-            loggedGrowthFixture(true);
+            loggedGrowthFixture(LoggedScene::Divergence);
+            return 0;
+        }
+        if (application.arguments().contains(QStringLiteral("--logged-interior"))) {
+            loggedGrowthFixture(LoggedScene::Interior);
+            return 0;
+        }
+        if (application.arguments().contains(QStringLiteral("--logged-interior-subset"))) {
+            loggedGrowthFixture(LoggedScene::InteriorSubset);
+            return 0;
+        }
+        if (application.arguments().contains(QStringLiteral("--interior-voids"))) {
+            multiRegionPartitions();
+            preservedInteriorVoids();
+            return 0;
+        }
+        if (application.arguments().contains(QStringLiteral("--logged-simplification"))) {
+            loggedGrowthFixture(LoggedScene::Simplification);
+            return 0;
+        }
+        if (application.arguments().contains(QStringLiteral("--logged-overlap-simplification"))) {
+            loggedGrowthFixture(LoggedScene::OverlapSimplification);
+            return 0;
+        }
+        if (application.arguments().contains(QStringLiteral("--shared-simplification"))) {
+            sharedBoundarySimplification();
             return 0;
         }
         if (application.arguments().contains(QStringLiteral("--diverging-arcs"))) {
@@ -894,11 +1084,13 @@ int main(int argc, char **argv) {
             return 0;
         }
         balancedGrowth();
+        sharedBoundarySimplification();
         divergingArcs();
         overlappingRegions();
         mixedBoundaryRegions();
         diagnosticReports();
         multiRegionPartitions();
+        preservedInteriorVoids();
         disconnectedRegionPieces();
         curvedRegionJunction();
         regionTopology();

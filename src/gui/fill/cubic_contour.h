@@ -6,6 +6,9 @@
 
 namespace gui {
 
+inline constexpr double kCubicMaskMissingAreaFraction = 0.005;
+inline constexpr double kCubicMaskMismatchFraction = 0.12;
+
 struct CubicFitOptions {
     double tolerance = 1.0; // Source-image pixels, independent of view zoom.
     double cornerScale = 4.0;
@@ -17,12 +20,14 @@ struct CubicFitOptions {
     double rasterToleranceCeiling = 0.0;
     double outlierFraction = 0.0;
     bool preserveRasterNotches = false;
+    bool relaxCornerTangents = false;
 };
 
 // Pixel-square boundaries; foreground uses four-neighbour connectivity.
 QVector<QPolygonF> pixelBoundaryLoops(const std::vector<std::uint8_t> &mask, QSize size,
                                       QRect bounds);
 QVector<PenPoint> fitCubicContour(const QPolygonF &boundary, const CubicFitOptions &options = {});
+QVector<PenPoint> fitCubicPolyline(const QPolygonF &boundary, const CubicFitOptions &options = {});
 QVector<PenLoop> cubicPathLoops(const QPainterPath &path, QString *error = nullptr);
 QVector<PenLoop> fitMaskContours(const std::vector<std::uint8_t> &mask, QSize size, QRect bounds,
                                  const CubicFitOptions &options = {}, QString *error = nullptr);

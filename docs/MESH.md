@@ -60,6 +60,20 @@ their complete arrival cells through the sampled path endpoints. Projected
 strips apply to corridors that require pruning. Enclosed numerical voids below
 the sampling resolution are resolved within their single surrounding owner.
 
+After external growth, a topology pass separates enclosed pockets from the
+unbounded exterior and surviving source holes. Pockets reached by growth are
+completed by all surrounding owners. A refined local triangulation carries
+equal-speed Eikonal arrival fields, constrained to the pocket. Equal-arrival
+cells establish shared internal boundaries. This numerical distance field
+follows concave geometry through the available region.
+
+Original source coverage remains authoritative throughout labelling. Connected
+ownership components are checked for a material interior, with the primary
+interior of each source retained. Unsupported fragments and residual pocket
+cells are reassigned by connected propagation from surrounding retained owners.
+The sampling resolution determines whether a secondary interior is resolved.
+Boundary validity is evaluated in each loop's own coordinate frame.
+
 Internal boundaries are processed within their own region. Empty holes contract
 as the region grows. Internal components enclosed by self-contact collapse
 within the region's growth window when they contain no foreign material.
@@ -68,12 +82,33 @@ neighbour contacts; only external-to-external collisions contribute connections.
 
 Reconstruction extracts edges separating different owners, traces exterior and
 hole loops, and restores original curve spans where boundary provenance permits.
-Shared junctions and retained source anchors survive simplification. Shared
+Shared junctions and retained source corners survive simplification. Shared
 chains are simplified once for all incident contours. Unsafe curve restoration
 or simplification retains the underlying subdivision boundary. New subdivision
 boundaries become explicit connecting segments. A source region
 with multiple connected pieces produces multiple contours with its inherited
 appearance. Every boundary reference uses the same canonical Mesh vertex table.
+
+Mesh boundaries receive a final simplification pass using the existing cubic
+contour fitter and region RDP simplifier. Chains stop at junctions, ownership
+changes, authored Hard points, and incompatible boundary handles. Exterior
+boundaries and retained curves participate through adaptive curve sampling.
+Closed boundaries retain geometrically separated anchors for a valid loop.
+Each chain is fitted once in a common Mesh reference frame, then stored with
+identical vertices and reversed handles on its incident contours.
+
+The fitter uses bucket-scale accuracy in a normalized reference frame. A bounded
+search targets a soft budget of 250 canonical vertices, with displacement capped
+by each incident region's width. Bidirectional distance checks bound each fit
+against the original chain. Coverage and per-region area error follow the bucket
+fitter's allowances; shared connectivity, winding, hole containment, and overlap
+are validated together. Failed fits are localized to their incident regions and
+retried at higher accuracy before falling back to RDP and their original geometry.
+Geometric validity takes precedence over the soft vertex budget.
+Unused canonical vertices are removed. Validation reference regions are prepared
+once and reused during restoration and simplification retries. Diagnostics record
+the achieved budget, fit allowance, coverage loss, regional mismatch, timing, and
+the affected regions and validity checks for each retry.
 
 Validation checks the reconstructed geometry against the assigned subdivision,
 retains singly owned source material and the combined input material, measures
@@ -94,6 +129,7 @@ coverage labels.
 - Ledoux and Arroyo Ohori, [Solving the horizontal conflation problem with a constrained Delaunay triangulation](https://3d.bk.tudelft.nl/hledoux/pdfs/17_jgsy_em.pdf), 2017: conflation through a common labelled subdivision.
 - Amenta, Bern, and Eppstein, [The Crust and the Beta-Skeleton: Combinatorial Curve Reconstruction](https://ics.uci.edu/~eppstein/pubs/p-crust.html), 1998: geometric feature size and reconstruction topology.
 - Shaked and Bruckstein, [Pruning Medial Axes](https://freddy.cs.technion.ac.il/wp-content/uploads/2018/01/Pruning-Medial-Axes.pdf), 1998: radius-based medial-axis regularization and rate pruning. The collision-path cutoff adapts these ideas to the reconstructed gap field.
+- Kimmel and Sethian, [Computing Geodesic Paths on Manifolds](https://math.berkeley.edu/~sethian/2006/Papers/sethian.kimmel.geodesics.pdf), 1998: Eikonal distance propagation on triangulated domains. Interior completion uses a numerical arrival-field adaptation constrained to each pocket.
 
 ## Diagnostics
 
@@ -119,6 +155,12 @@ Corridor profiles include retained and discarded lengths, gradients, basin
 rejections, projection breaks, and bounded endpoint records with source span
 parameters. Reports also count interior source cuts and resolved numerical
 voids. The summary log excludes the detailed subdivision and corridor profiles.
+Interior reports include completed pocket areas and owners, protected openings,
+arrival updates and travel distances, reassigned component counts and areas,
+residual void repairs, and discarded unrooted material.
+The `boundarySimplification` record includes canonical vertex counts before and
+after reduction, chain counts, cubic and RDP results, validation attempts,
+displacement tolerance, and timing.
 
 ## Editing and persistence
 

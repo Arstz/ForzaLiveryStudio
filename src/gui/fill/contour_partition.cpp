@@ -1,6 +1,8 @@
 #include "contour_partition.h"
 
 #include "pen_fill.h"
+#include "contour_mesh_simplify.h"
+#include "cubic_contour.h"
 
 #include <CDT.h>
 #include <clipper2/clipper.h>
@@ -14,6 +16,8 @@
 #include <map>
 #include <array>
 #include <optional>
+#include <queue>
+#include <tuple>
 #include <stdexcept>
 
 namespace gui {
@@ -57,6 +61,8 @@ struct PartitionInput {
     QVector<SourceSpan> spans;
     QVector<Constraint> constraints;
     QVector<QPainterPath> material;
+    QVector<QPainterPath> sourceHoles;
+    QVector<QPainterPath> completedVoids;
     QVector<double> winding;
     QVector<QPointF> positions;
     QHash<int, QPointF> originalCoordinates;
@@ -68,6 +74,7 @@ struct PartitionInput {
     double extent = 0.0;
     double flatness = std::cbrt(std::numeric_limits<double>::epsilon());
     double areaTolerance = 0.0;
+    double maximumRegionMismatchFraction = 0.0;
 };
 
 struct TriangleLabel {
@@ -93,7 +100,7 @@ class PartitionReport {
 public:
     explicit PartitionReport(const MeshData &mesh) {
         timer_.start();
-        report_.insert(QStringLiteral("version"), 4);
+        report_.insert(QStringLiteral("version"), 7);
         report_.insert(QStringLiteral("pipeline"), QStringLiteral("topology_wavefront"));
         report_.insert(QStringLiteral("inputContours"), mesh.contours.size());
         report_.insert(QStringLiteral("inputVertices"), mesh.vertices.size());
@@ -200,6 +207,22 @@ void flattenSpan(PartitionInput &input, int span, const PenBoundarySegment &curv
     polygon.push_back(curve.end);
 }
 
+PenContour validateLoop(QVector<PenPoint> points, double flatness) {
+    QRectF bounds;
+
+    for (const auto &curve : penSegments(points, true)) {
+        QPolygonF controls{curve.start, curve.end};
+        if (curve.curved) controls << curve.control << curve.control2;
+        bounds = bounds.united(controls.boundingRect());
+    }
+    const double extent = std::max(bounds.width(), bounds.height());
+    if (extent <= 0.0) return buildPenContour(points, flatness);
+    const QTransform normalization(1.0 / extent, 0.0, 0.0, 1.0 / extent, -bounds.left() / extent, -bounds.top() / extent);
+    for (auto &point : points) transformPenPoint(point, normalization);
+
+    return buildPenContour(points, std::min(flatness, flatness / extent));
+}
+
 void addLoop(PartitionInput &input, const QVector<PenPoint> &points, const QVector<MeshPoint> &attributes,
              int contour, int cutout) {
     QVector<PenPoint> normalized = points;
@@ -208,7 +231,7 @@ void addLoop(PartitionInput &input, const QVector<PenPoint> &points, const QVect
 
     if (points.size() < 3) throw std::runtime_error("Closed regions need nondegenerate boundary loops");
     for (auto &point : normalized) transformPenPoint(point, input.normalization);
-    if (!buildPenContour(normalized, input.flatness).valid()) throw std::runtime_error("Regions must have simple, nondegenerate boundary loops");
+    if (!validateLoop(normalized, input.flatness).valid()) throw std::runtime_error("Regions must have simple, nondegenerate boundary loops");
     const auto curves = penSegments(normalized, true);
     polygon.push_back(curves.front().start);
     for (int index = 0; index < curves.size(); ++index) {
@@ -223,6 +246,7 @@ void addLoop(PartitionInput &input, const QVector<PenPoint> &points, const QVect
     QPainterPath path;
     path.addPolygon(polygon);
     path.closeSubpath();
+    if (cutout >= 0) input.sourceHoles.push_back(path);
     input.material[contour].addPath(path);
     input.material[contour].setFillRule(Qt::OddEvenFill);
 }
@@ -1866,62 +1890,394 @@ QVector<TriangleLabel> growthLabels(const Triangulation &triangulation, const Pa
             if (input.material[region].contains(center)) label.coverage.push_back(region);
             if (label.owner < 0 && material[region].contains(center)) label.owner = region;
         }
+        if (!label.coverage.isEmpty()) label.owner = label.coverage.front();
         label.gap = label.coverage.isEmpty() && label.owner >= 0;
     }
 
     return labels;
 }
 
-void resolveThinVoids(const Triangulation &triangulation, const PartitionInput &input,
-                      QVector<TriangleLabel> &labels, PartitionReport &report) {
+struct VoidBoundary {
+    QPointF first;
+    QPointF last;
+    int owner = -1;
+};
+
+struct InteriorVoid {
+    QVector<int> triangles;
+    QVector<VoidBoundary> boundary;
+    QSet<int> owners;
+    bool enclosed = true;
+    bool sourceHole = false;
+    bool growing = false;
+    double area = 0.0;
+    double perimeter = 0.0;
+};
+
+QVector<InteriorVoid> interiorVoids(const Triangulation &triangulation, const PartitionInput &input,
+                                   const QVector<TriangleLabel> &labels) {
     const auto sources = constraintSources(triangulation, input);
+    QVector<InteriorVoid> voids;
     QSet<int> visited;
-    int resolved = 0;
-    double resolvedArea = 0.0;
 
     for (int seed = 0; seed < labels.size(); ++seed) {
         if (labels[seed].owner >= 0 || visited.contains(seed)) continue;
-        QVector<int> component{seed};
-        QSet<int> neighbors;
-        bool enclosed = true;
-        bool sourceHole = false;
-        double area = 0.0;
-        double perimeter = 0.0;
+        InteriorVoid component;
+        component.triangles.push_back(seed);
         visited.insert(seed);
-        for (int next = 0; next < component.size(); ++next) {
-            const auto &triangle = triangulation.triangles[component[next]];
-            const QPointF first = position(triangulation, triangle.vertices[0]);
-            area += std::abs(cross(position(triangulation, triangle.vertices[1]) - first,
-                                   position(triangulation, triangle.vertices[2]) - first)) * 0.5;
+        for (int next = 0; next < component.triangles.size(); ++next) {
+            const int index = component.triangles[next];
+            const auto &triangle = triangulation.triangles[index];
+            component.area += triangleArea(triangulation, index);
+            if (!component.sourceHole) for (const auto &hole : input.sourceHoles) {
+                if (hole.contains(triangleCenter(triangulation, index))) {
+                    component.sourceHole = true;
+                    break;
+                }
+            }
+            if (!component.growing) for (const auto &completed : input.completedVoids) {
+                if (completed.contains(triangleCenter(triangulation, index))) {
+                    component.growing = true;
+                    break;
+                }
+            }
             for (int edge = 0; edge < 3; ++edge) {
                 const auto neighbor = triangle.neighbors[edge];
                 if (neighbor == CDT::noNeighbor) {
-                    enclosed = false;
+                    component.enclosed = false;
                     continue;
                 }
                 if (labels[neighbor].owner < 0) {
                     if (!visited.contains(int(neighbor))) {
                         visited.insert(int(neighbor));
-                        component.push_back(int(neighbor));
+                        component.triangles.push_back(int(neighbor));
                     }
                     continue;
                 }
-                neighbors.insert(labels[neighbor].owner);
+                component.owners.insert(labels[neighbor].owner);
+                component.growing |= labels[neighbor].gap;
                 const int start = triangle.vertices[edge];
                 const int end = triangle.vertices[(edge + 1) % 3];
-                perimeter += magnitude(position(triangulation, end) - position(triangulation, start));
+                const QPointF last = position(triangulation, end);
+                const QPointF first = position(triangulation, start);
+                component.boundary.push_back({first, last, labels[neighbor].owner});
+                component.perimeter += magnitude(last - first);
                 for (const int reference : sources.value(edgeKey(start, end))) {
-                    sourceHole |= input.spans[input.constraints[reference].span].cutout >= 0;
+                    component.sourceHole |= input.spans[input.constraints[reference].span].cutout >= 0;
                 }
             }
         }
-        if (!enclosed || sourceHole || neighbors.size() != 1 || area * 2.0 > perimeter * input.flatness) continue;
-        for (const int triangle : component) labels[triangle].owner = *neighbors.cbegin();
-        resolvedArea += area;
-        ++resolved;
+        if (component.enclosed && !component.owners.isEmpty()) voids.push_back(std::move(component));
     }
-    report.set(QStringLiteral("resolvedThinVoids"), resolved);
-    report.set(QStringLiteral("resolvedVoidArea"), resolvedArea * input.extent * input.extent);
+
+    return voids;
+}
+
+class VoidWavefront {
+public:
+    VoidWavefront(const InteriorVoid &component, const Triangulation &triangulation, PartitionInput &input) {
+        const auto vertex = [&](const QPointF &point) {
+            const int global = inputVertex(input, point, false);
+            const auto found = vertices_.constFind(global);
+            if (found != vertices_.cend()) return found.value();
+            const int index = static_cast<int>(points_.size());
+            points_.push_back(input.positions[global]);
+            incidence_.push_back({});
+            vertices_.insert(global, index);
+
+            return index;
+        };
+        for (const int index : component.triangles) {
+            const auto &triangle = triangulation.triangles[index];
+            const std::array<QPointF, 3> points{position(triangulation, triangle.vertices[0]), position(triangulation, triangle.vertices[1]),
+                                              position(triangulation, triangle.vertices[2])};
+            const std::array<int, 6> ring{vertex(points[0]), vertex((points[0] + points[1]) * 0.5), vertex(points[1]),
+                                         vertex((points[1] + points[2]) * 0.5), vertex(points[2]), vertex((points[2] + points[0]) * 0.5)};
+            const int center = vertex((points[0] + points[1] + points[2]) / 3.0);
+            for (int edge = 0; edge < ring.size(); ++edge) {
+                const int first = ring[edge];
+                const int last = ring[(edge + 1) % ring.size()];
+                if (first == last || first == center || last == center) continue;
+                if (cross(points_[last] - points_[first], points_[center] - points_[first]) == 0.0) continue;
+                const int face = static_cast<int>(faces_.size());
+                faces_.push_back({first, last, center});
+                for (const int point : faces_.back()) incidence_[point].push_back(face);
+            }
+        }
+        for (const auto &edge : component.boundary) {
+            auto &seeds = seeds_[edge.owner];
+            seeds.insert(vertex(edge.first));
+            seeds.insert(vertex((edge.first + edge.last) * 0.5));
+            seeds.insert(vertex(edge.last));
+        }
+    }
+
+    QVector<double> distances(int owner, double tolerance, qint64 &updates) const {
+        using Arrival = std::pair<double, int>;
+        std::priority_queue<Arrival, std::vector<Arrival>, std::greater<Arrival>> pending;
+        QVector<double> field(points_.size(), std::numeric_limits<double>::infinity());
+
+        for (const int seed : seeds_[owner]) {
+            field[seed] = 0.0;
+            pending.push({0.0, seed});
+        }
+        while (!pending.empty()) {
+            const auto [time, vertex] = pending.top();
+            pending.pop();
+            if (time > field[vertex] + tolerance) continue;
+            for (const int face : incidence_[vertex]) {
+                const auto &triangle = faces_[face];
+                for (int corner = 0; corner < triangle.size(); ++corner) {
+                    const int point = triangle[corner];
+                    const int first = triangle[(corner + 1) % triangle.size()];
+                    const int last = triangle[(corner + 2) % triangle.size()];
+                    const double arrival = edgeArrival(points_[point], points_[first], points_[last], field[first], field[last]);
+                    if (arrival + tolerance >= field[point]) continue;
+                    field[point] = arrival;
+                    pending.push({arrival, point});
+                    ++updates;
+                }
+            }
+        }
+
+        return field;
+    }
+
+    void partition(const QVector<int> &owners, QVector<RegionPaths> &patches, double tolerance, qint64 &updates, double &maximum) const {
+        QVector<QVector<double>> fields;
+
+        for (const int owner : owners) fields.push_back(distances(owner, tolerance, updates));
+        for (const auto &face : faces_) {
+            const std::array<QPointF, 3> triangle{points_[face[0]], points_[face[1]], points_[face[2]]};
+            const QPolygonF polygon{triangle[0], triangle[1], triangle[2]};
+            for (int owner = 0; owner < owners.size(); ++owner) {
+                auto cell = polygon;
+                for (int other = 0; other < owners.size() && !cell.isEmpty(); ++other) {
+                    if (other == owner) continue;
+                    std::array<double, 3> values;
+                    bool equal = true;
+                    for (int point = 0; point < triangle.size(); ++point) {
+                        const double own = fields[owner][face[point]];
+                        const double competing = fields[other][face[point]];
+                        if (!std::isfinite(own) || !std::isfinite(competing)) throw std::runtime_error("Interior wavefronts must reach every enclosed cell");
+                        values[point] = own - competing;
+                        equal &= std::abs(values[point]) <= kCoordinateRoundoff;
+                    }
+                    if (equal) {
+                        if (other < owner) cell.clear();
+                    } else cell = clipArrival(cell, triangle, values);
+                }
+                if (cell.size() >= 3) patches[owners[owner]].push_back(integerPolygon(cell));
+            }
+            for (const int point : face) {
+                double first = std::numeric_limits<double>::infinity();
+                for (const auto &field : fields) first = std::min(first, field[point]);
+                maximum = std::max(maximum, first);
+            }
+        }
+    }
+
+private:
+    QVector<QPointF> points_;
+    QVector<std::array<int, 3>> faces_;
+    QVector<QVector<int>> incidence_;
+    QHash<int, int> vertices_;
+    QHash<int, QSet<int>> seeds_;
+
+    static double edgeArrival(const QPointF &point, const QPointF &first, const QPointF &last, double start, double end) {
+        const QPointF direction = last - first;
+        const QPointF relative = point - first;
+        const double length = magnitude(direction);
+        double arrival = std::min(start + magnitude(relative), end + magnitude(point - last));
+
+        if (!std::isfinite(start) || !std::isfinite(end) || length <= kCoordinateRoundoff) return arrival;
+        const double slope = (end - start) / length;
+        if (std::abs(slope) >= 1.0) return arrival;
+        const double along = QPointF::dotProduct(relative, direction) / length;
+        const double height = std::abs(cross(relative, direction)) / length;
+        const double position = std::clamp(along - slope * height / std::sqrt(1.0 - slope * slope), 0.0, length);
+        arrival = std::min(arrival, start + slope * position + std::hypot(along - position, height));
+
+        return arrival;
+    }
+};
+
+bool fillInteriorVoids(const Triangulation &triangulation, PartitionInput &input, QVector<TriangleLabel> &labels,
+                       QVector<RegionPaths> &regions, PartitionReport &report) {
+    const auto voids = interiorVoids(triangulation, input, labels);
+    QVector<RegionPaths> patches(regions.size());
+    int filled = 0;
+    int protectedCount = 0;
+    bool subdivide = false;
+    qint64 updates = 0;
+    double area = 0.0;
+    double maximum = 0.0;
+
+    for (const auto &component : voids) {
+        if (component.sourceHole) {
+            ++protectedCount;
+            continue;
+        }
+        const bool numerical = component.owners.size() == 1 && component.area * 2.0 <= component.perimeter * input.flatness;
+        if (!component.growing && !numerical) continue;
+        QVector<int> owners(component.owners.begin(), component.owners.end());
+        std::sort(owners.begin(), owners.end());
+        if (owners.size() == 1) {
+            for (const int index : component.triangles) {
+                const auto &triangle = triangulation.triangles[index];
+                labels[index].owner = owners.front();
+                labels[index].gap = true;
+                patches[owners.front()].push_back(integerPolygon({position(triangulation, triangle.vertices[0]), position(triangulation, triangle.vertices[1]),
+                                                                 position(triangulation, triangle.vertices[2])}));
+            }
+        } else {
+            const VoidWavefront field(component, triangulation, input);
+            field.partition(owners, patches, input.flatness, updates, maximum);
+            subdivide = true;
+        }
+        report.decision(QStringLiteral("enclosed_gap_partition"), {{QStringLiteral("regions"), jsonLabels(owners)},
+            {QStringLiteral("area"), component.area * input.extent * input.extent}, {QStringLiteral("triangles"), component.triangles.size()}});
+        RegionPaths completed;
+        for (const int index : component.triangles) {
+            const auto &triangle = triangulation.triangles[index];
+            completed.push_back(integerPolygon({position(triangulation, triangle.vertices[0]), position(triangulation, triangle.vertices[1]),
+                                                position(triangulation, triangle.vertices[2])}));
+        }
+        input.completedVoids.push_back(painterRegion(Clipper2Lib::Union(completed, Clipper2Lib::FillRule::NonZero)));
+        area += component.area;
+        ++filled;
+    }
+    if (subdivide) for (int region = 0; region < regions.size(); ++region) {
+        regions[region] = regionUnion(regions[region], Clipper2Lib::Union(patches[region], Clipper2Lib::FillRule::NonZero));
+    }
+    report.set(QStringLiteral("filledInteriorVoids"), filled);
+    report.set(QStringLiteral("protectedInteriorVoids"), protectedCount);
+    report.set(QStringLiteral("interiorFillArea"), area * input.extent * input.extent);
+    report.set(QStringLiteral("interiorMaximumTravel"), maximum * input.extent);
+    report.set(QStringLiteral("interiorArrivalUpdates"), updates);
+
+    return subdivide;
+}
+
+struct OwnershipComponent {
+    QVector<int> triangles;
+    int owner = -1;
+    double sourceArea = 0.0;
+    double perimeter = 0.0;
+};
+
+QVector<OwnershipComponent> ownershipComponents(const Triangulation &triangulation, const QVector<TriangleLabel> &labels) {
+    QVector<OwnershipComponent> components;
+    QSet<int> visited;
+
+    for (int seed = 0; seed < labels.size(); ++seed) {
+        if (labels[seed].owner < 0 || visited.contains(seed)) continue;
+        OwnershipComponent component;
+        component.owner = labels[seed].owner;
+        component.triangles.push_back(seed);
+        visited.insert(seed);
+        for (int next = 0; next < component.triangles.size(); ++next) {
+            const int index = component.triangles[next];
+            const auto &triangle = triangulation.triangles[index];
+            if (!labels[index].coverage.isEmpty() && labels[index].coverage.front() == component.owner) {
+                component.sourceArea += triangleArea(triangulation, index);
+            }
+            for (int edge = 0; edge < 3; ++edge) {
+                const auto neighbor = triangle.neighbors[edge];
+                if (neighbor != CDT::noNeighbor && labels[neighbor].owner == component.owner) {
+                    if (!visited.contains(int(neighbor))) {
+                        visited.insert(int(neighbor));
+                        component.triangles.push_back(int(neighbor));
+                    }
+                } else {
+                    component.perimeter += magnitude(position(triangulation, triangle.vertices[edge])
+                        - position(triangulation, triangle.vertices[(edge + 1) % 3]));
+                }
+            }
+        }
+        components.push_back(std::move(component));
+    }
+
+    return components;
+}
+
+void propagateOwnership(const Triangulation &triangulation, const QVector<bool> &repair,
+                         QVector<TriangleLabel> &labels, double &discarded) {
+    using Arrival = std::tuple<double, int, int>;
+    std::priority_queue<Arrival, std::vector<Arrival>, std::greater<Arrival>> pending;
+    QVector<double> distances(labels.size(), std::numeric_limits<double>::infinity());
+    QVector<int> owners(labels.size(), -1);
+    const auto offer = [&](int triangle, int owner, double time) {
+        if (time > distances[triangle] + kCoordinateRoundoff
+            || (std::abs(time - distances[triangle]) <= kCoordinateRoundoff && owners[triangle] >= 0 && owner >= owners[triangle])) return;
+        distances[triangle] = time;
+        owners[triangle] = owner;
+        pending.push({time, owner, triangle});
+    };
+
+    for (int index = 0; index < labels.size(); ++index) if (repair[index]) labels[index].owner = -1;
+    for (int index = 0; index < labels.size(); ++index) {
+        if (!repair[index]) continue;
+        const auto &triangle = triangulation.triangles[index];
+        const QPointF center = triangleCenter(triangulation, index);
+        for (int edge = 0; edge < 3; ++edge) {
+            const auto neighbor = triangle.neighbors[edge];
+            if (neighbor == CDT::noNeighbor || repair[neighbor] || labels[neighbor].owner < 0) continue;
+            const QPointF midpoint = (position(triangulation, triangle.vertices[edge]) + position(triangulation, triangle.vertices[(edge + 1) % 3])) * 0.5;
+            offer(index, labels[neighbor].owner, magnitude(center - midpoint));
+        }
+    }
+    while (!pending.empty()) {
+        const auto [time, owner, index] = pending.top();
+        pending.pop();
+        if (labels[index].owner >= 0 || time > distances[index] + kCoordinateRoundoff || owner != owners[index]) continue;
+        labels[index].owner = owner;
+        labels[index].gap = labels[index].coverage.isEmpty();
+        const QPointF center = triangleCenter(triangulation, index);
+        for (const auto neighbor : triangulation.triangles[index].neighbors) {
+            if (neighbor == CDT::noNeighbor || !repair[neighbor] || labels[neighbor].owner >= 0) continue;
+            offer(int(neighbor), owner, time + magnitude(triangleCenter(triangulation, int(neighbor)) - center));
+        }
+    }
+    for (int index = 0; index < labels.size(); ++index) {
+        if (repair[index] && labels[index].owner < 0) discarded += triangleArea(triangulation, index);
+    }
+}
+
+void stabilizePartition(const Triangulation &triangulation, const PartitionInput &input,
+                         QVector<TriangleLabel> &labels, PartitionReport &report) {
+    const auto components = ownershipComponents(triangulation, labels);
+    const auto voids = interiorVoids(triangulation, input, labels);
+    QVector<int> primary(input.material.size(), -1);
+    QVector<bool> repair(labels.size(), false);
+    int artifacts = 0;
+    int residuals = 0;
+    double repairedArea = 0.0;
+    double discarded = 0.0;
+
+    for (int index = 0; index < components.size(); ++index) {
+        const auto &component = components[index];
+        if (primary[component.owner] < 0 || component.sourceArea > components[primary[component.owner]].sourceArea) primary[component.owner] = index;
+    }
+    for (int index = 0; index < components.size(); ++index) {
+        const auto &component = components[index];
+        if (primary[component.owner] == index || component.sourceArea * 2.0 > component.perimeter * input.flatness) continue;
+        for (const int triangle : component.triangles) {
+            repair[triangle] = true;
+            repairedArea += triangleArea(triangulation, triangle);
+        }
+        ++artifacts;
+    }
+    for (const auto &component : voids) {
+        if (component.sourceHole || (!component.growing && component.area * 2.0 > component.perimeter * input.flatness)) continue;
+        for (const int triangle : component.triangles) repair[triangle] = true;
+        ++residuals;
+    }
+    propagateOwnership(triangulation, repair, labels, discarded);
+    report.set(QStringLiteral("reassignedArtifactComponents"), artifacts);
+    report.set(QStringLiteral("reassignedArtifactArea"), repairedArea * input.extent * input.extent);
+    report.set(QStringLiteral("resolvedResidualVoids"), residuals);
+    report.set(QStringLiteral("discardedUnrootedArea"), discarded * input.extent * input.extent);
 }
 
 void validateSourceHoles(const MeshData &mesh, const PartitionInput &input) {
@@ -1942,36 +2298,54 @@ void validateSourceHoles(const MeshData &mesh, const PartitionInput &input) {
     }
 }
 
-bool validatePartition(const PartitionResult &result, const Triangulation &triangulation, const QVector<TriangleLabel> &labels,
-                         const PartitionInput &input, PartitionReport &report, QSet<int> *unsafe = nullptr) {
-    const auto &mesh = result.mesh;
-    QVector<RegionPaths> material;
-    QVector<RegionPaths> sources;
-    QVector<RegionPaths> assigned(input.material.size());
-    QVector<QPainterPath> expected(input.material.size());
-    RegionPaths before;
-    RegionPaths after;
-    double overlap = 0.0;
+struct PartitionValidation {
+    QVector<RegionPaths> expected;
+    QVector<RegionPaths> exclusive;
+    RegionPaths combined;
+};
 
+PartitionValidation partitionValidation(const Triangulation &triangulation, const QVector<TriangleLabel> &labels,
+                                        const PartitionInput &input) {
+    PartitionValidation reference;
+    QVector<RegionPaths> sources;
+    QVector<RegionPaths> prefix(input.material.size() + 1);
+    QVector<RegionPaths> suffix(input.material.size() + 1);
+
+    reference.expected.resize(input.material.size());
     for (const auto &path : input.material) {
         sources.push_back(regionPaths(path, input.flatness));
-        before = regionUnion(before, sources.back());
+        prefix[sources.size()] = regionUnion(prefix[sources.size() - 1], sources.back());
+    }
+    for (int index = static_cast<int>(sources.size()) - 1; index >= 0; --index) suffix[index] = regionUnion(sources[index], suffix[index + 1]);
+    reference.combined = prefix.back();
+    for (int index = 0; index < sources.size(); ++index) {
+        reference.exclusive.push_back(Clipper2Lib::Difference(sources[index], regionUnion(prefix[index], suffix[index + 1]), Clipper2Lib::FillRule::NonZero));
     }
     for (int index = 0; index < labels.size(); ++index) {
         if (labels[index].owner < 0) continue;
         const auto &triangle = triangulation.triangles[index];
-        auto &path = expected[labels[index].owner];
-        path.moveTo(position(triangulation, triangle.vertices[0]));
-        path.lineTo(position(triangulation, triangle.vertices[1]));
-        path.lineTo(position(triangulation, triangle.vertices[2]));
-        path.closeSubpath();
-        path.setFillRule(Qt::WindingFill);
+        reference.expected[labels[index].owner].push_back(integerPolygon({position(triangulation, triangle.vertices[0]),
+            position(triangulation, triangle.vertices[1]), position(triangulation, triangle.vertices[2])}));
     }
+    for (auto &material : reference.expected) material = Clipper2Lib::Union(material, Clipper2Lib::FillRule::NonZero);
+
+    return reference;
+}
+
+bool validatePartition(const PartitionResult &result, const PartitionValidation &reference,
+                         const PartitionInput &input, PartitionReport &report, QSet<int> *unsafe = nullptr) {
+    const auto &mesh = result.mesh;
+    QVector<RegionPaths> material;
+    QVector<RegionPaths> assigned(input.material.size());
+    RegionPaths after;
+    double overlap = 0.0;
+    double maximumMismatch = 0.0;
+
     for (int index = 0; index < mesh.contours.size(); ++index) {
         const auto data = mesh.contourData(index);
         auto normalized = data.points;
         for (auto &point : normalized) transformPenPoint(point, input.normalization);
-        const auto validation = buildPenContour(normalized, input.flatness);
+        const auto validation = validateLoop(normalized, input.flatness);
         if (!validation.valid()) {
             if (unsafe != nullptr) unsafe->insert(result.sourceLabels[index]);
             QJsonArray points;
@@ -1987,9 +2361,10 @@ bool validatePartition(const PartitionResult &result, const Triangulation &trian
         const auto exterior = regionPaths(penPath(normalized, true), input.flatness);
         for (auto hole : data.cutouts) {
             for (auto &point : hole) transformPenPoint(point, input.normalization);
-            const auto validation = buildPenContour(hole, input.flatness);
+            const auto validation = validateLoop(hole, input.flatness);
             const double outside = regionDifferenceArea(regionPaths(penPath(hole, true), input.flatness), exterior);
-            if (!validation.valid() || outside > input.areaTolerance) {
+            const double outsideTolerance = input.maximumRegionMismatchFraction > 0.0 ? input.flatness * input.flatness : input.areaTolerance;
+            if (!validation.valid() || outside > outsideTolerance) {
                 if (unsafe != nullptr) unsafe->insert(result.sourceLabels[index]);
                 QJsonArray points;
                 for (const auto &point : hole) points.append(QJsonArray{point.position.x(), point.position.y(), point.incoming.x(), point.incoming.y(),
@@ -2007,28 +2382,34 @@ bool validatePartition(const PartitionResult &result, const Triangulation &trian
         after = regionUnion(after, path);
     }
     for (int contour = 0; contour < input.material.size(); ++contour) {
-        const auto expectedMaterial = regionPaths(expected[contour], input.flatness);
+        const auto &expectedMaterial = reference.expected[contour];
+        const double expectedArea = std::abs(Clipper2Lib::Area(expectedMaterial)) / (kClipperScale * kClipperScale);
         const double mismatch = regionDifferenceArea(expectedMaterial, assigned[contour])
             + regionDifferenceArea(assigned[contour], expectedMaterial);
-        if (mismatch > input.areaTolerance) {
+        if (expectedArea > 0.0) maximumMismatch = std::max(maximumMismatch, mismatch / expectedArea);
+        const double regionTolerance = input.maximumRegionMismatchFraction > 0.0
+            ? std::min(input.areaTolerance, std::max(input.flatness * input.flatness,
+                expectedArea * input.maximumRegionMismatchFraction))
+            : input.areaTolerance;
+        if (mismatch > regionTolerance) {
+            if (unsafe != nullptr) unsafe->insert(contour);
             report.decision(QStringLiteral("assigned_material_mismatch"), {{QStringLiteral("contour"), contour},
                              {QStringLiteral("area"), mismatch * input.extent * input.extent}});
             return false;
         }
-        RegionPaths others;
-        for (int other = 0; other < input.material.size(); ++other) {
-            if (other != contour) others = regionUnion(others, sources[other]);
-        }
-        const auto exclusive = Clipper2Lib::Difference(sources[contour], others, Clipper2Lib::FillRule::NonZero);
-        const double loss = regionDifferenceArea(exclusive, assigned[contour]);
-        if (loss > input.areaTolerance) {
+        const double loss = regionDifferenceArea(reference.exclusive[contour], assigned[contour]);
+        if (loss > regionTolerance) {
+            if (unsafe != nullptr) unsafe->insert(contour);
             report.decision(QStringLiteral("exclusive_material_lost"), {{QStringLiteral("contour"), contour},
                              {QStringLiteral("area"), loss * input.extent * input.extent}});
             return false;
         }
     }
-    const double lost = regionDifferenceArea(before, after);
+    const double lost = regionDifferenceArea(reference.combined, after);
+    const double sourceArea = std::abs(Clipper2Lib::Area(reference.combined)) / (kClipperScale * kClipperScale);
     report.set(QStringLiteral("lostUnionArea"), lost * input.extent * input.extent);
+    report.set(QStringLiteral("lostUnionFraction"), sourceArea > 0.0 ? lost / sourceArea : 0.0);
+    report.set(QStringLiteral("maximumRegionMismatchFraction"), maximumMismatch);
     report.set(QStringLiteral("remainingOverlapArea"), overlap * input.extent * input.extent);
     if (lost > input.areaTolerance || overlap > input.areaTolerance) return false;
 
@@ -2113,11 +2494,16 @@ bool connectMeshRegions(MeshData &mesh, QString *error, QJsonObject *diagnostics
         stage = QStringLiteral("region_assignment");
         assignOverlaps(triangulation, input, labels, report);
         stage = QStringLiteral("external_wavefront_growth");
-        const auto regions = growRegions(triangulation, labels, input, report);
+        auto regions = growRegions(triangulation, labels, input, report);
         stage = QStringLiteral("collision_subdivision");
         triangulation = growthSubdivision(input, regions);
         labels = growthLabels(triangulation, input, regions);
-        resolveThinVoids(triangulation, input, labels, report);
+        stage = QStringLiteral("interior_wavefront_partition");
+        if (fillInteriorVoids(triangulation, input, labels, regions, report)) {
+            triangulation = growthSubdivision(input, regions);
+            labels = growthLabels(triangulation, input, regions);
+        }
+        stabilizePartition(triangulation, input, labels, report);
         report.set(QStringLiteral("subdivisionVertices"), qint64(triangulation.vertices.size()));
         report.set(QStringLiteral("triangleCount"), qint64(triangulation.triangles.size()));
         recordSubdivision(triangulation, labels, input, report);
@@ -2125,14 +2511,84 @@ bool connectMeshRegions(MeshData &mesh, QString *error, QJsonObject *diagnostics
         QSet<int> polygonal;
         auto rebuilt = reconstructPartition(mesh, triangulation, input, labels, polygonal);
         stage = QStringLiteral("partition_validation");
+        const auto reference = partitionValidation(triangulation, labels, input);
         while (true) {
             QSet<int> unsafe;
-            if (validatePartition(rebuilt, triangulation, labels, input, report, &unsafe)) break;
+            if (validatePartition(rebuilt, reference, input, report, &unsafe)) break;
             unsafe.subtract(polygonal);
             if (unsafe.isEmpty()) return finish(false, QStringLiteral("Region reconstruction must retain material and a valid connected partition"));
             polygonal.unite(unsafe);
             for (const int region : unsafe) report.decision(QStringLiteral("preserved_subdivision_boundary"), {{QStringLiteral("contour"), region}});
             rebuilt = reconstructPartition(mesh, triangulation, input, labels, polygonal);
+        }
+        stage = QStringLiteral("shared_boundary_simplification");
+        QSet<QPair<double, double>> authored;
+        QSet<int> anchors;
+        QJsonObject simplification;
+        QJsonObject simplifiedValidation;
+        QJsonArray fittingChecks;
+        double perimeter = 0.0;
+        for (const auto &contour : mesh.contours) {
+            const auto retainCorners = [&](const QVector<MeshPoint> &points) {
+                for (const auto &point : points) if (point.kind == PenPointKind::Hard) {
+                    const auto &position = mesh.vertices[point.vertex];
+                    authored.insert({position.x(), position.y()});
+                }
+            };
+            retainCorners(contour.points);
+            for (const auto &hole : contour.cutouts) retainCorners(hole);
+        }
+        for (int vertex = 0; vertex < rebuilt.mesh.vertices.size(); ++vertex) {
+            const auto &point = rebuilt.mesh.vertices[vertex];
+            if (authored.contains({point.x(), point.y()})) anchors.insert(vertex);
+        }
+        for (const auto &contour : rebuilt.mesh.contours) {
+            const auto measure = [&](const QVector<MeshPoint> &points) {
+                for (int point = 0; point < points.size(); ++point) {
+                    perimeter += magnitude(rebuilt.mesh.vertices[points[point].vertex]
+                        - rebuilt.mesh.vertices[points[(point + 1) % points.size()].vertex]) / input.extent;
+                }
+            };
+            measure(contour.points);
+            for (const auto &hole : contour.cutouts) measure(hole);
+        }
+        const double overlapTolerance = std::max(input.flatness * input.flatness, kCoordinateRoundoff * perimeter) * input.extent * input.extent;
+        auto fittingInput = input;
+        fittingInput.areaTolerance = std::max(input.areaTolerance,
+            std::abs(Clipper2Lib::Area(reference.combined)) / (kClipperScale * kClipperScale) * kCubicMaskMissingAreaFraction);
+        fittingInput.maximumRegionMismatchFraction = kCubicMaskMismatchFraction;
+        qsizetype validatedVertices = rebuilt.mesh.vertices.size();
+        simplifyMeshBoundaries(rebuilt.mesh, 0.0, anchors,
+            [&](const MeshData &candidate, QSet<int> &unsafeContours) {
+                PartitionReport verification(candidate);
+                const PartitionResult proposed{candidate, rebuilt.sourceLabels};
+                QSet<int> unsafeSources;
+                const bool valid = validatePartition(proposed, reference, fittingInput, verification, &unsafeSources);
+                const auto detail = verification.finish(valid, QStringLiteral("simplification_validation"), {});
+                fittingChecks.append(QJsonObject{{QStringLiteral("vertices"), candidate.vertices.size()},
+                    {QStringLiteral("valid"), valid}, {QStringLiteral("decisions"), detail.value(QStringLiteral("decisionCounts"))},
+                    {QStringLiteral("overlapArea"), detail.value(QStringLiteral("remainingOverlapArea"))},
+                    {QStringLiteral("overlapTolerance"), overlapTolerance}});
+                for (int contour = 0; contour < rebuilt.sourceLabels.size(); ++contour) {
+                    if (unsafeSources.contains(rebuilt.sourceLabels[contour])) unsafeContours.insert(contour);
+                }
+                if (valid && detail.value(QStringLiteral("remainingOverlapArea")).toDouble() <= overlapTolerance) {
+                    if (candidate.vertices.size() < validatedVertices) {
+                        simplifiedValidation = detail;
+                        validatedVertices = candidate.vertices.size();
+                    }
+                    return true;
+                }
+
+                return false;
+            }, &simplification);
+        simplification.insert(QStringLiteral("validations"), fittingChecks);
+        report.set(QStringLiteral("boundarySimplification"), simplification);
+        if (!simplifiedValidation.isEmpty()) {
+            report.set(QStringLiteral("lostUnionArea"), simplifiedValidation.value(QStringLiteral("lostUnionArea")));
+            report.set(QStringLiteral("lostUnionFraction"), simplifiedValidation.value(QStringLiteral("lostUnionFraction")));
+            report.set(QStringLiteral("maximumRegionMismatchFraction"), simplifiedValidation.value(QStringLiteral("maximumRegionMismatchFraction")));
+            report.set(QStringLiteral("remainingOverlapArea"), simplifiedValidation.value(QStringLiteral("remainingOverlapArea")));
         }
         QVector<int> polygonalLabels(polygonal.begin(), polygonal.end());
         std::sort(polygonalLabels.begin(), polygonalLabels.end());

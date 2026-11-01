@@ -473,6 +473,16 @@ PenFillResult fillRegionOutline(const QPainterPath &outline,
     return result;
 }
 
+QPolygonF simplifyOpenPolyline(const QPolygonF &polyline, double epsilon) {
+    if (polyline.size() < 3 || !std::isfinite(epsilon) || epsilon <= 0.0) return polyline;
+    QPolygonF result{polyline.front()};
+
+    rdpRecurse(polyline, 0, polyline.size() - 1,
+        [epsilon](double distance, const QPointF &, const QPointF &) { return distance <= epsilon; }, result);
+
+    return result;
+}
+
 QPolygonF simplifyClosedPolygon(const QPolygonF &polygon, double epsilon) {
     if (epsilon <= 0.0 || polygon.size() <= 4) {
         return polygon;

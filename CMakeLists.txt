@@ -285,6 +285,8 @@ qt_add_library(fls_editor_ui STATIC
     src/gui/fill/cubic_contour.cpp
     src/gui/fill/pen_fill.cpp
     src/gui/fill/contour_mesh.cpp
+    src/gui/fill/contour_mesh_simplify.cpp
+    src/gui/fill/contour_mesh_simplify.h
     src/gui/fill/contour_mesh.h
     src/gui/fill/contour_partition.cpp
     src/gui/fill/contour_partition.h
@@ -514,6 +516,10 @@ if(FLS_BUILD_TESTS)
     add_test(NAME contour_mesh COMMAND fls_contour_mesh_tests)
     add_test(NAME contour_mesh_logged_growth COMMAND fls_contour_mesh_tests --logged-growth)
     add_test(NAME contour_mesh_logged_divergence COMMAND fls_contour_mesh_tests --logged-divergence)
+    add_test(NAME contour_mesh_logged_interior COMMAND fls_contour_mesh_tests --logged-interior)
+    add_test(NAME contour_mesh_logged_interior_subset COMMAND fls_contour_mesh_tests --logged-interior-subset)
+    add_test(NAME contour_mesh_logged_simplification COMMAND fls_contour_mesh_tests --logged-simplification)
+    add_test(NAME contour_mesh_logged_overlap_simplification COMMAND fls_contour_mesh_tests --logged-overlap-simplification)
     target_link_libraries(fls_gui_command_tests PRIVATE fls_editor_ui)
     if(WIN32)
         add_custom_command(TARGET fls_gui_command_tests POST_BUILD

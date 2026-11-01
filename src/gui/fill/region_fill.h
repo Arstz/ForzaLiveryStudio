@@ -153,6 +153,7 @@ PenFillResult fillRegionOutline(const QPainterPath &outline,
                                 const QSize &comparisonImageSize = {});
 
 QPolygonF simplifyClosedPolygon(const QPolygonF &polygon, double epsilon);
+QPolygonF simplifyOpenPolyline(const QPolygonF &polyline, double epsilon);
 
 QPolygonF simplifyClosedPolygonCyclic(const QPolygonF &polygon, double epsilon);
 
