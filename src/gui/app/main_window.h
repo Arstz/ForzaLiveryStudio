@@ -48,6 +48,7 @@ class LiverySectionBar;
 class PropertyPanel;
 class ShapesBrowserWidget;
 class ToolSettingsWidget;
+struct MeshFillResult;
 
 class MainWindow final : public QMainWindow {
 public:
@@ -172,6 +173,9 @@ private:
     void startLiningFill(const QVector<PenPoint> &points,
                          double width,
                          const std::optional<QColor> &fillColor = std::nullopt);
+    void startMeshFill(const QString &meshId);
+    void stopMeshFill();
+    void finishMeshFill(quint64 generation, const QString &meshId, MeshFillResult result);
     using GeneratedFillProgress =
         std::function<void(int, int, int)>;
     using GeneratedFillFunction = std::function<PenFillResult(

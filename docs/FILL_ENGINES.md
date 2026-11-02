@@ -85,7 +85,7 @@ Defaults are defined by `compact::FillOptions` in `compact_fit.h`:
 | `evaluationBudget` | `60000` | Refinement score-evaluation budget. |
 | `profileTrialBudget` | `0` | Automatic profile-search allocation. |
 | `adaptiveBudget` | `true` | Extend search in rounds according to complexity and measured progress. |
-| `timeBudgetMilliseconds` | `0` | Automatic time allowance; a positive value sets the search deadline. |
+| `timeBudgetMilliseconds` | `0` | Automatic time allowance; a positive value sets the search deadline, and `kNoTimeBudget` uses work limits alone. |
 | `retainFailedFill` | `false` | Retain available placements after a quality failure. |
 
 Geometric checks use triangle unions on a `1e-6` clipping grid and reconstructed

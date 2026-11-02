@@ -97,6 +97,9 @@ public:
             const std::optional<QColor> &,
             bool)> callback);
     void setPenFillCancelCallback(std::function<void()> callback);
+    void setMeshFillRequestedCallback(std::function<void(const QString &)> callback);
+    void setMeshFillCancelCallback(std::function<void()> callback);
+    void setMeshFillSourceId(const QString &id);
     QVector<PenPrimitive> penPrimitiveCatalog() const;
     QVector<catalog::Primitive> compactFillPrimitives(QString *error = nullptr) const;
     QVector<catalog::Primitive> thinFillPrimitives(QString *error = nullptr) const;
@@ -634,6 +637,9 @@ private:
         const std::optional<QColor> &,
         bool)> penFillRequestedCallback_;
     std::function<void()> penFillCancelCallback_;
+    std::function<void(const QString &)> meshFillRequestedCallback_;
+    std::function<void()> meshFillCancelCallback_;
+    QString meshFillSourceId_;
     std::function<bool()> pathProjectRequestedCallback_;
     std::function<void(const QVector<PenPoint> &, double, const std::optional<QColor> &)> liningFillRequestedCallback_;
     std::function<void()> liningFillCancelCallback_;

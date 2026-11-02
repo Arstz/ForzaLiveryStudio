@@ -99,6 +99,7 @@ FillOptions mappedOptions(FillOptions options, const QTransform &transform, doub
         options.replacementCandidates = std::move(candidates);
     }
     options.leeway = mappedPolygons(options.leeway, transform);
+    options.permitted = mappedPolygons(options.permitted, transform);
     options.thinPreferredCoverage = mappedPolygons(options.thinPreferredCoverage, transform);
     options.boundaryAllowance /= unit;
     options.inwardAllowance /= unit;
@@ -173,7 +174,20 @@ catalog::FillResult fitInObservationUnits(const PenFillRequest &request,
     const QTransform toWorld(unit, 0, 0, unit, origin.x(), origin.y());
     const QTransform toFit = toWorld.inverted();
     const auto workingRequest = mappedRequest(request, toFit, unit);
-    const auto workingOptions = mappedOptions(options, toFit, unit);
+    auto workingOptions = mappedOptions(options, toFit, unit);
+    if (options.placementAccepted) {
+        workingOptions.placementAccepted = [&](PenPlacement placement) {
+            placement.transform = catalog::emittedTransform(placement.transform * toWorld);
+            placement.area *= areaUnit;
+            options.placementAccepted(placement);
+        };
+    }
+    if (options.placementCheckpoint) {
+        workingOptions.placementCheckpoint = [&](QVector<PenPlacement> placements, bool verified) {
+            const auto restored = restorePlacements(&placements, primitives, toWorld, toFit, unit);
+            options.placementCheckpoint(restored, verified);
+        };
+    }
     const std::function<void(int, double, double)> workingProgress = progress
         ? std::function<void(int, double, double)>([&](int count, double missing, double spill) {
             progress(count, missing * areaUnit, spill * areaUnit);
@@ -214,8 +228,9 @@ catalog::FillResult fitInObservationUnits(const PenFillRequest &request,
                 repair.initialPlacements = worldPlacements;
                 repair.shapeBudget = std::min(options.shapeBudget, static_cast<int>(worldPlacements.size()));
                 repair.evaluationBudget = std::min(remainingWork, kCoordinateRepairEvaluations);
-                repair.timeBudgetMilliseconds = options.timeBudgetMilliseconds > 0
-                    ? std::min(options.timeBudgetMilliseconds, kCoordinateRepairMilliseconds) : kCoordinateRepairMilliseconds;
+                repair.timeBudgetMilliseconds = options.timeBudgetMilliseconds < 0 ? kNoTimeBudget
+                    : options.timeBudgetMilliseconds > 0 ? std::min(options.timeBudgetMilliseconds, kCoordinateRepairMilliseconds)
+                    : kCoordinateRepairMilliseconds;
                 repair.adaptiveBudget = false;
                 repair.retainFailedFill = true;
                 repair.workProgress = {};

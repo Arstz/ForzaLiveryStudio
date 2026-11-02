@@ -708,6 +708,12 @@ PolygonMeshResult meshPolygon(const PolygonMeshRequest &request,
     QPainterPath mesh;
     mesh.setFillRule(Qt::WindingFill);
     for (int candidateIndex : selectedSquareIndices) {
+        if (cancelled && cancelled()) {
+            if (!request.retainOnCancel) result.placements.clear();
+            result.cancelled = true;
+
+            return result;
+        }
         const SquareCandidate &candidate = candidates[candidateIndex];
         bool ok = false;
         const QTransform transform = affineFromTriangles(request.sources.square[0],
@@ -725,13 +731,14 @@ PolygonMeshResult meshPolygon(const PolygonMeshRequest &request,
             return result;
         }
         result.placements.push_back({101, transform});
+        if (request.placementAccepted) request.placementAccepted(result.placements.back());
         consumed[candidate.firstTriangle] = true;
         consumed[candidate.secondTriangle] = true;
         mesh.addPath(transform.map(polygonPath(request.sources.square)));
     }
     for (int i = 0; i < triangles.size(); ++i) {
         if (cancelled && cancelled()) {
-            result.placements.clear();
+            if (!request.retainOnCancel) result.placements.clear();
             result.cancelled = true;
             return result;
         }
@@ -754,6 +761,7 @@ PolygonMeshResult meshPolygon(const PolygonMeshRequest &request,
             return result;
         }
         result.placements.push_back({103, transform});
+        if (request.placementAccepted) request.placementAccepted(result.placements.back());
         mesh.addPath(transform.map(polygonPath(request.sources.triangle)));
     }
 

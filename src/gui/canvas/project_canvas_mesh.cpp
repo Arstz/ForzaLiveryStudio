@@ -21,6 +21,20 @@ PenBoundarySegment mapCurve(PenBoundarySegment curve, const QTransform &matrix) 
 
 } // namespace
 
+void ProjectCanvas::setMeshFillRequestedCallback(std::function<void(const QString &)> callback) {
+    meshFillRequestedCallback_ = std::move(callback);
+}
+
+void ProjectCanvas::setMeshFillCancelCallback(std::function<void()> callback) {
+    meshFillCancelCallback_ = std::move(callback);
+}
+
+void ProjectCanvas::setMeshFillSourceId(const QString &id) {
+    if (meshFillSourceId_ == id) return;
+    meshFillSourceId_ = id;
+    update();
+}
+
 const fls::scene::Mesh *ProjectCanvas::selectedMesh() const {
 
     return state_ != nullptr ? dynamic_cast<const fls::scene::Mesh *>(state_->sceneNode(pathFigureId_)) : nullptr;
@@ -44,7 +58,7 @@ bool ProjectCanvas::meshVisible() const {
 bool ProjectCanvas::meshEditable() const {
     const auto *mesh = selectedMesh();
 
-    return meshVisible() && !state_->isLayerLocked(mesh->id) && sceneWorldTransform(*mesh).isInvertible();
+    return meshVisible() && meshFillSourceId_ != mesh->id && !state_->isLayerLocked(mesh->id) && sceneWorldTransform(*mesh).isInvertible();
 }
 
 ProjectCanvas::MeshEditHit ProjectCanvas::meshPointAtScreen(const QPointF &point, bool includeEdges) const {
@@ -238,15 +252,27 @@ void ProjectCanvas::finishMeshEdit(bool cancel) {
 }
 
 bool ProjectCanvas::handleMeshKey(KeyInteraction interaction) {
+    const auto *mesh = selectedMesh();
+
+    if (mesh == nullptr) return false;
+    if (interaction == KeyInteraction::CanvasCommitInteraction) {
+        if (meshFillSourceId_.isEmpty() && meshEditable()) {
+            finishMeshEdit();
+            if (drag_.mode != DragMode::None) finishDrag();
+            if (meshFillRequestedCallback_) meshFillRequestedCallback_(pathFigureId_);
+        }
+
+        return true;
+    }
+    if (interaction == KeyInteraction::CanvasCancelInteraction && !meshFillSourceId_.isEmpty()) {
+        if (meshFillCancelCallback_) meshFillCancelCallback_();
+
+        return true;
+    }
     if (!meshEditActive()) return false;
     if (interaction == KeyInteraction::CanvasCancelInteraction) {
         if (meshEdit_.before.has_value()) finishMeshEdit(true);
         else state_->clearSelection();
-
-        return true;
-    }
-    if (interaction == KeyInteraction::CanvasCommitInteraction) {
-        finishMeshEdit();
 
         return true;
     }

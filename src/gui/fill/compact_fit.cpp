@@ -4044,6 +4044,7 @@ Objective makeObjective(const catalog::Region &region, const FillOptions &option
     result.defectLimit = std::max(1, static_cast<int>(result.boundary->perimeter() / (options.observationScale * kLengthPerDefect)));
     result.inner = catalog::interiorSupport(leewayRegion.required, options.inwardAllowance);
     result.outer = leewayRegion.permitted;
+    if (!options.permitted.isEmpty()) result.outer = catalog::intersect(result.outer, options.permitted);
     result.spillFree = leewayRegion.spillFree;
     result.leeway = catalog::unite(options.leeway);
     result.allowance = options.boundaryAllowance;
@@ -4265,12 +4266,18 @@ static catalog::FillResult fillInObservationUnits(const PenFillRequest &request,
                 {QStringLiteral("missing"), missing}, {QStringLiteral("spill"), spill},
                 {QStringLiteral("deepMissing"), catalog::area(catalog::subtract(objective.target,
                     catalog::expanded(coverage, objective.inwardAllowance)))}});
-            if (acceptable(coverage, objective)
+            const bool verified = acceptable(coverage, objective);
+            if (verified
                 && (incumbent.isEmpty() || pieces.size() < incumbent.size()
                     || (pieces.size() == incumbent.size() && error(coverage, objective) < error(support(incumbent), objective)))) {
                 incumbent = pieces;
             }
             optimumReached = incumbent.size() == 1;
+            if (options.placementCheckpoint) {
+                QVector<PenPlacement> placements;
+                for (const auto &piece : pieces) placements.push_back(piece.placement);
+                options.placementCheckpoint(placements, verified);
+            }
             if (progress) {
                 progress(pieces.size(), missing, spill);
             }

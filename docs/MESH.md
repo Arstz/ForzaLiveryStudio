@@ -183,3 +183,35 @@ Project document version 5 stores meshes, canonical vertices, contour references
 and per-contour attributes. Loading validates references and connectivity.
 Cloning, clipboard operations, and project history preserve topology. Meshes
 remain editor content during native game export.
+
+## Filling
+
+Press Enter with a Mesh selected to generate native shapes. Filling runs on a
+worker thread. The progress bar shows completed faces, retained shape count,
+and elapsed time. Escape stops the worker and keeps the shapes it has generated,
+including an unfinished face. The output is inserted beside the editable source
+Mesh as a single undoable group with its original coordinate frame.
+
+The drawing order is chosen greedily from the remaining exposed boundary cost,
+with stable source-order ties. Shared edge costs decrease as neighbouring faces
+are completed. Boundary cost combines edge count and curve subdivision demand.
+Faces are solved from foreground to background and inserted in reverse order.
+Each face receives leeway through its shared-edge topology into completed opaque
+faces, intersected with their actual emitted native coverage. Exterior space and
+empty holes retain their boundary constraints.
+
+Canonical curves are sampled once for both incident faces. Each face uses the
+regular Compact Fill profile search, union refinement, count reduction, and
+quality checks with their default project-unit allowances. The CPU solver uses
+adaptive work allocation with evaluation limits. Greedy ordering applies to face
+selection. Topology supplies the permitted support and protects empty holes
+throughout fitting.
+
+Progress counts the current retained placement snapshot, so the shape count can
+decrease during reduction. Escape retains the available native placements from
+the current face and previous faces. Quality failures retain available output
+with a warning; they are recorded independently for each face. Filling requires
+closed opaque Pen faces and opaque visible parent layers.
+
+`mesh_fill_latest.json` beside the executable records the drawing order, assigned
+leeway, retained counts, coverage checks, stop state, and timings.

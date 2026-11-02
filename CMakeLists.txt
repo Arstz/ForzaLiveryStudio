@@ -220,6 +220,7 @@ qt_add_library(fls_editor_ui STATIC
     src/gui/app/main_window.h
     src/gui/app/main_window_internal.h
     src/gui/app/main_window_edit.cpp
+    src/gui/app/main_window_mesh_fill.cpp
     src/gui/app/main_window_io.cpp
     src/gui/app/main_window_svg_export.cpp
     src/gui/app/main_window_project.cpp
@@ -289,6 +290,8 @@ qt_add_library(fls_editor_ui STATIC
     src/gui/fill/contour_mesh_simplify.h
     src/gui/fill/mesh_edit.cpp
     src/gui/fill/mesh_edit.h
+    src/gui/fill/mesh_fill.cpp
+    src/gui/fill/mesh_fill.h
     src/gui/fill/contour_mesh.h
     src/gui/fill/contour_partition.cpp
     src/gui/fill/contour_partition.h
@@ -516,6 +519,15 @@ if(FLS_BUILD_TESTS)
     add_executable(fls_mesh_edit_tests tools/mesh_edit_test.cpp)
     target_link_libraries(fls_mesh_edit_tests PRIVATE fls_editor_ui)
     add_test(NAME mesh_edit COMMAND fls_mesh_edit_tests)
+    add_executable(fls_mesh_fill_tests tools/mesh_fill_test.cpp)
+    target_link_libraries(fls_mesh_fill_tests PRIVATE fls_editor_ui)
+    target_compile_definitions(fls_mesh_fill_tests PRIVATE FLS_MESH_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tools/fixtures")
+    add_test(NAME mesh_fill COMMAND fls_mesh_fill_tests)
+    add_test(NAME mesh_fill_logged_quality COMMAND fls_mesh_fill_tests --logged)
+    add_test(NAME mesh_fill_logged_full COMMAND fls_mesh_fill_tests --logged-full)
+    set_tests_properties(mesh_fill PROPERTIES WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+    set_tests_properties(mesh_fill_logged_quality mesh_fill_logged_full PROPERTIES
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}" LABELS "slow" RUN_SERIAL TRUE)
     add_executable(fls_contour_mesh_tests tools/contour_mesh_test.cpp)
     target_link_libraries(fls_contour_mesh_tests PRIVATE fls_editor_ui)
     target_compile_definitions(fls_contour_mesh_tests PRIVATE FLS_CONTOUR_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tools/fixtures")
@@ -528,7 +540,7 @@ if(FLS_BUILD_TESTS)
     add_test(NAME contour_mesh_logged_overlap_simplification COMMAND fls_contour_mesh_tests --logged-overlap-simplification)
     target_link_libraries(fls_gui_command_tests PRIVATE fls_editor_ui)
     if(WIN32)
-        foreach(gui_test_target IN ITEMS fls_gui_command_tests fls_mesh_edit_tests)
+        foreach(gui_test_target IN ITEMS fls_gui_command_tests fls_mesh_edit_tests fls_mesh_fill_tests)
             add_custom_command(TARGET ${gui_test_target} POST_BUILD
                 COMMAND "${CMAKE_COMMAND}" -E make_directory "$<TARGET_FILE_DIR:${gui_test_target}>/platforms"
                 COMMAND "${CMAKE_COMMAND}" -E copy_if_different

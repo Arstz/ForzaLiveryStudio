@@ -111,6 +111,7 @@ ProjectCanvas::ProjectCanvas(QWidget *parent)
 ProjectCanvas::~ProjectCanvas() = default;
 
 void ProjectCanvas::setProject(fls::Project *project) {
+    meshFillSourceId_.clear();
     finishMeshEdit();
     releaseSavedFigure();
     cancelPenInteraction();

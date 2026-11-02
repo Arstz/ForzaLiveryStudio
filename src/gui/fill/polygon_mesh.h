@@ -36,6 +36,8 @@ struct PolygonMeshRequest {
     QVector<QVector<QPointF>> contours;
     PolygonMeshSources sources;
     bool mergeSquares = true;
+    bool retainOnCancel = false;
+    std::function<void(const PolygonMeshPlacement &)> placementAccepted;
 };
 
 struct PolygonMeshResult {

@@ -45,6 +45,8 @@ void MainWindow::setupCanvas() {
     });
     canvas_->setPenFillCancelCallback(
         [this]() { cancelGeneratedFill(); });
+    canvas_->setMeshFillRequestedCallback([this](const QString &id) { startMeshFill(id); });
+    canvas_->setMeshFillCancelCallback([this]() { stopMeshFill(); });
     canvas_->setLiningFillRequestedCallback(
         [this](const QVector<PenPoint> &points,
                double width,
@@ -53,6 +55,7 @@ void MainWindow::setupCanvas() {
     });
     canvas_->setLiningFillCancelCallback([this]() { cancelGeneratedFill(); });
     generatedFillProgress_ = new QProgressBar(statusBar());
+    generatedFillProgress_->setObjectName(QStringLiteral("GeneratedFillProgress"));
     generatedFillProgress_->setTextVisible(true);
     generatedFillProgress_->setMinimumWidth(260);
     generatedFillProgress_->setMaximumWidth(380);
@@ -68,13 +71,19 @@ void MainWindow::setupCanvas() {
     keyBindings_->registerInteraction(
         KeyInteraction::CancelActiveFill, this, KeyBindingRouter::Scope::Window,
         [this](KeyInteraction, KeyEventPhase phase, bool) {
-            if (phase != KeyEventPhase::Press || regionFillCancel_ == nullptr) {
+            if (phase != KeyEventPhase::Press) {
                 return false;
             }
+            if (generatedFillCancel_ != nullptr && generatedFillTool_ == QStringLiteral("mesh")) {
+                stopMeshFill();
+
+                return true;
+            }
+            if (regionFillCancel_ == nullptr) return false;
             cancelRegionFill();
             return true;
         },
-        [this]() { return regionFillCancel_ != nullptr; }, kOverrideKeyBindingPriority);
+        [this]() { return regionFillCancel_ != nullptr || (generatedFillCancel_ != nullptr && generatedFillTool_ == QStringLiteral("mesh")); }, kOverrideKeyBindingPriority);
     const QVector<KeyInteraction> canvasInteractions = {
         KeyInteraction::CanvasPan,
         KeyInteraction::CanvasRemovePathPoint,

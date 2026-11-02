@@ -34,7 +34,7 @@ namespace {
 
 bool usesWorkProgress(const QString &tool) {
 
-    return tool == QStringLiteral("compact") || tool == QStringLiteral("lining");
+    return tool == QStringLiteral("compact") || tool == QStringLiteral("lining") || tool == QStringLiteral("mesh");
 }
 
 int stripRasterLayers(std::vector<std::unique_ptr<fls::scene::Layer>> &nodes) {
@@ -422,6 +422,7 @@ void MainWindow::startGeneratedFillTask(GeneratedFillFunction fill) {
 }
 
 void MainWindow::clearGeneratedFillState() {
+    if (canvas_ != nullptr) canvas_->setMeshFillSourceId({});
     if (generatedFillElapsedTimer_ != nullptr) {
         generatedFillElapsedTimer_->stop();
     }
@@ -474,7 +475,11 @@ void MainWindow::refreshGeneratedFillElapsedTime() {
         ? std::clamp(static_cast<double>(generatedFillWorkCompleted_) / generatedFillWorkTotal_, 0.0, 1.0) : 0.0;
     generatedFillProgress_->setRange(0, generatedFillWorkTotal_ > 0 ? kProgressResolution : 0);
     generatedFillProgress_->setValue(static_cast<int>(fraction * kProgressResolution));
-    generatedFillProgress_->setFormat(generatedFillWorkTotal_ > 0
+    if (generatedFillTool_ == QStringLiteral("mesh")) {
+        generatedFillProgress_->setFormat(QStringLiteral("%1 | %2/%3 faces | %4 shapes | %5")
+            .arg(generatedFillLabel_).arg(generatedFillWorkCompleted_).arg(generatedFillWorkTotal_)
+            .arg(generatedFillPlacementCount_).arg(duration));
+    } else generatedFillProgress_->setFormat(generatedFillWorkTotal_ > 0
         ? QStringLiteral("%1 | Work %2% | Elapsed %3 | %4 shapes")
             .arg(generatedFillLabel_).arg(fraction * 100.0, 0, 'f', 1).arg(duration).arg(generatedFillPlacementCount_)
         : QStringLiteral("%1 | Elapsed %2 | %3 shapes")

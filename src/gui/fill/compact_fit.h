@@ -11,6 +11,7 @@ inline constexpr int kDefaultShapeBudget = 3000;
 inline constexpr int kDefaultEvaluationBudget = 60000;
 inline constexpr double kDefaultInwardAllowance = 0.5;
 inline constexpr double kDefaultObservationScale = 1.0;
+inline constexpr int kNoTimeBudget = -1;
 
 struct ReusableCandidate {
     PenPlacement placement;
@@ -21,9 +22,12 @@ struct ReusableCandidate {
 struct FillOptions {
     QVector<PenPlacement> initialPlacements;
     QVector<QPolygonF> leeway;
+    QVector<QPolygonF> permitted;
     QVector<QPolygonF> thinPreferredCoverage;
     std::shared_ptr<const QVector<ReusableCandidate>> replacementCandidates;
     std::function<void(int, int, int)> workProgress;
+    std::function<void(const PenPlacement &)> placementAccepted;
+    std::function<void(const QVector<PenPlacement> &, bool)> placementCheckpoint;
     int shapeBudget = kDefaultShapeBudget;
     int evaluationBudget = kDefaultEvaluationBudget;
     int profileTrialBudget = 0;
