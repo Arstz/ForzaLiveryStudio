@@ -28,8 +28,6 @@ Project importCLiveryData(const QByteArray &wrapped, const QByteArray &header,
 void exportNestedProjectFolder(const Project &project, const QString &outputFolder,
                                const QString &name = {}, const SpriteSizeFn &spriteSize = {});
 
-Project importFM2023Asset(const QString &folderOrFile);
-
 QByteArray encodeCLiveryPayload(const Project &project);
 void exportCLivery(const Project &project, const QString &outputFolder);
 

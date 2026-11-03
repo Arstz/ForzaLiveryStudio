@@ -4,7 +4,6 @@
 
 #include "binary_io.h"
 #include "cgroup_codec.h"
-#include "fm_codec.h"
 #include "layer.h"
 #include "matrix_math.h"
 #include "vinyl_decoder.h"
@@ -18,6 +17,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <limits>
 #include <optional>
 #include <stdexcept>
 
@@ -25,15 +25,16 @@ namespace fls {
 namespace {
 
 constexpr int kCurrentLiverySectionCount = 11;
-constexpr int kLegacyLiveryStatsCount = 7;
-constexpr int kLegacyLiverySectionCount = 6;
-constexpr int kEarlyLiverySectionCount = 6;
 constexpr quint32 kEarlyLiveryVersion = 7;
+constexpr int kMotorsportInformationOffset = 41;
 
 QString resolveLiveryPath(const QString &folderOrFile) {
     QFileInfo info(folderOrFile);
     if (info.isDir()) {
-        return QDir(folderOrFile).filePath(QStringLiteral("C_livery"));
+        const QDir directory(folderOrFile);
+
+        return directory.filePath(directory.exists(QStringLiteral("C_livery"))
+            ? QStringLiteral("C_livery") : QStringLiteral("data"));
     }
     return folderOrFile;
 }
@@ -113,9 +114,41 @@ LiveryPaintState readPaintState(const QByteArray &raw, int blockStart, int end) 
     return state;
 }
 
+void resolveLiveryRecords(LiveryPayload &payload) {
+    const int counterCount = static_cast<int>(payload.sectionCounts.size());
+    const int defaultSectionCount = counterCount == kLegacyLiveryCounterCount
+        ? kBodyLiverySectionCount : counterCount;
+    if (!payload.motorsport && !payload.raw.isEmpty()) {
+        payload.sectionCounts.resize(defaultSectionCount);
+
+        return;
+    }
+    for (const bool legacy : {payload.legacyRecords, !payload.legacyRecords}) {
+        const auto stream = detail::readVinylRecordStream(payload.body, legacy);
+        if (!stream.complete) {
+            continue;
+        }
+        for (const int sectionCount : {defaultSectionCount, counterCount}) {
+            if (detail::mapVinylSections(stream, payload.sectionCounts, sectionCount).size() == sectionCount) {
+                payload.legacyRecords = legacy;
+                payload.sectionCounts.resize(sectionCount);
+
+                return;
+            }
+        }
+    }
+    if (payload.motorsport) {
+        throw std::runtime_error("livery artwork has invalid record or section framing");
+    }
+    payload.sectionCounts.resize(defaultSectionCount);
+}
+
 LiveryPayload parseInflatedLiveryPayloadImpl(const QByteArray &raw) {
     LiveryPayload payload;
     payload.raw = raw;
+    payload.motorsport = raw.startsWith("vlrc") && raw.size() >= 8
+        && detail::readLeU32(raw, 4) == 2
+        && raw.mid(kMotorsportInformationOffset, 4) == QByteArray("yrvl", 4);
 
     const int vlrc = payload.raw.indexOf(QByteArray("vlrc", 4));
     if (vlrc >= 0 && vlrc + 0x14 <= payload.raw.size()) {
@@ -157,9 +190,7 @@ LiveryPayload parseInflatedLiveryPayloadImpl(const QByteArray &raw) {
     const int statsCount = hasStats && paintTag > statsTag
         ? (paintTag - statsTag - 4) / 4
         : kCurrentLiverySectionCount;
-    const int sectionCount = payload.legacyRecords ? kEarlyLiverySectionCount
-        : statsCount == kLegacyLiveryStatsCount
-        ? kLegacyLiverySectionCount
+    const int sectionCount = payload.legacyRecords ? kBodyLiverySectionCount
         : std::min(statsCount, kCurrentLiverySectionCount);
     payload.sectionCounts.reserve(sectionCount);
     for (int i = 0; i < sectionCount; ++i) {
@@ -172,6 +203,8 @@ LiveryPayload parseInflatedLiveryPayloadImpl(const QByteArray &raw) {
             payload.sectionCounts.push_back(0);
         }
     }
+    resolveLiveryRecords(payload);
+
     return payload;
 }
 
@@ -182,11 +215,38 @@ LiveryPayload parseInflatedLiveryPayload(const QByteArray &raw) {
 }
 
 QVector<LiverySection> decodeLiverySections(const LiveryPayload &payload) {
+    LiveryPayload resolved = payload;
+    resolveLiveryRecords(resolved);
     VinylDecoderOptions options;
-    options.legacyLiveryRecords = payload.legacyRecords;
-    options.appendLiveryTailPadding = payload.sectionCounts.size() == kEarlyLiverySectionCount;
+    options.legacyLiveryRecords = resolved.legacyRecords;
+    options.currentLiveryState = resolved.motorsport;
+    options.appendLiveryTailPadding = resolved.sectionCounts.size() == kBodyLiverySectionCount;
 
-    return VinylTreeDecoder(options).buildLiverySections(payload.body, payload.sectionCounts);
+    return VinylTreeDecoder(options).buildLiverySections(resolved.body, resolved.sectionCounts);
+}
+
+bool isLiveryAsset(const QByteArray &fileData) {
+    constexpr int kCompressedPayloadOffset = 8;
+    constexpr int kZlibHeaderBytes = 2;
+    constexpr quint8 kZlibMethod = 0x78;
+    constexpr int kZlibHeaderDivisor = 31;
+    if (fileData.size() < kCompressedPayloadOffset + kZlibHeaderBytes) {
+        return false;
+    }
+    const quint32 compressedSize = detail::readLeU32(fileData, 0);
+    const quint32 decompressedSize = detail::readLeU32(fileData, 4);
+    const quint8 method = static_cast<quint8>(fileData[kCompressedPayloadOffset]);
+    const quint8 flags = static_cast<quint8>(fileData[kCompressedPayloadOffset + 1]);
+    if (compressedSize < kZlibHeaderBytes || compressedSize > fileData.size() - kCompressedPayloadOffset
+        || decompressedSize == 0 || decompressedSize > static_cast<quint32>(std::numeric_limits<int>::max())
+        || method != kZlibMethod || ((method << 8) | flags) % kZlibHeaderDivisor != 0) {
+        return false;
+    }
+    try {
+        return inflateFirstContainer(fileData).startsWith("vlrc");
+    } catch (const std::exception &) {
+        return false;
+    }
 }
 
 bool isLiveryAssetFileName(const QString &fileName) {
@@ -204,7 +264,7 @@ LiveryPayload readLiveryPayload(const QString &folderOrFile) {
         throw std::runtime_error(("could not open C_livery: " + file.fileName()).toStdString());
     }
 
-    return parseInflatedLiveryPayload(inflateContainer(file.readAll()));
+    return parseInflatedLiveryPayload(inflateContainerBlocks(file.readAll()));
 }
 
 namespace {
@@ -233,7 +293,6 @@ constexpr int kMaxDirectChildren = 0xffff;
 
 struct LiveryRecordFraming {
     bool nativeMarkers;
-    bool unwindGroups;
 };
 
 struct LiveryEntry {
@@ -907,9 +966,7 @@ bool nativeArtworkMatchesSource(
     const std::array<const scene::Group *, kLiverySectionCount> &groups,
     const std::array<QVector<const scene::Shape *>, kLiverySectionCount> &shapes,
     int sectionCount) {
-    const bool motorsportSource = source.payload.gyvlOffset >= 66;
-    if (motorsportSource != (sectionCount == kFM2023SectionCount)
-        || source.payload.sectionCounts.size() != sectionCount) {
+    if (source.payload.legacyRecords || source.payload.sectionCounts.size() != sectionCount) {
         return false;
     }
     for (int slot = 0; slot < sectionCount; ++slot) {
@@ -994,20 +1051,7 @@ std::optional<SourceLivery> legacySourceFrames(const Project &project) {
     }
     SourceLivery source;
     source.payload = parseInflatedLiveryPayload(project.liverySource);
-    if (detail::readLeU32(project.liverySource, 4) == 2
-        && source.payload.gyvlOffset >= 66) {
-        FM2023LiveryPayload payload;
-        payload.gyvlBody = source.payload.body;
-        const int stats = source.payload.gyvlOffset
-            + static_cast<int>(detail::readLeU32(project.liverySource, source.payload.gyvlOffset - 4));
-        for (int slot = 0; slot < kFM2023SectionCount; ++slot) {
-            payload.sectionCounts.append(static_cast<int>(detail::readLeU32(project.liverySource, stats + 4 + slot * 4)));
-        }
-        source.payload.sectionCounts = payload.sectionCounts;
-        source.sections = decodeFM2023LiverySections(payload);
-    } else {
-        source.sections = decodeLiverySections(source.payload);
-    }
+    source.sections = decodeLiverySections(source.payload);
 
     return source;
 }
@@ -1087,9 +1131,6 @@ QByteArray packLiveryGroup(const LiveryEntry &entry, const Matrix3 &parentWorld,
             previousWasGroup = true;
             previousGroupDepth = terminalDepth(child);
         } else if (child.shape != nullptr) {
-            if (previousWasGroup && framing.unwindGroups) {
-                detail::appendVinylGroupShapeTransition(out, previousGroupDepth);
-            }
             const quint8 fallbackLead = (!hasPreviousSibling || childMask || previousShapeMask)
                 ? 0x01
                 : 0x00;
@@ -1143,9 +1184,6 @@ void appendStructuralSection(QByteArray &body, const scene::Group *sectionGroup,
             previousWasGroup = true;
             previousGroupDepth = terminalDepth(child);
         } else if (child.shape != nullptr) {
-            if (previousWasGroup && framing.unwindGroups) {
-                detail::appendVinylGroupShapeTransition(body, previousGroupDepth);
-            }
             const quint8 fallbackLead = previousShapeMask ? 0x01 : 0x00;
             const quint8 lead = framing.nativeMarkers ? fallbackLead : liveryArtworkLead(
                 *child.shape, fallbackLead, previousShapeMask);
@@ -1277,7 +1315,7 @@ static QByteArray buildLiveryGyvlImpl(const Project &project, int sectionCount,
                 counts[slot] = sourceCount;
             } else {
                 appendStructuralSection(body, slotGroups[slot], slot, sourceFrames,
-                    {sectionCount < kLiverySectionCount, sectionCount == kFM2023SectionCount});
+                    {sectionCount < kLiverySectionCount});
                 counts[slot] = static_cast<int>(shapes.size());
             }
             if (slot + 1 < sectionCount) {
@@ -1316,15 +1354,10 @@ QByteArray buildLiveryGyvlForSectionCount(const Project &project, int sectionCou
     for (int slot = 0; slot < sectionCount; ++slot) {
         decodedCounts.append(counts[slot]);
     }
-    QVector<LiverySection> sections;
-    if (sectionCount == kFM2023SectionCount) {
-        FM2023LiveryPayload payload;
-        payload.gyvlBody = artwork.mid(21);
-        payload.sectionCounts = decodedCounts;
-        sections = decodeFM2023LiverySections(payload);
-    } else {
-        sections = buildLiverySections(artwork.mid(21), decodedCounts);
-    }
+    LiveryPayload payload;
+    payload.body = artwork.mid(21);
+    payload.sectionCounts = decodedCounts;
+    const QVector<LiverySection> sections = decodeLiverySections(payload);
     for (int slot = 0; slot < sectionCount; ++slot) {
         QVector<const scene::Shape *> expected;
         if (project.root != nullptr) {

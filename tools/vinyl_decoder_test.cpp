@@ -2,7 +2,6 @@
 #include "cgroup_codec.h"
 #include "vinyl_decoder.h"
 #include "vinyl_framing.h"
-#include "fm_codec.h"
 
 #include <QtCore>
 
@@ -456,12 +455,16 @@ bool testFM2023LargeChildBitmap() {
         for (int index = 0; index < kChildCount; ++index) {
             appendShape(payload, kLegacyShapeMarker, false);
         }
-        const auto root = fls::decodeFM2023RawGroup(payload);
+        const auto root = fls::VinylTreeDecoder{}.decodeGroup(payload);
         QVector<const fls::VinylShape *> shapes;
         collectShapes(root, shapes);
         if (root.items.size() != 1 || root.items.front().isShape()
             || shapes.size() != kChildCount || !fls::validateTree(root).isEmpty()) {
             qCritical() << "FM2023 large child bitmap hierarchy" << counted << shapes.size();
+            const auto stream = fls::detail::readStandaloneVinylRecords(payload);
+            qCritical() << "Physical stream" << stream.complete << stream.legacy << stream.end
+                << "root children" << root.expectedChildren.value_or(-1)
+                << "layer start" << fls::getLayerData(payload).start;
             return false;
         }
         const auto &group = *std::get<fls::VinylGroupPtr>(root.items.front().value);
@@ -473,6 +476,22 @@ bool testFM2023LargeChildBitmap() {
     }
 
     return true;
+}
+
+bool testRootScaleAttributes() {
+    QByteArray payload = makePayload(kGeneration3Marker, kGeneration3ShapeMarker,
+        kGeneration3TransformTerminator, false, false).left(29);
+    fls::detail::VinylAttributes attributes;
+    attributes.flags = 0x30;
+    attributes.scaleY = -2.0;
+    payload.append(fls::detail::writeVinylAttributes(attributes));
+    payload.append(fls::detail::writeVinylChildHeader(1, QByteArray(1, '\0')));
+    appendShape(payload, kGeneration3ShapeMarker, false);
+    payload.append('\0');
+    const auto group = fls::VinylTreeDecoder{}.decodeGroup(payload);
+
+    return group.sy == -2.0 && group.items.size() == 1
+        && group.expectedChildren == 1 && !group.isMask;
 }
 
 bool verifyUnmaskedGroup(const QString &path) {
@@ -517,5 +536,5 @@ int main(int argc, char *argv[]) {
         && testGeneration2MaskFraming() && testGeneration3TrailingMasks()
         && testShapeIdAliases() && testStandaloneTransformTrailer()
         && testLiveryLockedTransformFrames() && testUnmarkedLegacyLiveryTransform()
-        && testFM2023LargeChildBitmap() ? 0 : 1;
+        && testFM2023LargeChildBitmap() && testRootScaleAttributes() ? 0 : 1;
 }

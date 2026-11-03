@@ -6,6 +6,7 @@
 #include <QFile>
 #include <QFileInfo>
 
+#include <limits>
 #include <stdexcept>
 
 #include <zlib.h>
@@ -16,7 +17,10 @@ namespace {
 QString resolveCGroupPath(const QString &folderOrFile) {
     QFileInfo info(folderOrFile);
     if (info.isDir()) {
-        return QDir(folderOrFile).filePath(QStringLiteral("C_group"));
+        const QDir directory(folderOrFile);
+
+        return directory.filePath(directory.exists(QStringLiteral("C_group"))
+            ? QStringLiteral("C_group") : QStringLiteral("data"));
     }
     return folderOrFile;
 }
@@ -64,7 +68,46 @@ QByteArray readCGroupPayload(const QString &folderOrFile) {
     if (!file.open(QIODevice::ReadOnly)) {
         throw std::runtime_error(("could not open C_group: " + file.fileName()).toStdString());
     }
-    return inflateContainer(file.readAll());
+    const QByteArray bytes = file.readAll();
+
+    return bytes.startsWith("gyvl") ? bytes : inflateContainer(bytes);
+}
+
+QByteArray inflateContainerBlocks(const QByteArray &wrapped) {
+    QByteArray payload;
+    constexpr int kBlockHeaderBytes = 8;
+    qsizetype offset = 0;
+    while (offset < wrapped.size()) {
+        if (wrapped.size() - offset < kBlockHeaderBytes) {
+            throw std::runtime_error("container block header is truncated");
+        }
+        const quint32 compressedSize = readLeU32(wrapped, offset);
+        const quint32 decompressedSize = readLeU32(wrapped, offset + 4);
+        if (compressedSize == 0 || decompressedSize == 0
+            || compressedSize > wrapped.size() - offset - kBlockHeaderBytes
+            || decompressedSize > static_cast<quint32>(std::numeric_limits<int>::max())) {
+            throw std::runtime_error("container block size is invalid");
+        }
+        payload.append(inflateFirstContainer(wrapped.mid(offset, kBlockHeaderBytes + compressedSize)));
+        offset += kBlockHeaderBytes + compressedSize;
+    }
+    if (payload.isEmpty()) {
+        throw std::runtime_error("container has no blocks");
+    }
+
+    return payload;
+}
+
+QByteArray deflateContainerBlocks(const QByteArray &payload, int blockSize) {
+    if (blockSize <= 0 || payload.isEmpty()) {
+        throw std::runtime_error("invalid container block input");
+    }
+    QByteArray wrapped;
+    for (qsizetype offset = 0; offset < payload.size(); offset += blockSize) {
+        wrapped.append(deflateContainer(payload.mid(offset, blockSize)));
+    }
+
+    return wrapped;
 }
 
 QByteArray deflateContainer(const QByteArray &payload) {

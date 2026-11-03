@@ -564,7 +564,7 @@ Project importCGroupNested(const QString &folderOrFile) {
 
 Project importCGroupNestedData(const QByteArray &wrapped, const QByteArray &header,
                                const QString &name) {
-    const QByteArray payload = inflateContainer(wrapped);
+    const QByteArray payload = wrapped.startsWith("gyvl") ? wrapped : inflateContainer(wrapped);
     enforcePrivacyPolicyForCGroup(payload);
 
     return importCGroupNestedDecoded(payload, newImportProject(name, payload, header));
@@ -580,7 +580,8 @@ static Project importCLiveryDecoded(const LiveryPayload &livery, Project project
     project.liverySource = livery.raw;
     project.liveryPaint = livery.paint;
     applyImportedHeaderMetadata(project);
-    detail::appendLiverySectionsToScene(project, sections);
+    detail::appendLiverySectionsToScene(project, sections, livery.motorsport
+        ? detail::VinylSceneDialect::Motorsport2023 : detail::VinylSceneDialect::Horizon);
     return project;
 }
 
@@ -592,7 +593,7 @@ Project importCLivery(const QString &folderOrFile) {
 
 Project importCLiveryData(const QByteArray &wrapped, const QByteArray &header,
                           const QString &name) {
-    const LiveryPayload livery = parseInflatedLiveryPayload(inflateContainer(wrapped));
+    const LiveryPayload livery = parseInflatedLiveryPayload(inflateContainerBlocks(wrapped));
     Project project;
     project.name = name;
     project.sourceHeader = header;

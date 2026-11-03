@@ -2,7 +2,6 @@
 #include "browser_tile_palette.h"
 
 #include "car_registry.h"
-#include "fm_codec.h"
 #include "gui_assets.h"
 #include "header_codec.h"
 #include "image_io.h"
@@ -133,11 +132,8 @@ QString findThumbnail(const QDir &directory) {
 
 QString liveryCarName(AssetKind kind, const QString &path) {
     try {
-        if (kind == AssetKind::HorizonLivery) {
+        if (kind == AssetKind::HorizonLivery || kind == AssetKind::MotorsportLivery) {
             return sharedCarRegistry().displayName(fls::readLiveryPayload(path).carId);
-        }
-        if (kind == AssetKind::MotorsportLivery) {
-            return sharedCarRegistry().displayName(fls::readFM2023LiveryPayload(path).carId);
         }
     } catch (const std::exception &) {
     }
@@ -210,9 +206,9 @@ AssetInfo inspectAsset(const QString &path) {
         QFile dataFile(data);
         if (dataFile.open(QIODevice::ReadOnly)) {
             const QByteArray bytes = dataFile.readAll();
-            if (fls::isFM2023Livery(bytes)) {
+            if (fls::isLiveryAsset(bytes)) {
                 asset.kind = AssetKind::MotorsportLivery;
-            } else if (fls::isRawGyvl(bytes)) {
+            } else if (bytes.startsWith("gyvl")) {
                 asset.kind = AssetKind::MotorsportGroup;
             }
         }

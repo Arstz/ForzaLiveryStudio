@@ -1,5 +1,4 @@
 #include "fls_core.h"
-#include "fm_codec.h"
 #include "header_codec.h"
 #include "vinyl_decoder.h"
 #include "livery_codec.h"
@@ -2223,30 +2222,27 @@ int main(int argc, char *argv[])
                 throw std::runtime_error("could not open FM data file");
             }
             const QByteArray fileData = dataFile.readAll();
-            if (isRawGyvl(fileData)) {
-                const LayerData layerData = getLayerData(fileData);
-                const VinylGroup legacyTree = buildTree(layerData.data, fileData);
-                const VinylGroup tree = decodeFM2023RawGroup(fileData);
-                RawStats legacyStats;
+            if (fileData.startsWith("gyvl")) {
+                LayerData layerData;
+                const VinylGroup tree = VinylTreeDecoder{}.decodeGroup(fileData, &layerData);
                 RawStats stats;
-                collectRawStats(legacyTree, legacyStats);
                 collectRawStats(tree, stats);
-                const Project project = importFM2023Asset(args[1]);
-                std::printf("FM %s bytes=%d layerStart=%d rootExpected=%d legacyShapes=%d shapes=%d importedShapes=%d masks=%d/%d skipped=%d groups=%d incomplete=%d\n",
+                const Project project = importCGroupNested(args[1]);
+                std::printf("FM %s bytes=%d layerStart=%d rootExpected=%d shapes=%d importedShapes=%d masks=%d/%d skipped=%d groups=%d incomplete=%d\n",
                             QFileInfo(args[1]).fileName().toLatin1().constData(),
                             static_cast<int>(fileData.size()), layerData.start,
                             tree.expectedChildren ? *tree.expectedChildren : -1,
-                            legacyStats.shapes, stats.shapes, sceneShapeCount(project),
+                            stats.shapes, sceneShapeCount(project),
                             stats.masks, sceneMaskCount(project), stats.skipped,
                             stats.groups, stats.incompleteGroups);
                 return 0;
             }
-            const FM2023LiveryPayload payload = readFM2023LiveryPayload(args[1]);
-            const QVector<LiverySection> sections = decodeFM2023LiverySections(payload);
-            const Project project = importFM2023Asset(args[1]);
+            const LiveryPayload payload = readLiveryPayload(args[1]);
+            const QVector<LiverySection> sections = decodeLiverySections(payload);
+            const Project project = importCLivery(args[1]);
             std::printf("FM %s body=%d carId=%d vectors=%d masks=%d counts=",
                         QFileInfo(args[1]).fileName().toLatin1().constData(),
-                        static_cast<int>(payload.gyvlBody.size()), payload.carId,
+                        static_cast<int>(payload.body.size()), payload.carId,
                         sceneShapeCount(project), sceneMaskCount(project));
             for (int count : payload.sectionCounts) {
                 std::printf("%d,", count);

@@ -249,15 +249,17 @@ The stream ends with:
 Forza Motorsport stores the tagged stream in consecutive compressed blocks.
 Decoding inflates every block and concatenates the results before locating tags.
 
-Its artwork uses seven positional section slots and accepts both framed and bare
-shape records. The shared `VinylTreeDecoder` applies the Motorsport record profile
-for marker normalization, identifier canonicalization, root framing, section
-padding, and post-decode mask state while retaining the same group and section
-walkers.
+The shared livery codec reads Motorsport `data` files and Horizon `C_livery`
+files. Physical record coverage selects the artwork dialect and section layout;
+counter storage and artwork section count are independent. Shape markers,
+child bitmaps, transforms, and boundary metadata retain their original bytes.
+Both current and legacy shape records are supported, including Motorsport logo
+identifiers and trailing mask state.
 
-`readFM2023LiveryPayload()` reconstructs the tagged stream and extracts its
-artwork and counters. `decodeFM2023LiverySections()` builds the section trees, and
-`importFM2023Asset()` converts them to the editor scene.
+`readLiveryPayload()` reconstructs the tagged stream and extracts its artwork
+and counters. `decodeLiverySections()` builds the section trees, and
+`importCLivery()` converts them to the editor scene. Raw Motorsport groups use
+`readCGroupPayload()` and `importCGroupNested()`.
 
 ## Native Export Targets
 
@@ -275,7 +277,7 @@ FH6 retains its eleven artwork sections and hashed paint descriptors.
 | FH4 | 4 | 17 | 6 | 34 |
 | FH5 | 6 | 18 | 6 | 34 |
 | FH6 | 7 | 19 | 11 | Variable (hashed) |
-| FM2023 | 9 | 19 | 7 | 34 |
+| FM2023 | 9 | 19 | 6 | 34 |
 
 FH6 stores a counted table of 27-byte hashed paint records. Its record count
 depends on the material bindings carried by the livery.
@@ -285,15 +287,15 @@ layouts present in game saves, including FH5 header version 4 with livery
 information version 17 and Motorsport 2023 livery information version 18.
 
 The six body sections are Front, Back, Top, Left, Right, and Spoiler. Window
-artwork is discarded for every target except FH6. FM2023 retains an empty seventh
-wire slot. The non-FH6 targets write seven section counters; FH6 writes eleven
-section counters and one trailing counter. FM5 stores counters and
+artwork is discarded for every target except FH6. The non-FH6 targets write
+seven section counters; FH6 writes eleven section counters and one trailing
+counter. FM5 stores counters and
 paint directly after its length-delimited artwork; later formats frame these
 blocks with `yrvl` tags. FH2, FH3, FM5, FM6, and FM7 use bare `01` shape markers in embedded
 artwork. Their populated sections use seventeen-byte boundary frames. The
 metadata-guided recovery walk can supply virtual terminal padding when physical
-framing is incomplete. Opaque legacy logo
-records retain structural occupancy during decoding and are omitted from export.
+framing is incomplete. Legacy formats without editable logo semantics retain
+opaque records as physical occupancy during decoding and omit them from export.
 Their group frames can contain an unmarked sixteen-byte transform followed by
 a control byte and markerless group header. The decoder resolves this layout
 before treating an arbitrary float byte as an opaque transform lead.

@@ -1,6 +1,5 @@
 #include "binary_io.h"
 #include "cgroup_codec.h"
-#include "fm_codec.h"
 #include "game_export.h"
 #include "header_codec.h"
 #include "layer.h"
@@ -8,6 +7,7 @@
 #include "project_codec.h"
 #include "vinyl_decoder.h"
 #include "vinyl_flattener.h"
+#include "vinyl_framing.h"
 #include "wgs_save_reader.h"
 
 #include <QtCore>
@@ -179,8 +179,7 @@ void testEditedLivery(const fls::Project &source, const QString &output, fls::Ex
     shape->skew += 0.03;
     shape->color[0] ^= 8;
     fls::exportGameLivery(edited, output, game);
-    const auto imported = game == fls::ExportGameVersion::Motorsport2023
-        ? fls::importFM2023Asset(output) : fls::importCLivery(output);
+    const auto imported = fls::importCLivery(output);
     compareArtwork(edited, imported, source.name + " edited");
 }
 
@@ -215,7 +214,9 @@ void testLiveries(const QString &root) {
             require(header.formatVersion == versions[gameIndex], "header version");
             require(header.carId == 1069 && header.typeValue == static_cast<quint32>(expectedCount), "header counts/car");
             require(header.creatorName == QStringLiteral("Exporter"), "creator");
-            const auto imported = gameIndex == 2 ? fls::importFM2023Asset(folder) : fls::importCLivery(folder);
+            const auto imported = fls::importCLivery(folder);
+            require(fls::readLiveryPayload(folder).motorsport
+                == (game == fls::ExportGameVersion::Motorsport2023), "livery envelope selection");
             require(shapeCount(*imported.root) == expectedCount, QStringLiteral("livery shape count %1/%2").arg(gameIndex).arg(nested));
             compareArtwork(expected, imported, QStringLiteral("generated %1/%2").arg(gameIndex).arg(nested));
             require(fls::exportMaskedLayerCount(project) == (nested ? sections : 0), "livery source masks preserved");
@@ -246,8 +247,7 @@ void testThinShearedArtwork(const QString &root) {
         shape.skew = 127335.5570428808;
         const QString folder = QDir(root).filePath(QStringLiteral("thin-shear-%1").arg(static_cast<int>(game)));
         fls::exportGameLivery(project, folder, game);
-        const auto imported = game == fls::ExportGameVersion::Motorsport2023
-            ? fls::importFM2023Asset(folder) : fls::importCLivery(folder);
+        const auto imported = fls::importCLivery(folder);
         compareArtwork(project, imported, "thin sheared artwork");
         QVector<const fls::scene::Shape *> after;
         collectShapes(*imported.root, after);
@@ -278,8 +278,7 @@ void testGroups(const QString &root) {
             fls::ExportGameVersion::Motorsport5, fls::ExportGameVersion::Motorsport6}) {
         const QString folder = QDir(root).filePath(QStringLiteral("group-%1").arg(static_cast<int>(game)));
         fls::exportGameGroup(project, folder, game);
-        const auto imported = game == fls::ExportGameVersion::Motorsport2023
-            ? fls::importFM2023Asset(folder) : fls::importCGroupNested(folder);
+        const auto imported = fls::importCGroupNested(folder);
         auto expected = project;
         if (!fls::exportGameSupportsMasks(game)) {
             static_cast<fls::scene::Group &>(*expected.root->children.front()).takeAt(0);
@@ -367,8 +366,7 @@ void testBoundsAndBlocks(const QString &root) {
             }
             const QString folder = QDir(root).filePath(QStringLiteral("sparse-%1-%2").arg(sections).arg(populated));
             fls::exportGameLivery(sparse, folder, game);
-            const auto imported = game == fls::ExportGameVersion::Motorsport2023
-                ? fls::importFM2023Asset(folder) : fls::importCLivery(folder);
+            const auto imported = fls::importCLivery(folder);
             require(shapeCount(*imported.root) == (populated < 0 ? 0 : 1), "sparse section framing");
         }
     }
@@ -402,6 +400,8 @@ void testBoundsAndBlocks(const QString &root) {
     const QString folder = QDir(root).filePath(QStringLiteral("blocks"));
     fls::exportGameLivery(large, folder, fls::ExportGameVersion::Motorsport2023);
     const QByteArray data = readFile(QDir(folder).filePath(QStringLiteral("data")));
+    require(fls::isLiveryAsset(data), "block livery detection");
+    require(!fls::isLiveryAsset(QByteArray::fromHex("1f8b0800ffffffff0000")), "unrelated file detection");
     QByteArray inflated;
     int blocks = 0;
     for (int offset = 0; offset < data.size(); ++blocks) {
@@ -411,7 +411,31 @@ void testBoundsAndBlocks(const QString &root) {
         offset += compressed + 8;
     }
     require(blocks > 1 && inflated == fls::encodeGameLiveryPayload(large, fls::ExportGameVersion::Motorsport2023), "block concatenation");
-    require(shapeCount(*fls::importFM2023Asset(folder).root) == 1505, "multi-block import");
+    require(shapeCount(*fls::importCLivery(folder).root) == 1505, "multi-block import");
+    for (const QByteArray &truncated : {data.chopped(1), data.left(7)}) {
+        bool rejected = false;
+        try {
+            fls::inflateContainerBlocks(truncated);
+        } catch (const std::exception &) {
+            rejected = true;
+        }
+        require(rejected, "truncated block stream accepted");
+    }
+    auto extended = fls::encodeGameLiveryPayload(makeLivery(6), fls::ExportGameVersion::Motorsport2023);
+    const int artworkStart = extended.indexOf(QByteArray("gyvl", 4));
+    const int artworkSize = fls::detail::readLeU32(extended, artworkStart - 4);
+    const QByteArray empty = fls::detail::writeVinylChildHeader(0, {});
+    extended.insert(artworkStart + artworkSize, empty);
+    QByteArray size;
+    fls::detail::appendLeU32(size, artworkSize + empty.size());
+    extended.replace(artworkStart - 4, 4, size);
+    const auto payload = fls::parseInflatedLiveryPayload(extended);
+    require(payload.sectionCounts.size() == 7, "physical seventh section was discarded");
+    const auto imported = fls::importCLiveryData(fls::deflateContainerBlocks(extended, 32768), {}, "extended");
+    compareArtwork(makeLivery(6), imported, "physical seventh section");
+    const auto reencoded = fls::parseInflatedLiveryPayload(
+        fls::encodeGameLiveryPayload(imported, fls::ExportGameVersion::Motorsport2023));
+    require(reencoded.sectionCounts.size() == 6, "canonical Motorsport section layout");
 }
 
 int skippedShapes(const fls::VinylGroup &group) {
@@ -532,15 +556,15 @@ void testSamples(const QString &sampleRoot, const QString &outputRoot) {
         const QByteArray header = readFile(QDir(folder.absoluteFilePath()).filePath(QStringLiteral("header")));
         require(fls::buildHeader(fls::parseHeader(header)) == header, QStringLiteral("FM23 header round trip: %1").arg(folder.fileName()));
         ++headerCount;
-        const auto payload = fls::readFM2023LiveryPayload(folder.absoluteFilePath());
+        const auto payload = fls::readLiveryPayload(folder.absoluteFilePath());
         if (fls::detail::readLeU32(payload.raw, 8) == 1) {
             ++locked;
             continue;
         }
-        const auto project = fls::importFM2023Asset(folder.absoluteFilePath());
+        const auto project = fls::importCLivery(folder.absoluteFilePath());
         const QString output = QDir(outputRoot).filePath(folder.fileName());
         fls::exportGameLivery(project, output, fls::ExportGameVersion::Motorsport2023);
-        const auto imported = fls::importFM2023Asset(output);
+        const auto imported = fls::importCLivery(output);
         require(shapeCount(*project.root) == shapeCount(*imported.root), QStringLiteral("FM23 sample geometry count: %1").arg(folder.fileName()));
         compareArtwork(project, imported, folder.fileName());
         require(paintBlock(project.liverySource) == paintBlock(imported.liverySource),
@@ -745,6 +769,43 @@ void compareComplexArtwork(const fls::Project &expected, const fls::Project &act
     }
 }
 
+void testMotorsportSamples(const QString &sampleRoot, const QString &outputRoot) {
+    int checked = 0;
+    int records = 0;
+    for (const auto &folder : QDir(sampleRoot).entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot)) {
+        const QString path = folder.absoluteFilePath();
+        const auto payload = fls::readLiveryPayload(path);
+        const auto physical = fls::detail::readVinylRecordStream(payload.body, payload.legacyRecords);
+        const auto spans = fls::detail::mapVinylSections(physical, payload.sectionCounts,
+            payload.sectionCounts.size());
+        const QString label = folder.fileName();
+        require(payload.motorsport && physical.complete && spans.size() == 6, label + " physical framing");
+        const auto sections = fls::decodeLiverySections(payload);
+        for (int slot = 0; slot < spans.size(); ++slot) {
+            require(spans[slot].shapeCount == payload.sectionCounts[slot], label + " physical counters");
+            require(fls::flattenGroup(sections[slot].subtree).size() == spans[slot].shapeCount,
+                label + " complete artwork");
+            require(skippedShapes(sections[slot].subtree) == 0
+                && (spans[slot].shapeCount == 0 || fls::validateTree(sections[slot].subtree).isEmpty()),
+                label + " complete hierarchy");
+            records += spans[slot].shapeCount;
+        }
+        const auto project = fls::importCLivery(path);
+        const int expected = std::accumulate(payload.sectionCounts.cbegin(), payload.sectionCounts.cend(), 0);
+        require(shapeCount(*project.root) == expected, label + " scene occupancy");
+        const QString output = QDir(outputRoot).filePath(label);
+        fls::exportGameLivery(project, output, fls::ExportGameVersion::Motorsport2023);
+        const auto imported = fls::importCLivery(output);
+        compareComplexArtwork(project, imported, label + " round trip");
+        require(paintBlock(project.liverySource) == paintBlock(imported.liverySource), label + " native paint");
+        require(fls::readLiveryPayload(output).sectionCounts.size() == 6, label + " exported sections");
+        testEditedLivery(project, output + "-edited", fls::ExportGameVersion::Motorsport2023);
+        ++checked;
+    }
+    require(checked > 0, "Motorsport sample directory is empty");
+    qInfo() << "Motorsport physical samples:" << checked << "records:" << records;
+}
+
 void testHorizonLiveryShapeToGroupMasks(const QString &root) {
     for (const auto game : {fls::ExportGameVersion::Horizon6, fls::ExportGameVersion::Horizon4,
             fls::ExportGameVersion::Horizon5, fls::ExportGameVersion::Motorsport2023}) {
@@ -770,8 +831,7 @@ void testHorizonLiveryShapeToGroupMasks(const QString &root) {
                     .arg(static_cast<int>(game)).arg(nested).arg(masked);
                 const QString folder = QDir(root).filePath(label);
                 fls::exportGameLivery(project, folder, game);
-                const auto imported = game == fls::ExportGameVersion::Motorsport2023
-                    ? fls::importFM2023Asset(folder) : fls::importCLivery(folder);
+                const auto imported = fls::importCLivery(folder);
                 compareComplexArtwork(project, imported, label);
             }
         }
@@ -937,6 +997,12 @@ void testComplexReferences(const QString &referenceRoot, const QString &outputRo
 int main(int argc, char *argv[]) {
     QCoreApplication app(argc, argv);
     try {
+        if (app.arguments().size() == 3 && app.arguments()[1] == "--fm23-samples") {
+            QTemporaryDir output;
+            require(output.isValid(), "Motorsport output directory");
+            testMotorsportSamples(app.arguments()[2], output.path());
+            return 0;
+        }
         if (app.arguments().size() == 4 && app.arguments()[1] == "--fh5-framing-reference") {
             const auto project = fls::decodeProjectDocument(readFile(app.arguments()[2]));
             const QString reference = app.arguments()[3];

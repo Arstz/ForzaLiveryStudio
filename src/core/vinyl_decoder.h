@@ -15,6 +15,7 @@ struct LiverySlotDef {
 
 extern const LiverySlotDef kFH6LiverySlots[11];
 inline constexpr int kFH6SectionCount = 11;
+inline constexpr int kBodyLiverySectionCount = 6;
 
 Matrix3 liverySectionCanvasTransform(int slot);
 
@@ -30,8 +31,7 @@ struct LiverySection {
 struct VinylDecoderOptions {
     bool appendLiveryTailPadding = false;
     bool legacyLiveryRecords = false;
-    QByteArray (*normalizeRecords)(QByteArray) = nullptr;
-    void (*finalizeGroup)(VinylGroup &, const QByteArray &, const LayerData &) = nullptr;
+    bool currentLiveryState = false;
 };
 
 class VinylTreeDecoder {

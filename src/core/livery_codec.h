@@ -16,6 +16,7 @@
 namespace fls {
 
 inline constexpr bool kEnforceLiveryShapeLimits = ENFORCE_SHAPE_LIMITS != 0;
+inline constexpr int kLegacyLiveryCounterCount = 7;
 
 inline constexpr int liverySectionShapeLimit(int slot) noexcept {
     return slot == 2 || slot == 3 || slot == 4 ? 3000 : 1000;
@@ -23,18 +24,20 @@ inline constexpr int liverySectionShapeLimit(int slot) noexcept {
 
 struct LiveryPayload {
     QByteArray raw;
-    int gyvlOffset = 0;
-    int carId = 0;
-    bool legacyRecords = false;
     QByteArray body;
     QVector<int> sectionCounts;
     LiveryPaintState paint;
+    int gyvlOffset = 0;
+    int carId = 0;
+    bool legacyRecords = false;
+    bool motorsport = false;
 };
 
 LiveryPayload readLiveryPayload(const QString &folderOrFile);
 LiveryPayload parseInflatedLiveryPayload(const QByteArray &raw);
 QVector<LiverySection> decodeLiverySections(const LiveryPayload &payload);
 bool isLiveryAssetFileName(const QString &fileName);
+bool isLiveryAsset(const QByteArray &fileData);
 
 QByteArray buildLiveryGyvl(const Project &project,
                            std::array<int, 11> *outSectionCounts = nullptr);

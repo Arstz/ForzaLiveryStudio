@@ -103,7 +103,6 @@ private:
     void preprocessSelectedGuide();
     void createRegions();
     void fillRegions();
-    bool importFM2023Folder(const QString &path, QString *error);
     void rebuildSectionBar();
     void setActiveSection(const QString &sectionGroupId);
     void prebakeLiverySectionCaches();

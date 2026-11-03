@@ -53,6 +53,7 @@ public:
 
     VinylRecordStream standalone() {
         VinylRecordStream stream;
+        stream.legacy = marker_ == 1;
         const auto root = transformed(12, 0);
         if (!root) {
             return stream;
@@ -73,6 +74,7 @@ public:
 
     VinylRecordStream read() {
         VinylRecordStream stream;
+        stream.legacy = marker_ == 1;
         while (stream.end < data_.size()) {
             const int pos = stream.end;
             if (readVinylBoundary(data_, pos, data_.size())) {
@@ -140,6 +142,11 @@ private:
 
     QVector<QPair<int, int>> successors(int pos) const {
         QVector<QPair<int, int>> result;
+        const auto direct = readVinylChildHeader(data_, pos, data_.size());
+        const bool directChildren = direct && direct->count > 0 && direct->controls == QByteArray(2, '\0');
+        if (directChildren) {
+            result.push_back({pos, -1});
+        }
         if (const auto attributes = readVinylAttributes(data_, pos, data_.size())) {
             const int next = pos + attributes->size;
             result.push_back({next, attributes->flags});
@@ -147,7 +154,9 @@ private:
                 result.push_back({next + 1, attributes->flags | static_cast<quint8>(data_[next])});
             }
         }
-        result.push_back({pos, -1});
+        if (!directChildren) {
+            result.push_back({pos, -1});
+        }
 
         return result;
     }
@@ -168,17 +177,18 @@ private:
                 leads.push_back(cursor - pos);
             }
         }
-        if (terminator_ != 0) {
+        const quint8 terminator = depth > 0 && terminator_ == 3 && marker_ == 1 ? 1 : terminator_;
+        if (terminator != 0) {
             leads.clear();
             if ((static_cast<quint8>(data_[pos]) & 1) && pos + 1 < data_.size()
-                && static_cast<quint8>(data_[pos + 1]) == terminator_) {
+                && static_cast<quint8>(data_[pos + 1]) == terminator) {
                 leads.push_back(2);
-                if (pos + 2 < data_.size() && static_cast<quint8>(data_[pos + 2]) == terminator_) {
+                if (pos + 2 < data_.size() && static_cast<quint8>(data_[pos + 2]) == terminator) {
                     leads.push_back(3);
                 }
             }
             for (int prefix = 0; prefix <= kMaximumControls && pos + prefix < data_.size(); ++prefix) {
-                if (static_cast<quint8>(data_[pos + prefix]) == terminator_) {
+                if (static_cast<quint8>(data_[pos + prefix]) == terminator) {
                     leads.push_back(prefix + 1);
                 }
                 if (data_[pos + prefix] != '\0' && data_[pos + prefix] != '\1') {
@@ -445,7 +455,13 @@ VinylRecordStream readStandaloneVinylRecords(const QByteArray &data) {
         return {};
     }
 
-    return RecordReader(data, generation < 3, generation).standalone();
+    const auto stream = RecordReader(data, generation < 3, generation).standalone();
+    if (stream.complete || generation < 3) {
+        return stream;
+    }
+    const auto legacy = RecordReader(data, true, generation).standalone();
+
+    return legacy.complete ? legacy : stream;
 }
 
 std::optional<VinylPhysicalGroup> readVinylChildBlock(const QByteArray &data, int pos, bool legacy) {

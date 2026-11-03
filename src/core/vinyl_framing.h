@@ -61,6 +61,7 @@ struct VinylRecordStream {
     QVector<VinylStreamRecord> records;
     int end = 0;
     bool complete = false;
+    bool legacy = false;
 };
 
 struct VinylSectionSpan {

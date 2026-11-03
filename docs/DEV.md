@@ -181,7 +181,7 @@ remains a reference approximation of the game renderer.
 | --- | --- |
 | `src/main.cpp` | Application startup. |
 | `src/core/` scene | `layer.*`, `visual_container.h`, `contour_data.h`, `scene_codec.*`, and `project_codec.*`: hierarchy, visual data, and project serialization. |
-| `src/core/` game formats | `cgroup_codec.*`, `livery_codec.*`, `fm_codec.*`, `vinyl_decoder.*`, `header_codec.*`, and `game_export.*`: import, native export, and metadata. |
+| `src/core/` game formats | `cgroup_codec.*`, `livery_codec.*`, `vinyl_decoder.*`, `header_codec.*`, and `game_export.*`: import, native export, and metadata. |
 | `src/core/` resources | `model_*`, `car_scene.*`, `swatchbin.*`, `livery_masks.*`, `paint_finish_catalog.*`, and `game_paths.*`: preview resources and decoding. |
 | `src/gui/app/` | `main_window*`, settings, themes, asset lookup, application actions, and I/O coordination. |
 | `src/gui/state/` | `editor_state*`, `layer_tree_model.*`, and `scene_view.h`: commands, history, selection, clipboard, and scene views. |
@@ -198,7 +198,7 @@ remains a reference approximation of the game renderer.
 | Group import | `readCGroupPayload()`, `importCGroupFlat()`, `importCGroupNested()` |
 | Physical record framing | `readStandaloneVinylRecords()`, `readVinylRecordStream()`, `mapVinylSections()` |
 | Livery import | `readLiveryPayload()`, `buildLiverySections()`, `importCLivery()` |
-| Motorsport import | `decodeFM2023RawGroup()`, `readFM2023LiveryPayload()`, `decodeFM2023LiverySections()`, `importFM2023Asset()` |
+| Motorsport import | Shared group and livery entry points accept native `data` files. |
 | Group export | `buildFlatPayload()`, `buildNestedPayload()`, `exportFlatProjectFolder()`, `exportNestedProjectFolder()` |
 | Livery export | `buildLiveryGyvl()`, `encodeCLiveryPayload()`, `exportCLivery()` |
 | Project persistence | `projectToJson()`, `projectFromJson()`, `encodeProjectDocument()`, `decodeProjectDocument()` |

@@ -81,8 +81,6 @@ add_library(fls_core STATIC
     src/core/game_export.h
     src/core/fls_core.cpp
     src/core/fls_core.h
-    src/core/fm_codec.cpp
-    src/core/fm_codec.h
     src/core/header_codec.cpp
     src/core/header_codec.h
     src/core/layer.cpp
@@ -608,6 +606,10 @@ if(FLS_BUILD_TESTS)
     add_executable(fls_game_export_tests tools/game_export_test.cpp)
     target_link_libraries(fls_game_export_tests PRIVATE fls_core Qt6::Core)
     add_test(NAME game_export COMMAND fls_game_export_tests)
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/fm23")
+        add_test(NAME game_fm23_samples COMMAND fls_game_export_tests --fm23-samples
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/fm23")
+    endif()
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/FH6 to FH5/BA MOMOI&MIDORI(MAID).3so"
        AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/FH6 to FH5/maid-fh5-converted")
         add_test(NAME game_fh5_framing_reference COMMAND fls_game_export_tests --fh5-framing-reference

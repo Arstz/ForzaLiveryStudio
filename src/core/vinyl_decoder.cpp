@@ -192,11 +192,11 @@ VinylShape decodeShapeAt(const QByteArray &data, int absPos, bool isMask = false
     return shape;
 }
 
-VinylShape decodeLiveryLogoAt(const QByteArray &data, int absPos) {
-    const bool framed = bytesAt(data, absPos, {0x00, 0x02})
-        || bytesAt(data, absPos, {0x01, 0x02});
+VinylShape decodeLiveryLogoAt(const QByteArray &data, int absPos, quint8 shapeMarker) {
+    const bool framed = (data[absPos] == '\0' || data[absPos] == '\1')
+        && static_cast<quint8>(data[absPos + 1]) == shapeMarker;
     VinylShape logo = decodeShapeAt(
-        data, absPos, false, 0, kCurrentShapeMarker, framed);
+        data, absPos, false, 0, shapeMarker, framed);
     logo.isLogo = true;
     logo.logoId = logo.shapeId;
     logo.rasterId = static_cast<quint32>(logo.logoId & 0x7fff);
@@ -285,13 +285,14 @@ bool groupAtOrAfterControlByte(
     quint8 shapeMarker = kCurrentShapeMarker,
     quint8 transformTerminator = kCurrentTransformMarker);
 
-int liveryLogoRecordSize(const QByteArray &data, int pos, int end) {
-    const bool framed = bytesAt(data, pos, {0x00, 0x02})
-        || bytesAt(data, pos, {0x01, 0x02});
+int liveryLogoRecordSize(const QByteArray &data, int pos, int end, quint8 shapeMarker) {
+    const bool framed = pos >= 0 && pos + 1 < end
+        && (data[pos] == '\0' || data[pos] == '\1')
+        && static_cast<quint8>(data[pos + 1]) == shapeMarker;
     const int size = framed ? 32 : 31;
     const int fieldOffset = framed ? 0 : -1;
     if (pos < 0 || pos + size > end || pos + size > data.size()
-        || (!framed && static_cast<quint8>(data[pos]) != 0x02)) {
+        || (!framed && static_cast<quint8>(data[pos]) != shapeMarker)) {
         return 0;
     }
     const quint16 logoId = readLeU16(data, pos + 2 + fieldOffset);
@@ -310,8 +311,8 @@ int liveryLogoRecordSize(const QByteArray &data, int pos, int end) {
     return valid ? size : 0;
 }
 
-bool isLiveryLogoAt(const QByteArray &data, int pos, int end) {
-    return liveryLogoRecordSize(data, pos, end) > 0;
+bool isLiveryLogoAt(const QByteArray &data, int pos, int end, quint8 shapeMarker) {
+    return liveryLogoRecordSize(data, pos, end, shapeMarker) > 0;
 }
 
 bool hasMarkerlessRootHeader(const QByteArray &payload) {
@@ -422,7 +423,7 @@ bool readInlineGroupTransform(
              data, pos, end, livery, transformTerminator)) {
         if (firstChildIsShape
             && (isValidShapeAt(data, pos, end, shapeMarker)
-                || (livery && isLiveryLogoAt(data, pos, end)))) {
+                || (livery && isLiveryLogoAt(data, pos, end, shapeMarker)))) {
             continue;
         }
         auto transform = readTransformPayload(data, pos + marker.size(), end);
@@ -493,7 +494,7 @@ bool liveryTransformThenChildAt(const QByteArray &data, int pos, int end,
         }
         const quint8 lead = static_cast<quint8>(data[pos]);
         if ((lead == 0x00 || lead == 0x01)
-            && (isValidShapeAt(data, child, end, shapeMarker) || isLiveryLogoAt(data, child, end))) {
+            && (isValidShapeAt(data, child, end, shapeMarker) || isLiveryLogoAt(data, child, end, shapeMarker))) {
             return true;
         }
     }
@@ -566,14 +567,14 @@ std::optional<GroupInfo> validMarkerlessGroupAt(const QByteArray &data, int pos,
     }
     if (!foundTransform) {
         const bool childHere = isValidShapeAt(data, extra, end, shapeMarker)
-            || (livery && isLiveryLogoAt(data, extra, end))
+            || (livery && isLiveryLogoAt(data, extra, end, shapeMarker))
             || validCountedGroupAt(data, extra, end, livery,
                                    shapeMarker, transformTerminator)
             || (livery && liveryTransformThenChildAt(data, extra, end, shapeMarker));
         if (!childHere) {
             if (extra + 1 < end
                 && (isValidShapeAt(data, extra + 1, end, shapeMarker)
-                    || (livery && isLiveryLogoAt(data, extra + 1, end))
+                    || (livery && isLiveryLogoAt(data, extra + 1, end, shapeMarker))
                     || validCountedGroupAt(data, extra + 1, end, livery,
                                            shapeMarker, transformTerminator)
                     || (livery && liveryTransformThenChildAt(data, extra + 1, end, shapeMarker)))) {
@@ -619,7 +620,7 @@ std::optional<GroupInfo> validCountedGroupAt(
         data, extra, end, info, livery, shapeMarker, transformTerminator);
     if (!foundTransform && extra < end
         && !isValidShapeAt(data, extra, end, shapeMarker)
-        && !(livery && isLiveryLogoAt(data, extra, end))
+        && !(livery && isLiveryLogoAt(data, extra, end, shapeMarker))
         && (static_cast<quint8>(data[extra]) == 0x02
             || static_cast<quint8>(data[extra]) == 0x03
             || static_cast<quint8>(data[extra]) == 0xff)) {
@@ -629,7 +630,7 @@ std::optional<GroupInfo> validCountedGroupAt(
                && static_cast<quint8>(data[extra]) == 0x01
                && !isValidShapeAt(data, extra, end, shapeMarker)
                && (isValidShapeAt(data, extra + 1, end, shapeMarker)
-                   || isLiveryLogoAt(data, extra + 1, end)
+                   || isLiveryLogoAt(data, extra + 1, end, shapeMarker)
                    || validCountedGroupAt(data, extra + 1, end, true, shapeMarker, transformTerminator)
                    || validMarkerlessGroupAt(data, extra + 1, end, true, true, shapeMarker, transformTerminator))) {
         info.flags |= 0x01;
@@ -856,6 +857,28 @@ void applyRootHeader(const QByteArray &dec, VinylGroup &root) {
     }
 }
 
+void applyPhysicalRootHeader(const QByteArray &payload, const detail::VinylPhysicalGroup &physical,
+                             VinylGroup &root) {
+    const int transformStart = physical.span.start + physical.leadBytes;
+    const int attributeStart = transformStart + physical.scalarBytes;
+
+    root.expectedChildren = physical.children.count;
+    root.childTypeBitmap = physical.children.bitmap;
+    root.headerControlBytes = physical.children.controls;
+    root.flags = physical.flags >= 0 ? physical.flags & 0x40 : 0;
+    root.isMask = (root.flags & 0x40) != 0;
+    if (physical.scalarBytes >= 12) {
+        root.px = readLeFloat(payload, transformStart);
+        root.py = readLeFloat(payload, transformStart + 4);
+        root.sx = readLeFloat(payload, transformStart + 8);
+        root.sy = root.sx;
+        root.rot = physical.scalarBytes == 16 ? readLeFloat(payload, transformStart + 12) : 0.0;
+    }
+    if (const auto attributes = detail::readVinylAttributes(payload, attributeStart, physical.header)) {
+        root.sy = attributes->scaleY.value_or(root.sx);
+    }
+}
+
 void addChild(VinylGroup &parent, const VinylGroupPtr &child) {
     parent.items.push_back(VinylItem{child});
 }
@@ -1055,7 +1078,7 @@ int walkStep(const QByteArray &layerData, int pos, int end, WalkState &s,
              bool liveryDialect = false, bool invertOddLiveryRotation = true,
              quint8 shapeMarker = kCurrentShapeMarker,
              quint8 transformTerminator = kCurrentTransformMarker,
-             bool trailingMaskState = true) {
+             bool trailingMaskState = true, bool legacyLogos = false) {
     QVector<VinylGroupPtr> &stack = s.stack;
     const std::optional<bool> expectsGroup = nextChildIsGroup(*stack.back());
     const bool mayDecodeGroup = !expectsGroup || *expectsGroup;
@@ -1086,11 +1109,12 @@ int walkStep(const QByteArray &layerData, int pos, int end, WalkState &s,
         return pos + 1;
     }
 
-    const int logoRecordSize = liveryDialect && shapeMarker == kCurrentShapeMarker && mayDecodeShape
-        ? liveryLogoRecordSize(layerData, pos, end) : 0;
+    const int logoRecordSize = liveryDialect && (shapeMarker == kCurrentShapeMarker || legacyLogos) && mayDecodeShape
+        ? liveryLogoRecordSize(layerData, pos, end, shapeMarker) : 0;
     if (logoRecordSize > 0) {
-        const VinylShape logo = decodeLiveryLogoAt(layerData, pos);
-        if (bytesAt(layerData, pos, {0x01, 0x02})) {
+        const VinylShape logo = decodeLiveryLogoAt(layerData, pos, shapeMarker);
+        if (trailingMaskState && layerData[pos] == '\1'
+            && static_cast<quint8>(layerData[pos + 1]) == shapeMarker) {
             markPreviousShapeAsMask(s, liveryDialect);
         }
         addShape(*stack.back(), logo);
@@ -1236,6 +1260,13 @@ VinylTreeDecoder::VinylTreeDecoder(VinylDecoderOptions options)
 }
 
 LayerData VinylTreeDecoder::getLayerData(const QByteArray &payload) const {
+    const auto physical = detail::readStandaloneVinylRecords(payload);
+    if (physical.complete && physical.records.size() > 1 && physical.records[1].group) {
+        const auto &root = *physical.records[1].group;
+        const int start = root.header + root.children.size;
+
+        return LayerData{payload.mid(start), start};
+    }
     LayerData layerData;
     if (hasMarkerlessRootHeader(payload)) {
         const auto header = detail::readVinylChildHeader(payload, 0x1e, payload.size(), true);
@@ -1267,9 +1298,6 @@ LayerData VinylTreeDecoder::getLayerData(const QByteArray &payload) const {
     if (layerData.data.isNull()) {
         layerData = LayerData{payload.mid(38), 38};
     }
-    if (options_.normalizeRecords != nullptr) {
-        layerData.data = options_.normalizeRecords(std::move(layerData.data));
-    }
     return layerData;
 }
 
@@ -1281,9 +1309,6 @@ VinylGroup VinylTreeDecoder::decodeGroup(const QByteArray &payload,
         decoderPayload[0x1d] = static_cast<char>(0x20);
     }
     VinylGroup root = buildTree(layerData.data, decoderPayload);
-    if (options_.finalizeGroup != nullptr) {
-        options_.finalizeGroup(root, payload, layerData);
-    }
     if (decodedLayerData != nullptr) {
         *decodedLayerData = std::move(layerData);
     }
@@ -1294,28 +1319,29 @@ VinylGroup VinylTreeDecoder::buildTree(const QByteArray &layerData, const QByteA
     auto root = std::make_shared<VinylGroup>();
     root->nodeType = QStringLiteral("root");
     root->source = QStringLiteral("root");
+    const auto physical = detail::readStandaloneVinylRecords(fullPayload);
     applyRootHeader(fullPayload, *root);
+    if (physical.complete && physical.records.size() > 1 && physical.records[1].group) {
+        applyPhysicalRootHeader(fullPayload, *physical.records[1].group, *root);
+    }
 
     const quint8 rootMarker = fullPayload.size() > 0x0c
         ? static_cast<quint8>(fullPayload[0x0c]) : 0;
-    const bool generation1 = options_.normalizeRecords == nullptr
-        && fullPayload.size() > 0x0c
+    const bool generation1 = fullPayload.size() > 0x0c
         && fullPayload.startsWith(QByteArray("gyvl", 4))
         && rootMarker == kGeneration1RootMarker;
-    const bool generation2 = options_.normalizeRecords == nullptr
-        && fullPayload.size() > 0x0c
+    const bool generation2 = fullPayload.size() > 0x0c
         && fullPayload.startsWith(QByteArray("gyvl", 4))
         && rootMarker == kGeneration2RootMarker;
     const bool legacyGeneration = generation1 || generation2;
-    const quint8 shapeMarker = legacyGeneration
+    const quint8 shapeMarker = (physical.complete ? physical.legacy : legacyGeneration)
         ? kLegacyShapeMarker : kCurrentShapeMarker;
     const quint8 transformTerminator = generation1
         ? kGeneration1TransformMarker
-        : (generation2 ? kGeneration2TransformMarker : kCurrentTransformMarker);
+        : (generation2 ? kGeneration2TransformMarker
+                       : (physical.complete && physical.legacy ? kGeneration1TransformMarker : kCurrentTransformMarker));
     int pos = 0;
     const int end = layerData.size();
-    const auto physical = options_.normalizeRecords == nullptr
-        ? detail::readStandaloneVinylRecords(fullPayload) : detail::VinylRecordStream{};
     QHash<int, int> physicalShapes;
     if (physical.complete) {
         const int start = getLayerData(fullPayload).start;
@@ -1371,9 +1397,7 @@ QVector<LiverySection> VinylTreeDecoder::buildLiverySections(const QByteArray &b
 
 QVector<LiverySection> VinylTreeDecoder::buildLiverySections(const QByteArray &body, const QVector<int> &sectionCounts,
                                                              const LiverySlotDef *slotDefs, int slotCount) const {
-    QByteArray decoderBody = options_.normalizeRecords != nullptr
-        ? options_.normalizeRecords(body)
-        : body;
+    QByteArray decoderBody = body;
     const auto physicalStream = detail::readVinylRecordStream(decoderBody, options_.legacyLiveryRecords);
     const auto physicalSections = detail::mapVinylSections(physicalStream, sectionCounts, slotCount);
     const bool physicalMapping = physicalSections.size() == slotCount;
@@ -1484,14 +1508,16 @@ QVector<LiverySection> VinylTreeDecoder::buildLiverySections(const QByteArray &b
                 const int next = walkStep(decoderBody, pos, end, state, true,
                                           invertOddLiveryRotation, shapeMarker,
                                           options_.legacyLiveryRecords ? kGeneration1TransformMarker : kCurrentTransformMarker,
-                                          !options_.legacyLiveryRecords);
+                                          !options_.legacyLiveryRecords || options_.currentLiveryState,
+                                          options_.currentLiveryState);
                 if (next <= pos) {
                     break;
                 }
                 pos = next;
             }
             closeCompleteStack(state.stack);
-            if (!options_.legacyLiveryRecords && pos < end && static_cast<quint8>(decoderBody[pos]) == 0x01) {
+            if ((!options_.legacyLiveryRecords || options_.currentLiveryState)
+                && pos < end && static_cast<quint8>(decoderBody[pos]) == 0x01) {
                 markPreviousShapeAsMask(state, true);
             }
 

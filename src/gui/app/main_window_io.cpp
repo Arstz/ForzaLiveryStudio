@@ -6,7 +6,6 @@
 #include "car_registry.h"
 #include "export_asset_dialog.h"
 #include "fls_core.h"
-#include "fm_codec.h"
 #include "gui_constants.h"
 #include "header_metadata_widget.h"
 #include "image_io.h"
@@ -763,6 +762,12 @@ bool MainWindow::importAny(const QString &path, QString *error) {
     } else {
         isLivery = fls::isLiveryAssetFileName(info.fileName());
     }
+    if (!isLivery) {
+        QFile data(info.isDir() ? QDir(path).filePath(QStringLiteral("data")) : path);
+        if (data.open(QIODevice::ReadOnly)) {
+            isLivery = fls::isLiveryAsset(data.readAll());
+        }
+    }
 
     if (isLivery) {
         rememberImportDirectory(path, QStringLiteral("source"));
@@ -813,9 +818,10 @@ void MainWindow::importFileDialog() {
             QStringLiteral("Imported WGS asset %1").arg(asset.containerName),
             &error);
     } else {
-        imported = selection.motorsport
-            ? importFM2023Folder(selection.path, &error)
-            : importAny(selection.path, &error);
+        if (selection.motorsport) {
+            rememberImportDirectory(selection.path, QStringLiteral("motorsportFolder"));
+        }
+        imported = importAny(selection.path, &error);
     }
     if (!imported) {
         QMessageBox::critical(this, QStringLiteral("Import failed"), error);
@@ -1095,12 +1101,6 @@ void MainWindow::finishRegionFill(quint64 generation, RegionFillBatchResult resu
         QStringLiteral("Region Fill"), QStringLiteral("Region Fill"),
         variants, insertionEntries, differenceHeatmap, sourceGuideId);
     canvas_->hideRegionOverlay();
-}
-
-bool MainWindow::importFM2023Folder(const QString &path, QString *error) {
-    rememberImportDirectory(path, QStringLiteral("motorsportFolder"));
-    return loadImportedProject([&path]() { return fls::importFM2023Asset(path); },
-                               QStringLiteral("Imported %1").arg(path), error);
 }
 
 void MainWindow::exportDialog() {

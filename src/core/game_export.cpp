@@ -21,11 +21,6 @@
 namespace fls {
 namespace {
 
-constexpr int kHorizon5Sections = 6;
-constexpr int kEarlySections = 6;
-constexpr int kFirstWindowSection = 6;
-constexpr int kMotorsportSections = 7;
-constexpr int kLegacyCounters = 7;
 constexpr int kPaintRecordCount = 34;
 constexpr int kPaintRecordSize = 40;
 constexpr int kMotorsportBlockSize = 32768;
@@ -56,21 +51,21 @@ struct ExportProfile {
 ExportProfile exportProfile(ExportGameVersion game) {
     switch (game) {
     case ExportGameVersion::Horizon2:
-        return {0, 5, kEarlySections, 20, GroupRecordGeneration::First};
+        return {0, 5, kBodyLiverySectionCount, 20, GroupRecordGeneration::First};
     case ExportGameVersion::Horizon3:
-        return {1, 6, kEarlySections, 30, GroupRecordGeneration::Second};
+        return {1, 6, kBodyLiverySectionCount, 30, GroupRecordGeneration::Second};
     case ExportGameVersion::Motorsport5:
-        return {0, 2, kEarlySections, 20, GroupRecordGeneration::First};
+        return {0, 2, kBodyLiverySectionCount, 20, GroupRecordGeneration::First};
     case ExportGameVersion::Motorsport6:
-        return {0, 5, kEarlySections, 30, GroupRecordGeneration::First};
+        return {0, 5, kBodyLiverySectionCount, 30, GroupRecordGeneration::First};
     case ExportGameVersion::Motorsport7:
-        return {2, 7, kEarlySections, 30, GroupRecordGeneration::Second};
+        return {2, 7, kBodyLiverySectionCount, 30, GroupRecordGeneration::Second};
     case ExportGameVersion::Horizon4:
-        return {4, 17, kHorizon5Sections, kPaintRecordCount, GroupRecordGeneration::Current};
+        return {4, 17, kBodyLiverySectionCount, kPaintRecordCount, GroupRecordGeneration::Current};
     case ExportGameVersion::Horizon5:
-        return {6, 18, kHorizon5Sections, kPaintRecordCount, GroupRecordGeneration::Current};
+        return {6, 18, kBodyLiverySectionCount, kPaintRecordCount, GroupRecordGeneration::Current};
     case ExportGameVersion::Motorsport2023:
-        return {9, 19, kMotorsportSections, kPaintRecordCount, GroupRecordGeneration::Current};
+        return {9, 19, kBodyLiverySectionCount, kPaintRecordCount, GroupRecordGeneration::Current};
     default:
         throw std::runtime_error("unsupported native export game");
     }
@@ -208,7 +203,7 @@ QByteArray legacyPaintBlock(const Project &project, const ExportProfile &profile
     if (artwork >= 4) {
         const quint32 artworkSize = detail::readLeU32(source, artwork - 4);
         const qint64 stats = static_cast<qint64>(artwork) + artworkSize;
-        const qint64 paintTag = stats + (tagged ? 4 : 0) + kLegacyCounters * 4;
+        const qint64 paintTag = stats + (tagged ? 4 : 0) + kLegacyLiveryCounterCount * 4;
         const qint64 paint = paintTag + (tagged ? 4 : 0);
         const int informationVersionOffset = detail::readLeU32(source, 4) == 2 ? 45 : 29;
         const quint32 sourceVersion = source.size() >= informationVersionOffset + 4
@@ -330,7 +325,7 @@ Project nativeArtworkProject(const Project &project, const ExportProfile &profil
     children.erase(std::remove_if(children.begin(), children.end(), [](const auto &child) {
         return child->kind() == scene::LayerKind::Group
             && static_cast<const scene::Group &>(*child).isLiverySection
-            && static_cast<const scene::Group &>(*child).liverySectionSlot >= kFirstWindowSection
+            && static_cast<const scene::Group &>(*child).liverySectionSlot >= kBodyLiverySectionCount
             && static_cast<const scene::Group &>(*child).liverySectionSlot < kFH6SectionCount;
     }), children.end());
     if (profile.headerVersion <= 1 || (!artwork.liverySource.isEmpty()
@@ -534,7 +529,7 @@ QByteArray nativeLiveryPayload(const Project &project, ExportGameVersion game,
     if (tagged) {
         payload.append("yrvl", 4);
     }
-    for (int index = 0; index < kLegacyCounters; ++index) {
+    for (int index = 0; index < kLegacyLiveryCounterCount; ++index) {
         detail::appendLeU32(payload, static_cast<quint32>(counts[index]));
     }
     if (tagged) {
@@ -651,9 +646,7 @@ void exportGameLivery(const Project &project, const QString &outputFolder, Expor
     QByteArray wrapped;
 
     if (game == ExportGameVersion::Motorsport2023) {
-        for (qsizetype offset = 0; offset < payload.size(); offset += kMotorsportBlockSize) {
-            wrapped.append(deflateContainer(payload.mid(offset, kMotorsportBlockSize)));
-        }
+        wrapped = deflateContainerBlocks(payload, kMotorsportBlockSize);
     } else {
         wrapped = deflateContainer(payload);
     }
