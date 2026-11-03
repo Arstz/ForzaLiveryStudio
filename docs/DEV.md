@@ -95,6 +95,11 @@ Restart the editor after repairing runtime assets loaded during initialization.
 | `assets/compact_fit_shapes.json` | Compact Fit catalog and task membership. |
 | `assets/lining_shapes.json` | Lining catalog and normalized centerlines. |
 
+Car registry entries store canonical `model`, `name`, and `year` values, with
+game availability in `version`. Their optional `games` map contains only fields
+that differ from the canonical values. Wheel sizing uses the same inheritance
+rule, with per-game overrides applied recursively to the canonical axle fields.
+
 Catalog changes are loaded per operation; see [configuration deployment](COMPACT_FIT_CONFIG.md#deployment).
 
 ## Architecture
