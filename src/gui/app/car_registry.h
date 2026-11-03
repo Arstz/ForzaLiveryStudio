@@ -24,7 +24,7 @@ public:
     QString version(int id) const;
     QString displayName(int id) const;
     bool isFh6Supported(int id) const;
-    bool isFh5Only(int id) const;
+    bool isFh6Unsupported(int id) const;
     const QVector<Entry> &entries() const { return sorted_; }
     bool isEmpty() const { return names_.isEmpty(); }
 

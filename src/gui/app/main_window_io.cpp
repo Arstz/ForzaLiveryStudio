@@ -1139,13 +1139,13 @@ void MainWindow::exportDialog() {
     }
     if (state_->project_.isLivery
         && selection->gameVersion == ExportGameVersion::Horizon6
-        && sharedCarRegistry().isFh5Only(state_->project_.carId)) {
+        && sharedCarRegistry().isFh6Unsupported(state_->project_.carId)) {
         QMessageBox warning(this);
         warning.setIcon(QMessageBox::Warning);
         warning.setWindowTitle(QStringLiteral("Unsupported FH6 Car"));
         warning.setText(QStringLiteral(
-            "This car is currently only available in Forza Horizon 5 and is not supported "
-            "in Forza Horizon 6 yet. The exported livery will not be available in the game."));
+            "This car is not supported in Forza Horizon 6. "
+            "The exported livery will not be available in the game."));
         QPushButton *proceed = warning.addButton(
             QStringLiteral("Proceed"), QMessageBox::AcceptRole);
         QPushButton *cancel = warning.addButton(QMessageBox::Cancel);

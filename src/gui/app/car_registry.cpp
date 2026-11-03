@@ -126,15 +126,16 @@ QString CarRegistry::version(int id) const {
     return versions_.value(id);
 }
 
-bool CarRegistry::isFh5Only(int id) const {
-    return versions_.value(id).compare(QStringLiteral("FH5"), Qt::CaseInsensitive) == 0;
-}
-
 bool CarRegistry::isFh6Supported(int id) const {
     const QStringList games = versions_.value(id).split(QLatin1Char(','), Qt::SkipEmptyParts);
+
     return std::any_of(games.cbegin(), games.cend(), [](const QString &game) {
         return game.trimmed().compare(QStringLiteral("FH6"), Qt::CaseInsensitive) == 0;
     });
+}
+
+bool CarRegistry::isFh6Unsupported(int id) const {
+    return names_.contains(id) && !isFh6Supported(id);
 }
 
 QString CarRegistry::displayName(int id) const {
