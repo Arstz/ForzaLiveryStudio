@@ -421,7 +421,7 @@ target_compile_definitions(fls_editor_ui
 )
 
 if(FLS_BUILD_TESTS)
-    add_executable(fls_profile_compute_tests tools/profile_fit_compute_test.cpp)
+    add_executable(fls_profile_compute_tests tools/tests/profile_fit_compute/main.cpp)
     target_link_libraries(fls_profile_compute_tests PRIVATE fls_profile_compute)
     if(FLS_CUDA_AVAILABLE AND WIN32)
         add_custom_command(TARGET fls_profile_compute_tests POST_BUILD
@@ -430,7 +430,7 @@ if(FLS_BUILD_TESTS)
     endif()
     add_test(NAME profile_compute COMMAND fls_profile_compute_tests)
     add_executable(fls_compact_fit_tests
-        tools/compact_fit_test.cpp
+        tools/tests/compact_fit/main.cpp
         src/gui/fill/thin_fit.cpp
         src/gui/fill/thin_fit_spans.cpp
         src/gui/fill/lining_fill.cpp
@@ -504,31 +504,31 @@ if(FLS_BUILD_TESTS)
     add_test(NAME release_shape_catalog COMMAND fls_compact_fit_tests --release-catalog-test)
     add_test(NAME gui_asset_deployment COMMAND "${CMAKE_COMMAND}"
         "-DFLS_TEST_ROOT=${CMAKE_CURRENT_BINARY_DIR}/tests"
-        -P "${CMAKE_CURRENT_SOURCE_DIR}/tools/deploy_gui_assets_test.cmake")
-    add_executable(fls_behavior_settings_tests tools/behavior_settings_test.cpp src/gui/app/theme_manager.cpp)
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tools/tests/deploy_gui_assets/main.cmake")
+    add_executable(fls_behavior_settings_tests tools/tests/behavior_settings/main.cpp src/gui/app/theme_manager.cpp)
     target_include_directories(fls_behavior_settings_tests PRIVATE src/gui/app)
     target_link_libraries(fls_behavior_settings_tests PRIVATE fls_core Qt6::Core Qt6::Gui Qt6::Widgets)
     add_test(NAME behavior_settings COMMAND fls_behavior_settings_tests)
-    add_executable(fls_selection_geometry_tests tools/selection_geometry_test.cpp src/gui/canvas/selection_geometry.cpp)
+    add_executable(fls_selection_geometry_tests tools/tests/selection_geometry/main.cpp src/gui/canvas/selection_geometry.cpp)
     target_include_directories(fls_selection_geometry_tests PRIVATE src/gui/canvas src/gui/widgets)
     target_link_libraries(fls_selection_geometry_tests PRIVATE Qt6::Core Qt6::Gui)
     add_test(NAME selection_geometry COMMAND fls_selection_geometry_tests)
-    add_executable(fls_gui_command_tests tools/gui_command_test.cpp)
-    add_executable(fls_mesh_edit_tests tools/mesh_edit_test.cpp)
+    add_executable(fls_gui_command_tests tools/tests/gui_command/main.cpp)
+    add_executable(fls_mesh_edit_tests tools/tests/mesh_edit/main.cpp)
     target_link_libraries(fls_mesh_edit_tests PRIVATE fls_editor_ui)
     add_test(NAME mesh_edit COMMAND fls_mesh_edit_tests)
-    add_executable(fls_mesh_fill_tests tools/mesh_fill_test.cpp)
+    add_executable(fls_mesh_fill_tests tools/tests/mesh_fill/main.cpp)
     target_link_libraries(fls_mesh_fill_tests PRIVATE fls_editor_ui)
-    target_compile_definitions(fls_mesh_fill_tests PRIVATE FLS_MESH_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tools/fixtures")
+    target_compile_definitions(fls_mesh_fill_tests PRIVATE FLS_MESH_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tools/tests/fixtures")
     add_test(NAME mesh_fill COMMAND fls_mesh_fill_tests)
     add_test(NAME mesh_fill_logged_quality COMMAND fls_mesh_fill_tests --logged)
     add_test(NAME mesh_fill_logged_full COMMAND fls_mesh_fill_tests --logged-full)
     set_tests_properties(mesh_fill PROPERTIES WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
     set_tests_properties(mesh_fill_logged_quality mesh_fill_logged_full PROPERTIES
         WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}" LABELS "slow" RUN_SERIAL TRUE)
-    add_executable(fls_contour_mesh_tests tools/contour_mesh_test.cpp)
+    add_executable(fls_contour_mesh_tests tools/tests/contour_mesh/main.cpp)
     target_link_libraries(fls_contour_mesh_tests PRIVATE fls_editor_ui)
-    target_compile_definitions(fls_contour_mesh_tests PRIVATE FLS_CONTOUR_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tools/fixtures")
+    target_compile_definitions(fls_contour_mesh_tests PRIVATE FLS_CONTOUR_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tools/tests/fixtures")
     add_test(NAME contour_mesh COMMAND fls_contour_mesh_tests)
     add_test(NAME contour_mesh_logged_growth COMMAND fls_contour_mesh_tests --logged-growth)
     add_test(NAME contour_mesh_logged_divergence COMMAND fls_contour_mesh_tests --logged-divergence)
@@ -548,13 +548,13 @@ if(FLS_BUILD_TESTS)
     endif()
     add_test(NAME gui_commands COMMAND fls_gui_command_tests)
     set_tests_properties(gui_commands PROPERTIES WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
-    add_executable(fls_gui_startup_tests tools/gui_startup_test.cpp)
+    add_executable(fls_gui_startup_tests tools/tests/gui_startup/main.cpp)
     target_link_libraries(fls_gui_startup_tests PRIVATE fls_editor_ui)
     add_test(NAME gui_startup COMMAND fls_gui_startup_tests)
     set_tests_properties(gui_startup PROPERTIES WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
     add_executable(fls_editor_selection_tests
         ${fls_editor_state_moc}
-        tools/editor_selection_test.cpp
+        tools/tests/editor_selection/main.cpp
         src/gui/state/editor_state.h
         src/gui/state/editor_state.cpp
         src/gui/state/editor_state_commands.cpp
@@ -567,13 +567,13 @@ if(FLS_BUILD_TESTS)
     target_link_libraries(fls_editor_selection_tests PRIVATE fls_editor_ui)
     add_test(NAME editor_selection COMMAND fls_editor_selection_tests)
     add_test(NAME profile_fit_manual COMMAND fls_compact_fit_tests --profile-fit
-        "${CMAKE_CURRENT_SOURCE_DIR}/tools/fixtures/catalog_cover_manual.json" 8)
+        "${CMAKE_CURRENT_SOURCE_DIR}/tools/tests/fixtures/catalog_cover_manual.json" 8)
     add_test(NAME profile_fit_large COMMAND fls_compact_fit_tests --profile-fit
-        "${CMAKE_CURRENT_SOURCE_DIR}/tools/fixtures/catalog_cover_large.json" 8)
+        "${CMAKE_CURRENT_SOURCE_DIR}/tools/tests/fixtures/catalog_cover_large.json" 8)
     set_tests_properties(profile_fit_manual profile_fit_large PROPERTIES LABELS "slow")
 
     add_executable(fls_wgs_save_reader_tests
-        tools/wgs_save_reader_test.cpp
+        tools/tests/wgs_save_reader/main.cpp
     )
     target_link_libraries(fls_wgs_save_reader_tests PRIVATE
         fls_core
@@ -582,7 +582,7 @@ if(FLS_BUILD_TESTS)
     add_test(NAME wgs_save_reader COMMAND fls_wgs_save_reader_tests)
 
     add_executable(fls_vinyl_decoder_tests
-        tools/vinyl_decoder_test.cpp
+        tools/tests/vinyl_decoder/main.cpp
     )
     target_link_libraries(fls_vinyl_decoder_tests PRIVATE
         fls_core
@@ -590,12 +590,12 @@ if(FLS_BUILD_TESTS)
     )
     add_test(NAME vinyl_decoder COMMAND fls_vinyl_decoder_tests)
 
-    add_executable(fls_vinyl_framing_tests tools/vinyl_framing_test.cpp)
+    add_executable(fls_vinyl_framing_tests tools/tests/vinyl_framing/main.cpp)
     target_link_libraries(fls_vinyl_framing_tests PRIVATE fls_core Qt6::Core)
     add_test(NAME vinyl_framing COMMAND fls_vinyl_framing_tests)
 
     add_executable(fls_livery_logo_encoder_tests
-        tools/livery_logo_encoder_test.cpp
+        tools/tests/livery_logo_encoder/main.cpp
     )
     target_link_libraries(fls_livery_logo_encoder_tests PRIVATE
         fls_core
@@ -603,7 +603,7 @@ if(FLS_BUILD_TESTS)
     )
     add_test(NAME livery_logo_encoder COMMAND fls_livery_logo_encoder_tests)
 
-    add_executable(fls_game_export_tests tools/game_export_test.cpp)
+    add_executable(fls_game_export_tests tools/tests/game_export/main.cpp)
     target_link_libraries(fls_game_export_tests PRIVATE fls_core Qt6::Core)
     add_test(NAME game_export COMMAND fls_game_export_tests)
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/fm23")
@@ -627,7 +627,7 @@ if(FLS_BUILD_TESTS)
 
     add_executable(fls_game_roundtrip_tests
         ${fls_editor_state_moc}
-        tools/game_roundtrip_test.cpp
+        tools/tests/game_roundtrip/main.cpp
         src/gui/state/editor_state.h
         src/gui/state/editor_state.cpp
         src/gui/state/editor_state_commands.cpp
@@ -644,7 +644,7 @@ if(FLS_BUILD_TESTS)
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/Forza Livery.3so")
     endif()
     add_executable(fls_export_target_tests
-        tools/export_target_test.cpp
+        tools/tests/export_target/main.cpp
         src/gui/widgets/export_asset_dialog.cpp)
     target_include_directories(fls_export_target_tests PRIVATE src/gui/widgets)
     target_link_libraries(fls_export_target_tests PRIVATE fls_core Qt6::Widgets)
@@ -663,13 +663,13 @@ if(FLS_BUILD_TESTS)
                 "${CMAKE_CURRENT_SOURCE_DIR}/tests/encoder roundtrip")
     endif()
 
-    add_executable(fls_wgs_save_writer_tests tools/wgs_save_writer_test.cpp)
+    add_executable(fls_wgs_save_writer_tests tools/tests/wgs_save_writer/main.cpp)
     target_link_libraries(fls_wgs_save_writer_tests PRIVATE fls_core Qt6::Core)
     add_test(NAME wgs_save_writer COMMAND fls_wgs_save_writer_tests)
 
     add_executable(fls_contour_figure_tests
         ${fls_editor_state_moc}
-        tools/contour_figure_test.cpp
+        tools/tests/contour_figure/main.cpp
         src/gui/widgets/property_panel.cpp
         src/gui/app/gui_assets.cpp
         src/gui/app/theme_manager.cpp
@@ -696,7 +696,7 @@ if(FLS_BUILD_TESTS)
     add_test(NAME contour_figure COMMAND fls_contour_figure_tests)
 
     add_executable(fls_guide_preprocess_metadata_tests
-        tools/guide_preprocess_metadata_test.cpp
+        tools/tests/guide_preprocess_metadata/main.cpp
     )
     target_link_libraries(fls_guide_preprocess_metadata_tests PRIVATE
         fls_core
@@ -705,7 +705,7 @@ if(FLS_BUILD_TESTS)
     add_test(NAME guide_preprocess_metadata COMMAND fls_guide_preprocess_metadata_tests)
 
     add_executable(fls_svg_guide_image_tests
-        tools/svg_guide_image_test.cpp
+        tools/tests/svg_guide_image/main.cpp
         src/gui/fill/svg_vector_objects.cpp
         src/gui/fill/svg_vector_objects.h
         src/gui/widgets/image_io.cpp
@@ -726,7 +726,7 @@ if(FLS_BUILD_TESTS)
     add_test(NAME svg_guide_image COMMAND fls_svg_guide_image_tests)
 
     add_executable(fls_image_preprocessor_tests
-        tools/image_preprocessor_test.cpp
+        tools/tests/image_preprocessor/main.cpp
         src/gui/widgets/image_preprocessor.cpp
     )
     target_include_directories(fls_image_preprocessor_tests PRIVATE
@@ -739,7 +739,7 @@ if(FLS_BUILD_TESTS)
     add_test(NAME image_preprocessor COMMAND fls_image_preprocessor_tests)
 
     add_executable(fls_region_pen_conversion_tests
-        tools/region_pen_conversion_test.cpp
+        tools/tests/region_pen_conversion/main.cpp
         src/gui/fill/bucket_fill.cpp
         src/gui/fill/lining_fill.cpp
         src/gui/fill/cubic_contour.cpp
@@ -769,7 +769,7 @@ if(FLS_BUILD_TESTS)
 
     add_executable(fls_cubic_contour_tests
         src/gui/fill/polygon_mesh.cpp
-        tools/cubic_contour_test.cpp
+        tools/tests/cubic_contour/main.cpp
         src/gui/fill/cubic_contour.cpp
         src/gui/fill/bucket_fill.cpp
         src/gui/fill/pen_fill.cpp

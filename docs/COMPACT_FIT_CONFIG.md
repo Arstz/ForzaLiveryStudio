@@ -107,8 +107,8 @@ Build `fls_compact_fit_tests` with `FLS_BUILD_TESTS=ON`.
 `--shape-config <path>` selects an explicit general Compact Fit catalog for a
 headless run while leaving the deployed editor configuration unchanged.
 
-Run `python tools/compare_compact_fit_configs.py --request <contour-log>` to compare
-the baseline against task additions in `tools/fixtures/compact_fit_shape_trials.json`.
+Run `python tools/tests/compact_fit/compare_compact_fit_configs.py --request <contour-log>` to compare
+the baseline against task additions in `tools/tests/fixtures/compact_fit_shape_trials.json`.
 
 | Argument | Purpose |
 | --- | --- |

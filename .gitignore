@@ -1,5 +1,5 @@
 build/*
-tests/
+/tests/
 docs/LIVERY_ENCODER.md
 docs/sensetive
 tools/temp

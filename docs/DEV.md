@@ -188,7 +188,8 @@ remains a reference approximation of the game renderer.
 | `src/gui/canvas/` | `project_canvas*`, `canvas_tools.*`, `native_shape_renderer.*`, and `car_model_renderer.*`: interaction, hit testing, drawing, and preview projection. |
 | `src/gui/fill/` | Contour conversion, Pen and Lining fitting, Compact Fit, polygon meshing, and region generation. See [fill engines](FILL_ENGINES.md). |
 | `src/gui/widgets/` | Docks, properties, import/export dialogs, preview, image I/O, preprocessing, and shape stores. |
-| `tools/` | Build/deployment scripts, headless tests, asset generation, and optional inspection tools. |
+| `tools/` | Build/deployment scripts, asset generation, and optional inspection tools. |
+| `tools/tests/` | Test suites in individual directories, shared fixtures, and benchmark scripts. |
 | `third_party/` | Vendored Clipper2 polygon engine and Potrace bitmap tracer. |
 
 ### Core entry points
@@ -216,8 +217,10 @@ cmake --build build --config Release
 ctest --test-dir build -C Release --output-on-failure
 ```
 
-`CMakeLists.txt` defines the available tests and fixture requirements. Local
-assets under `tests/` are optional and untracked; some reference checks are
+`CMakeLists.txt` defines the available tests and fixture requirements. Test
+sources and supporting scripts live in `tools/tests/<suite>/`, with shared data under
+`tools/tests/fixtures/`. Local assets under the root `tests/` directory are
+optional and untracked; some reference checks are
 registered only when their fixtures exist at configuration time.
 
 Codec tests compare decoded geometry, masks, shape order, section membership,
