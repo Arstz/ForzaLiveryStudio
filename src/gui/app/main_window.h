@@ -91,6 +91,7 @@ public:
 
 private:
     bool event(QEvent *event) override;
+    void showEvent(QShowEvent *event) override;
     void dragEnterEvent(QDragEnterEvent *event) override;
     void dragMoveEvent(QDragMoveEvent *event) override;
     void dropEvent(QDropEvent *event) override;
@@ -132,6 +133,7 @@ private:
     void saveLayout();
     bool restoreLayout();
     void resetLayout();
+    void applyDefaultLayoutSizes();
     void showSettingsDialog();
     void restartApplication();
     void applyTheme(UiTheme theme, bool save = true);
@@ -287,6 +289,7 @@ private:
     QString scratchSessionId_;
     QByteArray defaultLayoutState_;
     std::unique_ptr<QLockFile> scratchLock_;
+    bool defaultLayoutPending_ = false;
     bool syncingSelection_ = false;
     bool suppressTreeReveal_ = false;
     bool loadingProperties_ = false;

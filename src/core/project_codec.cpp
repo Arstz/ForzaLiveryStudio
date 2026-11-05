@@ -7,6 +7,7 @@
 #include "livery_codec.h"
 #include "material_hashes.h"
 #include "matrix_math.h"
+#include "paint_database.h"
 #include "scene_codec.h"
 #include "shape_registry.h"
 #include "vinyl_decoder.h"
@@ -123,6 +124,10 @@ QJsonObject liveryPaintStateToJson(const LiveryPaintState &state) {
     }
     QJsonObject object;
     object.insert(QStringLiteral("materials"), materials);
+    object.insert(QStringLiteral("game"), state.game);
+    if (!state.positionalSource.isEmpty()) {
+        object.insert(QStringLiteral("positional_source"), QString::fromLatin1(state.positionalSource.toBase64()));
+    }
     return object;
 }
 
@@ -131,6 +136,9 @@ LiveryPaintState liveryPaintStateFromJson(const QJsonValue &value) {
         throw std::runtime_error("livery paint metadata is not an object");
     }
     LiveryPaintState state;
+    state.game = value.toObject().value(QStringLiteral("game")).toString();
+    state.positionalSource = QByteArray::fromBase64(
+        value.toObject().value(QStringLiteral("positional_source")).toString().toLatin1());
     const QJsonArray materials = value.toObject().value(QStringLiteral("materials")).toArray();
     state.materials.reserve(materials.size());
     for (const QJsonValue &entry : materials) {
@@ -580,6 +588,10 @@ static Project importCLiveryDecoded(const LiveryPayload &livery, Project project
     project.liverySource = livery.raw;
     project.liveryPaint = livery.paint;
     applyImportedHeaderMetadata(project);
+    if (project.liveryPaint.game == QStringLiteral("FH4") && project.headerMetadata
+        && project.headerMetadata->formatVersion == 6) {
+        project.liveryPaint.game = QStringLiteral("FH5");
+    }
     detail::appendLiverySectionsToScene(project, sections, livery.motorsport
         ? detail::VinylSceneDialect::Motorsport2023 : detail::VinylSceneDialect::Horizon);
     return project;
@@ -1046,10 +1058,12 @@ QByteArray buildLiveryDescriptorTable(const Project &project) {
             table.append(static_cast<char>(channel));
         }
         detail::appendLeU32(table, paint != nullptr ? paint->manufacturerSelector : defaultSelector);
-        quint32 exportedFinish = paint != nullptr ? paint->finish : 0;
+        quint32 exportedFinish = paint != nullptr
+            ? exportedPaintFinish(paint->finish, project.liveryPaint.game, QStringLiteral("FH6")) : 0;
         if (hash == material_hashes::binding::kWindowGlass) {
             exportedFinish = 0;
         } else if (exportedFinish == 0 && paint != nullptr
+                   && paint->manufacturerSelector == 0xffffffffu
                    && (paint->primary.enabled || paint->secondary.enabled)) {
             exportedFinish = 1;
         }

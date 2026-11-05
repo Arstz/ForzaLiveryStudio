@@ -378,9 +378,10 @@ void testBoundsAndBlocks(const QString &root) {
         "window artwork discarded and spoiler retained");
     auto painted = makeLivery(6);
     painted.liveryPaint.setDefaultCarColorBgra({20, 40, 80, 255});
-    require(paintBlock(fls::encodeGameLiveryPayload(painted, fls::ExportGameVersion::Horizon5))
-        == paintBlock(fls::encodeGameLiveryPayload(makeLivery(6), fls::ExportGameVersion::Horizon5)),
-        "unmatched paint replaced with native fallback");
+    const auto paintedPayload = fls::parseInflatedLiveryPayload(
+        fls::encodeGameLiveryPayload(painted, fls::ExportGameVersion::Horizon5));
+    require(paintedPayload.paint.defaultCarColorBgra() == std::array<quint8, 4>{20, 40, 80, 255},
+        "authored paint encoded for the destination");
     for (const auto game : {fls::ExportGameVersion::Horizon2, fls::ExportGameVersion::Horizon3,
             fls::ExportGameVersion::Motorsport5, fls::ExportGameVersion::Motorsport6,
             fls::ExportGameVersion::Motorsport7}) {

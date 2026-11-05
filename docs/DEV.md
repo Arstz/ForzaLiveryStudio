@@ -92,6 +92,7 @@ Restart the editor after repairing runtime assets loaded during initialization.
 | `assets/raster/` | Packed raster decals. |
 | `assets/icons/` | Editor icons and cursors. |
 | `assets/cars/` | Car registry and preview metadata. |
+| `assets/cars/paint_colors.json` | Per-title manufacturer colors and native finish definitions. |
 | `assets/compact_fit_shapes.json` | Compact Fit catalog and task membership. |
 | `assets/lining_shapes.json` | Lining catalog and normalized centerlines. |
 

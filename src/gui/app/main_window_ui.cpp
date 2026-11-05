@@ -170,6 +170,9 @@ void MainWindow::setupDocks() {
     const BehaviorSettings behaviorSettings = loadBehaviorSettings();
     const PreviewBackgroundSettings previewBackgroundSettings = loadPreviewBackgroundSettings();
 
+    setCorner(Qt::BottomLeftCorner, Qt::BottomDockWidgetArea);
+    setCorner(Qt::BottomRightCorner, Qt::BottomDockWidgetArea);
+
     layersSplitter_ = new QSplitter(Qt::Vertical, this);
     layersSplitter_->setChildrenCollapsible(false);
     layersSplitter_->setHandleWidth(kDockSplitterHandleWidth);
@@ -194,22 +197,19 @@ void MainWindow::setupDocks() {
     clipboardWidget_->setPreviewBackground(previewBackgroundSettings.buffer, theme_);
     treeModel_->setPreviewBackground(previewBackgroundSettings.layers, theme_);
     auto *clipboardDock = addPanelDock(QStringLiteral("Buffer"), QStringLiteral("BufferDock"),
-                                       QStringLiteral("WidgetBuffer.xpm"), Qt::RightDockWidgetArea, clipboardWidget_);
-    splitDockWidget(layersDock, clipboardDock, Qt::Vertical);
+                                       QStringLiteral("WidgetBuffer.xpm"), Qt::BottomDockWidgetArea, clipboardWidget_);
 
     details_ = new QLabel(this);
     details_->setMargin(kDetailsLabelMargin);
     details_->setWordWrap(true);
     auto *detailsDock = addPanelDock(QStringLiteral("Project"), QStringLiteral("ProjectDock"),
-                                     QStringLiteral("WidgetProject.xpm"), Qt::RightDockWidgetArea, details_);
+                                     QStringLiteral("WidgetProject.xpm"), Qt::BottomDockWidgetArea, details_);
 
     headerMetadata_ = new HeaderMetadataWidget(this);
     headerMetadata_->setMetadataChangedCallback([this]() { applyHeaderMetadata(); });
     headerMetadata_->setChangeTargetCarCallback([this]() { setTargetCarDialog(); });
     headerMetadataDock_ = addPanelDock(QStringLiteral("Header"), QStringLiteral("HeaderMetadataDock"),
-                                       QStringLiteral("WidgetProject.xpm"), Qt::RightDockWidgetArea, headerMetadata_, true);
-    tabifyDockWidget(detailsDock, headerMetadataDock_);
-    detailsDock->raise();
+                                       QStringLiteral("WidgetProject.xpm"), Qt::BottomDockWidgetArea, headerMetadata_, true);
 
     properties_ = new PropertyPanel(state_, this);
     properties_->setSpriteSizeFn([this](int id) {
@@ -271,9 +271,12 @@ void MainWindow::setupDocks() {
     shapesBrowser_->setCustomGroupSelectedCallback([this](const CustomShapeGroup &group) { insertCustomGroup(group.name, group.clipboard); });
     shapesBrowser_->setAddCurrentSelectionCallback([this]() { saveCurrentSelectionAsCustomGroup(); });
     auto *shapesDock = addPanelDock(QStringLiteral("Shapes"), QStringLiteral("ShapesDock"),
-                                    QStringLiteral("WidgetShapesBrowser.xpm"), Qt::LeftDockWidgetArea, shapesBrowser_);
+                                    QStringLiteral("WidgetShapesBrowser.xpm"), Qt::BottomDockWidgetArea, shapesBrowser_);
     splitDockWidget(propertiesDock, paletteDock, Qt::Vertical);
-    splitDockWidget(paletteDock, shapesDock, Qt::Vertical);
+    splitDockWidget(shapesDock, headerMetadataDock_, Qt::Horizontal);
+    tabifyDockWidget(headerMetadataDock_, clipboardDock);
+    tabifyDockWidget(headerMetadataDock_, detailsDock);
+    headerMetadataDock_->raise();
 
     carPreview_ = new CarPreviewWidget(this);
     carPreview_->setLoadCarTextures(behaviorSettings.loadCarTextures);
@@ -295,7 +298,7 @@ void MainWindow::setupDocks() {
     carPreviewDock_ = addPanelDock(QStringLiteral("3D Preview"), QStringLiteral("CarPreviewDock"),
                                    QStringLiteral("WidgetProject.xpm"), Qt::RightDockWidgetArea, carPreview_);
     tabifyDockWidget(layersDock, carPreviewDock_);
-    carPreviewDock_->hide();
+    layersDock->raise();
 }
 
 void MainWindow::connectEditorStateSignals() {

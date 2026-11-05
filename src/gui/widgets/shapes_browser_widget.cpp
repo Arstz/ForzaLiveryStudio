@@ -22,6 +22,87 @@ constexpr const char *kFavouritesSettingsKey = "shapes/favourites";
 constexpr const char *kCustomGroupsSettingsKey = "shapes/customGroups";
 const QSize kTileSize(132, 132);
 const QSize kPreviewSize(86, 86);
+constexpr int kTileSpacing = 8;
+constexpr double kDefaultCategoryWidthFraction = 0.07;
+
+class BrowserTileLayout final : public QLayout {
+public:
+    BrowserTileLayout() {
+        setContentsMargins(0, 0, 0, 0);
+        setSpacing(kTileSpacing);
+    }
+
+    ~BrowserTileLayout() override {
+        while (QLayoutItem *item = takeAt(0)) {
+            delete item;
+        }
+    }
+
+    void addItem(QLayoutItem *item) override {
+        items_.push_back(item);
+        invalidate();
+    }
+
+    int count() const override {
+        return static_cast<int>(items_.size());
+    }
+
+    QLayoutItem *itemAt(int index) const override {
+        return items_.value(index);
+    }
+
+    QLayoutItem *takeAt(int index) override {
+        if (index < 0 || index >= count()) {
+            return nullptr;
+        }
+        QLayoutItem *item = items_.takeAt(index);
+        invalidate();
+
+        return item;
+    }
+
+    Qt::Orientations expandingDirections() const override {
+        return {};
+    }
+
+    QSize minimumSize() const override {
+        return items_.isEmpty() ? QSize(0, 0) : kTileSize;
+    }
+
+    QSize sizeHint() const override {
+        return minimumSize();
+    }
+
+    bool hasHeightForWidth() const override {
+        return true;
+    }
+
+    int heightForWidth(int width) const override {
+        const int columns = columnsForWidth(width);
+        const int rows = (count() + columns - 1) / columns;
+
+        return rows * kTileSize.height() + std::max(0, rows - 1) * spacing();
+    }
+
+    void setGeometry(const QRect &rect) override {
+        const int columns = columnsForWidth(rect.width());
+
+        QLayout::setGeometry(rect);
+        for (int index = 0; index < count(); ++index) {
+            const QPoint position = rect.topLeft() + QPoint(
+                (index % columns) * (kTileSize.width() + spacing()),
+                (index / columns) * (kTileSize.height() + spacing()));
+            items_[index]->setGeometry(QRect(position, kTileSize));
+        }
+    }
+
+private:
+    int columnsForWidth(int width) const {
+        return std::max(1, (width + spacing()) / (kTileSize.width() + spacing()));
+    }
+
+    QList<QLayoutItem *> items_;
+};
 
 struct TilePaintLayout {
     QRect previewRect;
@@ -936,11 +1017,11 @@ ShapesBrowserWidget::ShapesBrowserWidget(QWidget *parent)
     scroll_ = new QScrollArea(splitter_);
     scroll_->setWidgetResizable(true);
     gridHost_ = new QWidget(scroll_);
-    grid_ = new QGridLayout(gridHost_);
-    grid_->setContentsMargins(8, 8, 8, 8);
-    grid_->setHorizontalSpacing(8);
-    grid_->setVerticalSpacing(8);
-    grid_->setAlignment(Qt::AlignLeft | Qt::AlignTop);
+    auto *gridLayout = new QVBoxLayout(gridHost_);
+    gridLayout->setContentsMargins(kTileSpacing, kTileSpacing, kTileSpacing, kTileSpacing);
+    gridLayout->setSpacing(0);
+    grid_ = new BrowserTileLayout();
+    gridLayout->addLayout(grid_);
     scroll_->setWidget(gridHost_);
     splitter_->addWidget(scroll_);
     splitter_->setStretchFactor(1, 1);
@@ -1059,9 +1140,10 @@ void ShapesBrowserWidget::refreshTheme() {
     }
 }
 
-void ShapesBrowserWidget::resizeEvent(QResizeEvent *event) {
-    QWidget::resizeEvent(event);
-    refreshGrid();
+void ShapesBrowserWidget::resetLayout() {
+    const int categoryWidth = qRound(splitter_->width() * kDefaultCategoryWidthFraction);
+
+    splitter_->setSizes({categoryWidth, splitter_->width() - categoryWidth});
 }
 
 void ShapesBrowserWidget::refreshCustomGroups() {
@@ -1135,11 +1217,13 @@ void ShapesBrowserWidget::refreshGrid() {
     while (grid_->count() > 0) {
         QLayoutItem *item = grid_->takeAt(0);
         if (QWidget *widget = item->widget()) {
-            widget->setParent(nullptr);
+            widget->hide();
         }
         delete item;
     }
-    grid_->setAlignment(Qt::AlignLeft | Qt::AlignTop);
+    if (searchHint_ != nullptr) {
+        searchHint_->hide();
+    }
 
     const QString query = search_->text().trimmed().toLower();
 
@@ -1249,15 +1333,10 @@ void ShapesBrowserWidget::refreshGrid() {
 }
 
 void ShapesBrowserWidget::layoutTiles(const QVector<QWidget *> &tiles) {
-    const int columns = std::max(1, scroll_->viewport()->width() / (kTileSize.width() + 10));
-    for (int column = 0; column <= columns; ++column) {
-        grid_->setColumnStretch(column, 0);
+    for (QWidget *tile : tiles) {
+        grid_->addWidget(tile);
+        tile->show();
     }
-    for (int index = 0; index < tiles.size(); ++index) {
-        grid_->addWidget(tiles[index], index / columns, index % columns);
-    }
-    grid_->setColumnStretch(columns, 1);
-    grid_->setRowStretch((tiles.size() + columns - 1) / columns, 1);
 }
 
 void ShapesBrowserWidget::showGridMessage(const QString &text) {
@@ -1266,6 +1345,7 @@ void ShapesBrowserWidget::showGridMessage(const QString &text) {
         searchHint_->setAlignment(Qt::AlignCenter);
         searchHint_->setWordWrap(true);
         searchHint_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+        gridHost_->layout()->addWidget(searchHint_);
     }
     const QPalette pal = paletteForTheme(currentUiTheme());
     const QColor textColor = pal.color(QPalette::Text);
@@ -1275,16 +1355,6 @@ void ShapesBrowserWidget::showGridMessage(const QString &text) {
                        (textColor.blue() + baseColor.blue()) / 2);
     searchHint_->setStyleSheet(QStringLiteral("QLabel { color: %1; font-size: 13px; }").arg(muted.name()));
     searchHint_->setText(text);
-    for (int column = 0; column < grid_->columnCount(); ++column) {
-        grid_->setColumnStretch(column, 0);
-    }
-    for (int row = 0; row < grid_->rowCount(); ++row) {
-        grid_->setRowStretch(row, 0);
-    }
-    grid_->setAlignment(Qt::Alignment());
-    grid_->addWidget(searchHint_, 0, 0);
-    grid_->setColumnStretch(0, 1);
-    grid_->setRowStretch(0, 1);
     searchHint_->show();
 }
 

@@ -238,6 +238,33 @@ colors and supported finish codes affect the 3D preview. Manufacturer selectors
 and descriptor records without an editor representation remain opaque source
 metadata.
 
+Positional paint layouts use fixed 40-byte records. Their material binding is
+selected by slot, while each record stores primary and secondary BGRA values,
+their enable flags, three optional scalar fields, a manufacturer selector, a
+finish identifier, and an opaque trailing field. An active manufacturer selector
+takes precedence over retained custom color bytes. Custom paint uses selector
+`0xffffffff`.
+
+The editable positional bindings cover body, hood, mirrors, spoiler, brakes,
+rims, and glass, including the corresponding body-panel color groups. Native
+paint blocks remain project metadata so scalar fields and unmapped records
+survive project persistence and native export. Whole-wheel edits update the
+extended wheel records together; independent axle paint requires a destination
+with separate axle bindings.
+
+`assets/cars/paint_colors.json` stores per-title GameDB manufacturer palettes,
+color classifications, secondary and stripe exceptions, special-color values,
+and finish definitions. Manufacturer palette sequence values are retained as
+database identifiers rather than interpreted as native save selectors. Finish
+translation between titles uses material identity and destination availability.
+
+The optional per-car `manufacturer_palettes` map stores native selector order,
+normalized RGB floats, material references, and material masks or slot names.
+Palette entries retain all material assignments and versioned color overrides.
+`tools/append_manufacturer_palettes.py` populates these records from car archives;
+repeat its `--game` argument to import multiple titles. Database regeneration
+preserves the appended native palettes.
+
 The stream ends with:
 
 ```text
@@ -307,10 +334,12 @@ FH5 appends a zero `u32` after the final `yrvl` tag.
 FM2023 uses independently compressed blocks of at most 32768 uncompressed bytes.
 
 Positional paint chunks contain a status byte, fixed-size 40-byte records, and a
-two-byte tail. Compatible imported chunks are retained intact. Unmatched paint
-data is discarded, and export supplies native inherited records with slot-specific
-manufacturer selectors `0` or `0xffffffff` and finish `0`. These formats have no material-hash field;
-hashed editor bindings without a positional mapping are omitted.
+two-byte tail. Unchanged imported records retain their native bytes; mapped edits
+patch color, selector, and finish fields. New paint uses native inherited defaults
+and the mapped editor bindings. Unmapped records retain their source data.
+Finish identifiers are interpreted in the source title's catalog and translated
+for the destination. Export rejects finishes unavailable in that destination.
+These formats have no material-hash field.
 Older targets rebuild group frames with relative placements and a shared section
 scale. FH4, FH5, and FM2023 retain compatible native framing; placement and color edits
 are patched relative to the retained group transforms.

@@ -2,6 +2,7 @@
 
 #include "material_hashes.h"
 #include "model_material.h"
+#include "paint_database.h"
 #include "region_fill.h"
 
 #include <QDebug>
@@ -1160,7 +1161,7 @@ std::optional<fls::LiveryPaintMaterial> resolvePaint(
     }
     fls::LiveryPaintMaterial resolved = colorSource != nullptr
         ? *colorSource : *fallback;
-    if (finishSource != nullptr) {
+    if (finishSource != nullptr && resolved.manufacturerSelector == 0xffffffffu) {
         resolved.finish = finishSource->finish;
     }
     return resolved;
@@ -2973,17 +2974,9 @@ void CarModelRenderer::render(
         functions->glActiveTexture(GL_TEXTURE0);
     }
 
-    // Manufacturer (factory) colours are the car's default paint. They only belong on an
-    // uncustomised car: the moment the livery assigns any explicit primary colour, the whole car
-    // is custom-painted, and materials left blank must inherit the chosen base paint rather than a
-    // factory tint. A blank paint record is all-zero, so its manufacturerSelector reads 0 — which
-    // would otherwise resolve to palette slot 0 (this car's golden yellow) and bleed onto every
-    // livery panel. A blank record carries no colour either. Every blank-record mesh is a livery-
-    // canvas panel (name "…Livery…") the game paints over, so with the livery off there is no single
-    // right base for it — but material and part don't discriminate (the maroon rocker line and the
-    // grey hood both carry blank carPaint_secondary on grey-dominant parts). What DOES discriminate
-    // is position: a canvas panel should read as the real paint physically next to it. So collect
-    // the painted panels' centres/colours and give each blank panel its nearest painted neighbour.
+    const bool positionalPaint = paintState != nullptr
+        && (!paintState->positionalSource.isEmpty()
+            || (!paintState->game.isEmpty() && paintState->game != QStringLiteral("FH6")));
     bool liveryCustomPainted = false;
     QVector3D liveryPrimaryColor = fallbackColor;
     struct PaintedPanel {
@@ -3005,7 +2998,8 @@ void CarModelRenderer::render(
                             : std::nullopt;
             const fls::LiveryPaintMaterial *paint = resolvedPaint
                 ? &*resolvedPaint : nullptr;
-            if (paint == nullptr || !paint->primary.enabled) {
+            if (paint == nullptr || !paint->primary.enabled
+                || (positionalPaint && paint->manufacturerSelector != 0xffffffffu)) {
                 continue;
             }
             liveryCustomPainted = true;
@@ -3056,16 +3050,21 @@ void CarModelRenderer::render(
         const fls::LiveryPaintMaterial *paint = resolvedPaint
             ? &*resolvedPaint : nullptr;
         const fls::ManufacturerColor *manufacturerColor =
-            paint != nullptr && manufacturerColors != nullptr && !liveryCustomPainted
+            paint != nullptr && manufacturerColors != nullptr
+                && (positionalPaint || !liveryCustomPainted)
             ? manufacturerColors->find(paint->manufacturerSelector)
             : nullptr;
-        const int effectiveFinishCode = mesh.windowGlass ? 0
+        const int effectiveFinishCode = mesh.windowGlass
+            || (positionalPaint && paint != nullptr && paint->manufacturerSelector != 0xffffffffu) ? 0
             : paint != nullptr && paint->finish != 0
                 ? static_cast<int>(paint->finish)
                 : !mesh.paintMaterialHashes.empty() ? 1 : 0;
-        const fls::PaintFinishRender *finish = effectiveFinishCode != 0
+        const int previewFinishCode = effectiveFinishCode != 0 && positionalPaint
+            ? fls::matchingPaintFinish(effectiveFinishCode, paintState->game, QStringLiteral("FH6"))
+            : effectiveFinishCode;
+        const fls::PaintFinishRender *finish = previewFinishCode > 0
             && paintFinishes != nullptr
-            ? paintFinishes->find(effectiveFinishCode)
+            ? paintFinishes->find(previewFinishCode)
             : nullptr;
         const auto decodedColor = [](const fls::LiveryPaintColor &color) {
             return QVector3D(color.bgra[2] / 255.0f, color.bgra[1] / 255.0f, color.bgra[0] / 255.0f);
@@ -3095,7 +3094,7 @@ void CarModelRenderer::render(
                 }
             }
         }
-        if (paint != nullptr) {
+        if (paint != nullptr && (!positionalPaint || paint->manufacturerSelector == 0xffffffffu)) {
             if (paint->primary.enabled) {
                 primary = decodedColor(paint->primary);
             }

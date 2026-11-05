@@ -112,6 +112,10 @@ add_library(fls_core STATIC
     src/core/model_material.h
     src/core/paint_finish_catalog.cpp
     src/core/paint_finish_catalog.h
+    src/core/paint_database.cpp
+    src/core/paint_database.h
+    src/core/positional_paint.cpp
+    src/core/positional_paint.h
     src/core/project_codec.cpp
     src/core/project_codec.h
     src/core/raster_decals.cpp
@@ -610,6 +614,10 @@ if(FLS_BUILD_TESTS)
     add_executable(fls_game_export_tests tools/tests/game_export/main.cpp)
     target_link_libraries(fls_game_export_tests PRIVATE fls_core Qt6::Core)
     add_test(NAME game_export COMMAND fls_game_export_tests)
+    add_executable(fls_positional_paint_tests tools/tests/positional_paint/main.cpp)
+    target_link_libraries(fls_positional_paint_tests PRIVATE fls_core Qt6::Core)
+    target_compile_definitions(fls_positional_paint_tests PRIVATE FLS_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+    add_test(NAME positional_paint COMMAND fls_positional_paint_tests)
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/fm23")
         add_test(NAME game_fm23_samples COMMAND fls_game_export_tests --fm23-samples
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/fm23")
@@ -792,6 +800,7 @@ else()
             "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/fls_wgs_save_reader_tests${CMAKE_EXECUTABLE_SUFFIX}"
             "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/fls_wgs_save_writer_tests${CMAKE_EXECUTABLE_SUFFIX}"
             "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/fls_game_export_tests${CMAKE_EXECUTABLE_SUFFIX}"
+            "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/fls_positional_paint_tests${CMAKE_EXECUTABLE_SUFFIX}"
             "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/fls_game_roundtrip_tests${CMAKE_EXECUTABLE_SUFFIX}"
             "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/fls_export_target_tests${CMAKE_EXECUTABLE_SUFFIX}"
             "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/fls_guide_preprocess_metadata_tests${CMAKE_EXECUTABLE_SUFFIX}"
@@ -881,6 +890,7 @@ set(FLS_GUI_ASSET_FILES
     cars/car_ids.json
     cars/part_names.json
     cars/wheel_sizes.json
+    cars/paint_colors.json
 )
 foreach(asset_name IN LISTS FLS_GUI_ASSETS)
     list(APPEND FLS_GUI_ASSET_FILES "icons/${asset_name}")

@@ -6,6 +6,7 @@
 #include "livery_codec.h"
 #include "matrix_math.h"
 #include "project_codec.h"
+#include "positional_paint.h"
 
 #include <QDir>
 #include <QFile>
@@ -35,8 +36,6 @@ constexpr int kEarlyEntryCountOffset = 41;
 constexpr int kTaggedLiveryOverhead = 40;
 constexpr int kMaskFlag = 64;
 constexpr quint32 kLastEarlyLiveryVersion = 7;
-constexpr quint32 kDefaultPaintFinish = 0;
-constexpr quint32 kDefaultPaintSelector = 0xffffffffu;
 constexpr double kNativeFramePositionRange = 25000.0;
 constexpr double kNativeFrameScaleRange = 100.0;
 
@@ -195,52 +194,18 @@ QByteArray nativeHeader(const Project &project, ExportGameVersion game,
     return buildHeader(metadata);
 }
 
-QByteArray legacyPaintBlock(const Project &project, const ExportProfile &profile) {
-    const QByteArray &source = project.liverySource;
-    const int artwork = source.indexOf(QByteArray("gyvl", 4));
-    const bool tagged = profile.liveryVersion != 2;
-    const int paintSize = 1 + profile.paintRecordCount * kPaintRecordSize + 2;
-    if (artwork >= 4) {
-        const quint32 artworkSize = detail::readLeU32(source, artwork - 4);
-        const qint64 stats = static_cast<qint64>(artwork) + artworkSize;
-        const qint64 paintTag = stats + (tagged ? 4 : 0) + kLegacyLiveryCounterCount * 4;
-        const qint64 paint = paintTag + (tagged ? 4 : 0);
-        const int informationVersionOffset = detail::readLeU32(source, 4) == 2 ? 45 : 29;
-        const quint32 sourceVersion = source.size() >= informationVersionOffset + 4
-            ? detail::readLeU32(source, informationVersionOffset) : 0;
-        const bool matchingVersion = sourceVersion == profile.liveryVersion
-            || (profile.liveryVersion >= 17 && sourceVersion >= 17 && sourceVersion <= 19);
-        if (stats >= artwork && paint + paintSize <= source.size() && matchingVersion
-            && (!tagged || (source.mid(stats, 4) == QByteArray("yrvl", 4)
-                && source.mid(paintTag, 4) == QByteArray("yrvl", 4)
-                && source.mid(paint + paintSize, 4) == QByteArray("yrvl", 4)))) {
-            bool validRecords = true;
-            for (int index = 0; index < profile.paintRecordCount; ++index) {
-                const int offset = static_cast<int>(paint) + 1 + index * kPaintRecordSize;
-                validRecords = validRecords && detail::bytesAt(source, offset, {1, 1});
-            }
-            if (validRecords) {
-                return source.mid(paint, paintSize);
-            }
-        }
+QString paintGame(ExportGameVersion game) {
+    switch (game) {
+    case ExportGameVersion::Horizon2: return QStringLiteral("FH2");
+    case ExportGameVersion::Horizon3: return QStringLiteral("FH3");
+    case ExportGameVersion::Horizon4: return QStringLiteral("FH4");
+    case ExportGameVersion::Horizon5: return QStringLiteral("FH5");
+    case ExportGameVersion::Motorsport5: return QStringLiteral("FM5");
+    case ExportGameVersion::Motorsport6: return QStringLiteral("FM6");
+    case ExportGameVersion::Motorsport7: return QStringLiteral("FM7");
+    case ExportGameVersion::Motorsport2023: return QStringLiteral("FM2023");
+    default: return QStringLiteral("FH6");
     }
-
-    QByteArray paint;
-    paint.append('\0');
-    for (int index = 0; index < profile.paintRecordCount; ++index) {
-        QByteArray record(kPaintRecordSize, '\0');
-        record[0] = '\x01';
-        record[1] = '\x01';
-        QByteArray paintDefaults;
-        const bool selectable = (index >= 5 && index <= 7) || index >= 12;
-        detail::appendLeU32(paintDefaults, selectable ? kDefaultPaintSelector : 0);
-        detail::appendLeU32(paintDefaults, kDefaultPaintFinish);
-        record.replace(27, paintDefaults.size(), paintDefaults);
-        paint.append(record);
-    }
-    paint.append("\x00\x01", 2);
-
-    return paint;
 }
 
 void prepareNativeArtworkLayers(scene::Group &group) {
@@ -465,7 +430,7 @@ QByteArray nativeLiveryPayload(const Project &project, ExportGameVersion game,
     const ExportProfile profile = exportProfile(game);
     const bool early = profile.liveryVersion <= kLastEarlyLiveryVersion;
     const bool tagged = profile.liveryVersion != 2;
-    const QByteArray paint = legacyPaintBlock(project, profile);
+    const QByteArray paint = encodePositionalPaint(project, profile.paintRecordCount, paintGame(game));
     const QByteArray artwork = nativeArtwork(project, profile, game, counts);
     QByteArray payload("vlrc", 4);
     QByteArray sourceEntries;

@@ -10,7 +10,6 @@
 
 #include <functional>
 
-class QGridLayout;
 class QLabel;
 class QLineEdit;
 class QListWidget;
@@ -132,9 +131,7 @@ public:
     // Logos may only be used in livery projects; hide them for Group projects.
     void setLiveryContext(bool isLivery);
     void refreshTheme();
-
-protected:
-    void resizeEvent(QResizeEvent *event) override;
+    void resetLayout();
 
 private:
     void refreshCustomGroups();
@@ -175,7 +172,7 @@ private:
     QSplitter *splitter_ = nullptr;
     QScrollArea *scroll_ = nullptr;
     QWidget *gridHost_ = nullptr;
-    QGridLayout *grid_ = nullptr;
+    QLayout *grid_ = nullptr;
     QLabel *searchHint_ = nullptr;
     std::function<void(int)> shapeSelectedCallback_;
     std::function<void(int)> shapeReplaceCallback_;

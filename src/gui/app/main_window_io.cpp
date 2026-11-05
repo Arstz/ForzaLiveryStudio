@@ -15,6 +15,7 @@
 #include "livery_codec.h"
 #include "project_codec.h"
 #include "shape_geometry_store.h"
+#include "shapes_browser_widget.h"
 
 #include <QtGui>
 
@@ -1416,12 +1417,43 @@ void MainWindow::resetLayout() {
     if (!defaultLayoutState_.isEmpty()) {
         restoreState(defaultLayoutState_);
         positionToolSettings();
+        applyDefaultLayoutSizes();
         syncDockCollapseButtons();
     }
     QSettings settings;
     settings.remove(QStringLiteral("layout/state"));
     settings.remove(QStringLiteral("layout/geometry"));
+    settings.remove(QStringLiteral("ui/splitters/shapesSections"));
     statusBar()->showMessage(QStringLiteral("Layout reset to default"), 5000);
+}
+
+void MainWindow::applyDefaultLayoutSizes() {
+    constexpr double kLeftWidthFraction = 0.125;
+    constexpr double kRightWidthFraction = 0.20;
+    constexpr double kBottomHeightFraction = 0.28;
+    constexpr double kPropertiesHeightFraction = 0.73;
+    constexpr double kShapesWidthFraction = 0.80;
+    auto *propertiesDock = findChild<QDockWidget *>(QStringLiteral("PropertiesDock"));
+    auto *swatchesDock = findChild<QDockWidget *>(QStringLiteral("SwatchesDock"));
+    auto *layersDock = findChild<QDockWidget *>(QStringLiteral("LayersDock"));
+    auto *shapesDock = findChild<QDockWidget *>(QStringLiteral("ShapesDock"));
+    const int dockAreaHeight = height() - canvas_->y() - statusBar()->height();
+    const int bottomHeight = qRound(dockAreaHeight * kBottomHeightFraction);
+    const int sideHeight = dockAreaHeight - bottomHeight;
+    const int propertiesHeight = qRound(sideHeight * kPropertiesHeightFraction);
+    const int shapesWidth = qRound(width() * kShapesWidthFraction);
+
+    resizeDocks({propertiesDock, layersDock},
+                {qRound(width() * kLeftWidthFraction), qRound(width() * kRightWidthFraction)},
+                Qt::Horizontal);
+    resizeDocks({shapesDock}, {bottomHeight}, Qt::Vertical);
+    resizeDocks({propertiesDock, swatchesDock},
+                {propertiesHeight, sideHeight - propertiesHeight}, Qt::Vertical);
+    resizeDocks({shapesDock, headerMetadataDock_},
+                {shapesWidth, width() - shapesWidth}, Qt::Horizontal);
+    layout()->activate();
+    shapesBrowser_->resetLayout();
+    positionToolSettings();
 }
 
 } // namespace gui

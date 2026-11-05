@@ -6,6 +6,7 @@
 #include "cgroup_codec.h"
 #include "layer.h"
 #include "matrix_math.h"
+#include "positional_paint.h"
 #include "vinyl_decoder.h"
 
 #include <QDir>
@@ -184,6 +185,14 @@ LiveryPayload parseInflatedLiveryPayloadImpl(const QByteArray &raw) {
         : -1;
     if (paintEnd >= 0) {
         payload.paint = readPaintState(payload.raw, paintTag + 4, paintEnd);
+    }
+    const QByteArray positional = positionalPaintBlock(payload.raw);
+    if (!positional.isEmpty()) {
+        const int recordCount = (static_cast<int>(positional.size()) - kPositionalPaintBlockOverhead)
+            / kPositionalPaintRecordSize;
+        payload.paint = decodePositionalPaint(positional, positionalPaintGame(payload.raw, recordCount));
+    } else if (!payload.paint.materials.isEmpty()) {
+        payload.paint.game = QStringLiteral("FH6");
     }
     const bool hasStats = statsTag >= 0
         && payload.raw.mid(statsTag, 4) == QByteArray("yrvl", 4);

@@ -36,6 +36,11 @@ LiveryPaintMaterial &LiveryPaintState::ensure(quint64 materialHash) {
 
 std::optional<std::array<quint8, 4>> LiveryPaintState::defaultCarColorBgra() const {
     const LiveryPaintMaterial *body = find(material_hashes::binding::kBodyPaint);
+    if (body != nullptr && (!positionalSource.isEmpty()
+            || (!game.isEmpty() && game != QStringLiteral("FH6")))
+        && body->manufacturerSelector != 0xffffffffu) {
+        return std::nullopt;
+    }
     if (body != nullptr && body->primary.enabled) {
         return body->primary.bgra;
     }

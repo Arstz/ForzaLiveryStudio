@@ -37,6 +37,8 @@ struct LiveryPaintMaterial {
 
 struct LiveryPaintState {
     QVector<LiveryPaintMaterial> materials;
+    QByteArray positionalSource;
+    QString game;
 
     const LiveryPaintMaterial *find(quint64 materialHash) const;
     LiveryPaintMaterial *find(quint64 materialHash);

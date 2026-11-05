@@ -19,7 +19,7 @@ MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent) {
     theme_ = loadUiTheme();
     setWindowTitle(QStringLiteral("Forza Livery Studio"));
-    resize(kInitialWindowWidth, kInitialWindowHeight);
+    resize(screen()->availableGeometry().size() * kInitialWindowScreenFraction);
     setAcceptDrops(true);
 
     keyBindings_ = new KeyBindingRouter(this, this);
@@ -55,7 +55,10 @@ MainWindow::MainWindow(QWidget *parent)
     setupWindowMenu();
 
     defaultLayoutState_ = saveState();
-    restoreLayout();
+    if (!restoreLayout()) {
+        defaultLayoutPending_ = true;
+        setWindowState(windowState() | Qt::WindowMaximized);
+    }
     syncDockCollapseButtons();
 
     updateStatus();
@@ -63,5 +66,14 @@ MainWindow::MainWindow(QWidget *parent)
 
 MainWindow::~MainWindow() {
     cancelActiveFills();
+}
+
+void MainWindow::showEvent(QShowEvent *event) {
+    QMainWindow::showEvent(event);
+    if (!defaultLayoutPending_) {
+        return;
+    }
+    defaultLayoutPending_ = false;
+    QTimer::singleShot(0, this, &MainWindow::applyDefaultLayoutSizes);
 }
 } // namespace gui

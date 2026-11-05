@@ -1769,7 +1769,8 @@ void CarPreviewWidget::chooseRegionFinish(
     for (quint64 materialHash : editHashes) {
         const fls::LiveryPaintMaterial *material =
             project_->liveryPaint.find(materialHash);
-        if (material == nullptr || material->finish != finish) {
+        if (material == nullptr || material->finish != finish
+            || material->manufacturerSelector != 0xffffffffu) {
             changed = true;
             break;
         }
@@ -1780,7 +1781,9 @@ void CarPreviewWidget::chooseRegionFinish(
 
     state_->beginProjectEdit();
     for (quint64 materialHash : editHashes) {
-        project_->liveryPaint.ensure(materialHash).finish = finish;
+        fls::LiveryPaintMaterial &material = project_->liveryPaint.ensure(materialHash);
+        material.finish = finish;
+        material.manufacturerSelector = 0xffffffffu;
     }
     state_->commitProjectEdit();
     state_->noteProjectPaintChanged();
