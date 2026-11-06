@@ -632,53 +632,10 @@ void ProjectCanvas::drawOverlay(QPainter &painter) {
                                std::max(0.0, height() - kRulerExtent)));
     painter.setRenderHint(QPainter::Antialiasing, true);
 
-    if ((carUnwrapVisible_ || sectionWireframeVisible_)
-        && !carUnwrapOverlay_.empty()) {
-        static const QColor kSideColors[fls::kLiverySideCount] = {
-            QColor(230, 60, 60),
-            QColor(60, 200, 60),
-            QColor(70, 120, 240),
-            QColor(230, 220, 60),
-            QColor(220, 80, 220),
-            QColor(60, 210, 210),
-            QColor(255, 130, 60),
-            QColor(120, 255, 140),
-            QColor(120, 190, 255),
-            QColor(255, 235, 120),
-            QColor(255, 140, 255),
-        };
-        painter.save();
-        painter.setTransform(camera_.matrix(), false);
-        if (carUnwrapVisible_) {
-            painter.setPen(Qt::NoPen);
-            painter.setOpacity(0.45);
-            for (int sideIndex = 0; sideIndex < fls::kLiverySideCount; ++sideIndex) {
-                const CarUnwrapSide &side = carUnwrapOverlay_.sides[sideIndex];
-                if (!side.valid()) {
-                    continue;
-                }
-                painter.setBrush(kSideColors[sideIndex]);
-                painter.drawPath(side.path);
-            }
-        }
-        if (sectionWireframeVisible_) {
-            QPen wireframePen(Qt::white);
-            wireframePen.setWidthF(1.0);
-            wireframePen.setCosmetic(true);
-            painter.setBrush(Qt::NoBrush);
-            painter.setPen(wireframePen);
-            painter.setOpacity(1.0);
-            for (const CarUnwrapSide &side : carUnwrapOverlay_.sides) {
-                if (!side.valid() || side.wireframe.isEmpty()) {
-                    continue;
-                }
-                painter.save();
-                painter.setClipPath(side.path, Qt::IntersectClip);
-                painter.drawPath(side.wireframe);
-                painter.restore();
-            }
-        }
-        painter.restore();
+    const QImage &carOverlay = carUnwrapOverlay_.image(
+        camera_.matrix(), size(), devicePixelRatioF(), carUnwrapVisible_, sectionWireframeVisible_);
+    if (!carOverlay.isNull()) {
+        painter.drawImage(QPointF(), carOverlay);
     }
 
     drawRegionOverlay(painter);

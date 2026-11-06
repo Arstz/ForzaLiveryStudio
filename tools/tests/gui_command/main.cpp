@@ -697,6 +697,64 @@ void moveAutoSelection(Harness &h) {
     h.validate();
 }
 
+void gradientSnapping(Harness &h) {
+    gui::ProjectCanvas *canvas = nullptr;
+    for (QWidget *widget : h.window.findChildren<QWidget *>()) {
+        if (auto *found = dynamic_cast<gui::ProjectCanvas *>(widget)) canvas = found;
+    }
+    require(canvas != nullptr, "snapping test needs a canvas");
+    canvas->resize(1000, 600);
+    canvas->setTool("move");
+    canvas->setMoveToolAutoSelect(false);
+    canvas->setAutomaticSnapping(true);
+    canvas->setTransformRelativeMode(false);
+    const auto drag = [&](int movingShape, int targetShape, quint8 movingAlpha, quint8 targetAlpha, int count) {
+        fls::Project project;
+        fls::scene::ensureProjectSceneRoot(project);
+        QVector<QString> selected;
+        for (int index = 0; index < count; ++index) {
+            auto moving = shape(QStringLiteral("moving-%1").arg(index), 0);
+            moving->transform = {};
+            moving->setVectorShape(movingShape);
+            moving->color[3] = movingAlpha;
+            selected.push_back(moving->id);
+            project.root->append(std::move(moving));
+        }
+        auto target = shape("target", 150);
+        target->transform = {150, 0, 1, 1, 0, 0};
+        target->setVectorShape(targetShape);
+        target->color[3] = targetAlpha;
+        project.root->append(std::move(target));
+        h.reset(std::move(project));
+        h.select(selected);
+        canvas->refitView();
+        gui::BoundsAccumulator bounds;
+        for (const auto *node : gui::sceneShapeLeaves(*h.state->project()->root))
+            bounds.add(gui::sceneWorldTransform(*node), canvas->shapeInkBounds(node->shapeId));
+        gui::CanvasCamera camera;
+        camera.setViewBounds(bounds.bounds());
+        constexpr double kRulerExtent = 28;
+        camera.recompute({kRulerExtent, kRulerExtent}, canvas->width() - kRulerExtent, canvas->height() - kRulerExtent);
+        const QPointF start = camera.worldToScreen({0, 0});
+        const QPointF end = camera.worldToScreen({21.5, 0});
+        QMouseEvent press(QEvent::MouseButtonPress, start, canvas->mapToGlobal(start.toPoint()), Qt::LeftButton, Qt::LeftButton, {});
+        QApplication::sendEvent(canvas, &press);
+        QMouseEvent move(QEvent::MouseMove, end, canvas->mapToGlobal(end.toPoint()), Qt::NoButton, Qt::LeftButton, {});
+        QApplication::sendEvent(canvas, &move);
+        const double x = h.state->sceneNode(selected.front())->x;
+        QMouseEvent release(QEvent::MouseButtonRelease, end, canvas->mapToGlobal(end.toPoint()), Qt::LeftButton, Qt::NoButton, {});
+        QApplication::sendEvent(canvas, &release);
+        return x;
+    };
+    require(std::abs(drag(101, 101, 255, 255, 1) - 22) < 1e-6, "opaque geometry lost edge snapping");
+    require(std::abs(drag(211, 101, 255, 255, 1) - 21.5) < 1e-6, "moving gradient participated in snapping");
+    require(std::abs(drag(101, 211, 255, 255, 1) - 21.5) < 1e-6, "stationary gradient became a snap target");
+    require(std::abs(drag(101, 101, 128, 255, 1) - 21.5) < 1e-6, "moving translucent layer participated in snapping");
+    require(std::abs(drag(101, 101, 255, 128, 1) - 21.5) < 1e-6, "stationary translucent layer became a snap target");
+    require(std::abs(drag(211, 101, 255, 255, 1000) - 21.5) < 1e-6, "gradient selection was snapped");
+    canvas->setAutomaticSnapping(false);
+}
+
 void liningCaps() {
     QVector<gui::PenPoint> points{{{0, 0}, gui::PenPointKind::Hard}, {{100, 0}, gui::PenPointKind::Hard}};
     points.front().endCap = 0;
@@ -1030,6 +1088,7 @@ int main(int argc, char **argv) {
         actions(harness);
         liveryMoves(harness);
         moveAutoSelection(harness);
+        gradientSnapping(harness);
         liningCaps();
         toolSettingsControls(harness);
     } catch (const std::exception &error) {

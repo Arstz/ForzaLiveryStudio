@@ -13,6 +13,7 @@
 #include <QtOpenGLWidgets>
 
 #include <functional>
+#include <atomic>
 #include <memory>
 #include <optional>
 
@@ -31,6 +32,8 @@ struct Project;
 namespace gui {
 
 class EditorState;
+
+QJsonObject profileCarLoading(const QString &path, bool loadTextures, int repetitions, bool verifyUnwrap);
 
 class CarPreviewWidget final : public QOpenGLWidget {
     Q_OBJECT
@@ -130,8 +133,14 @@ private:
     fls::ManufacturerColorPalette manufacturerColors_;
     bool modelUploadPending_ = false;
     bool modelFitPending_ = false;
-    std::unique_ptr<QTemporaryDir> extractedCarDir_;
+    std::shared_ptr<QTemporaryDir> extractedCarDir_;
     QString loadedCarPath_;
+    QString loadedCarKey_;
+    QString pendingCarKey_;
+    std::vector<CarLoadCallback> carLoadCallbacks_;
+    std::shared_ptr<std::atomic_bool> carLoadCancelled_;
+    QElapsedTimer carLoadTimer_;
+    QJsonObject carLoadTimings_;
     quint64 carLoadGeneration_ = 0;
     bool modelLoadPending_ = false;
     bool graphicsInitializationAttempted_ = false;

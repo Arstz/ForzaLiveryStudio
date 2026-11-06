@@ -3,8 +3,11 @@
 #include "binary_io.h"
 
 #include <QDir>
+#include <QDateTime>
 #include <QFile>
 #include <QFileInfo>
+#include <QMutex>
+#include <QTemporaryDir>
 
 #include <zlib.h>
 
@@ -357,6 +360,38 @@ bool extractZipArchive(const QString &zipPath, const QString &destinationDir, QS
     }
 
     return true;
+}
+
+std::shared_ptr<QTemporaryDir> sharedZipExtraction(
+    const QString &zipPath, QString *error, bool *reused) {
+    static QMutex mutex;
+    static QHash<QString, std::weak_ptr<QTemporaryDir>> extractions;
+    const QFileInfo info(zipPath);
+    const QString key = info.canonicalFilePath() + QLatin1Char('|') + QString::number(info.size())
+        + QLatin1Char('|') + QString::number(info.lastModified().toMSecsSinceEpoch());
+    QMutexLocker lock(&mutex);
+    if (reused != nullptr) {
+        *reused = false;
+    }
+    for (auto entry = extractions.begin(); entry != extractions.end();) {
+        entry = entry->expired() ? extractions.erase(entry) : ++entry;
+    }
+    if (const auto existing = extractions.value(key).lock()) {
+        if (reused != nullptr) {
+            *reused = true;
+        }
+        return existing;
+    }
+    auto directory = std::make_shared<QTemporaryDir>();
+    if (!directory->isValid() || !extractZipArchive(zipPath, directory->path(), error)) {
+        if (!directory->isValid() && error != nullptr) {
+            *error = QStringLiteral("cannot create temporary directory for %1").arg(zipPath);
+        }
+        return {};
+    }
+    extractions.insert(key, directory);
+
+    return directory;
 }
 
 QHash<QString, QByteArray> readZipEntries(

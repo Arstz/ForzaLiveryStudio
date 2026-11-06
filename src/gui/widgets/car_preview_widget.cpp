@@ -15,10 +15,12 @@
 #include <QColorDialog>
 #include <QComboBox>
 #include <QDir>
+#include <QElapsedTimer>
 #include <QFile>
 #include <QFrame>
 #include <QHBoxLayout>
 #include <QJsonDocument>
+#include <QJsonArray>
 #include <QJsonObject>
 #include <QLabel>
 #include <QPainter>
@@ -1191,26 +1193,36 @@ struct PreparedCar {
     fls::LiveryMaskSet liveryMasks;
     fls::ManufacturerColorPalette manufacturerColors;
     std::vector<CarUnwrapOverlaySet> carUnwrapOverlaySets;
-    std::unique_ptr<QTemporaryDir> extractedCarDir;
+    std::shared_ptr<QTemporaryDir> extractedCarDir;
     QString loadedCarPath;
     QString liveryMasksDir;
 };
 
 std::shared_ptr<PreparedCar> prepareCar(
-    const QString &path, bool loadCarTextures, QString *error) {
+    const QString &path, bool loadCarTextures, QString *error, QJsonObject *timings = nullptr,
+    const std::function<bool()> &cancelled = {}) {
     static QMutex loadMutex;
-    QMutexLocker lock(&loadMutex);
-    QString loadPath = path;
-    std::unique_ptr<QTemporaryDir> extracted;
-    if (path.endsWith(QStringLiteral(".zip"), Qt::CaseInsensitive)) {
-        extracted = std::make_unique<QTemporaryDir>();
-        if (!extracted->isValid()) {
-            if (error != nullptr) {
-                *error = QStringLiteral("cannot create temporary directory for %1").arg(path);
-            }
-            return {};
+    QElapsedTimer timer;
+    qint64 previousTime = 0;
+    timer.start();
+    const auto checkpoint = [&](const QString &stage) {
+        const qint64 currentTime = timer.nsecsElapsed();
+        if (timings != nullptr) {
+            timings->insert(stage, (currentTime - previousTime) / 1000000.0);
         }
-        if (!fls::extractZipArchive(path, extracted->path(), error)) {
+        previousTime = currentTime;
+    };
+    QMutexLocker lock(&loadMutex);
+    checkpoint(QStringLiteral("wait_ms"));
+    if (cancelled && cancelled()) {
+        return {};
+    }
+    QString loadPath = path;
+    std::shared_ptr<QTemporaryDir> extracted;
+    bool extractionReused = false;
+    if (path.endsWith(QStringLiteral(".zip"), Qt::CaseInsensitive)) {
+        extracted = fls::sharedZipExtraction(path, error, &extractionReused);
+        if (!extracted) {
             return {};
         }
         loadPath = findCarbin(extracted->path());
@@ -1221,6 +1233,10 @@ std::shared_ptr<PreparedCar> prepareCar(
             return {};
         }
     }
+    checkpoint(QStringLiteral("extract_ms"));
+    if (timings != nullptr) {
+        timings->insert(QStringLiteral("extraction_reused"), extractionReused);
+    }
 
     const fls::WheelSizing wheelSizing =
         wheelSizingForModelCode(QFileInfo(loadPath).completeBaseName());
@@ -1230,41 +1246,94 @@ std::shared_ptr<PreparedCar> prepareCar(
     if (model.meshes.empty()) {
         return {};
     }
+    checkpoint(QStringLiteral("geometry_ms"));
     appendSharedTireB(model, path, wheelSizing);
+    checkpoint(QStringLiteral("tires_ms"));
     assignSharedSlotMaterials(model);
     resolveExteriorMaterials(model, path, QFileInfo(loadPath).absolutePath(), loadCarTextures);
+    checkpoint(QStringLiteral("materials_ms"));
 
     const QDir carDir = QFileInfo(loadPath).absoluteDir();
     auto prepared = std::make_shared<PreparedCar>();
     prepared->model = std::move(model);
     prepared->manufacturerColors = loadManufacturerColors(carDir.absolutePath(), path);
+    checkpoint(QStringLiteral("manufacturer_ms"));
     prepared->extractedCarDir = std::move(extracted);
     prepared->loadedCarPath = path;
+    lock.unlock();
+    if (cancelled && cancelled()) {
+        return {};
+    }
 
     const QString masksDir = carDir.filePath(QStringLiteral("LiveryMasks"));
     if (QFileInfo::exists(masksDir)) {
         prepared->liveryMasks = fls::loadLiveryMasks(masksDir);
+        checkpoint(QStringLiteral("masks_ms"));
         prepared->liveryMasksDir = masksDir;
         QSet<int> selectablePartTypes;
         for (int partType : kSelectablePartTypes) {
             selectablePartTypes.insert(partType);
         }
-        prepared->carUnwrapOverlaySets.reserve(
-            static_cast<size_t>(prepared->model.lodCount()));
-        for (int lodIndex = 0;
-             lodIndex < prepared->model.lodCount();
-             ++lodIndex) {
-            prepared->carUnwrapOverlaySets.push_back(
-                buildCarUnwrapOverlaySet(
-                    prepared->model, prepared->liveryMasks,
-                    selectablePartTypes, lodIndex));
+        QJsonObject unwrapTimings;
+        prepared->carUnwrapOverlaySets = buildCarUnwrapOverlaySets(
+            prepared->model, prepared->liveryMasks, selectablePartTypes,
+            timings != nullptr ? &unwrapTimings : nullptr, cancelled);
+        if (timings != nullptr) {
+            timings->insert(QStringLiteral("unwrap_stages"), unwrapTimings);
         }
+        checkpoint(QStringLiteral("unwrap_ms"));
+    }
+    if (cancelled && cancelled()) {
+        return {};
+    }
+    if (timings != nullptr) {
+        timings->insert(QStringLiteral("total_ms"), timer.nsecsElapsed() / 1000000.0);
     }
 
     return prepared;
 }
 
 } // namespace
+
+QJsonObject profileCarLoading(const QString &path, bool loadTextures, int repetitions, bool verifyUnwrap) {
+    QJsonArray runs;
+    std::shared_ptr<QTemporaryDir> extraction;
+    for (int repetition = 0; repetition < repetitions; ++repetition) {
+        QJsonObject timings;
+        QString error;
+        std::shared_ptr<PreparedCar> prepared = prepareCar(path, loadTextures, &error, &timings);
+        if (!prepared) {
+            return {{QStringLiteral("error"), error}, {QStringLiteral("runs"), runs}};
+        }
+        extraction = prepared->extractedCarDir;
+        timings.insert(QStringLiteral("meshes"), static_cast<qint64>(prepared->model.meshes.size()));
+        timings.insert(QStringLiteral("variant_meshes"), static_cast<qint64>(prepared->model.variantMeshes.size()));
+        timings.insert(QStringLiteral("lods"), prepared->model.lodCount());
+        timings.insert(QStringLiteral("manufacturer_colors"), prepared->manufacturerColors.colors.size());
+        if (verifyUnwrap && prepared->liveryMasks.valid()) {
+            QSet<int> partTypes;
+            bool matches = true;
+            for (int partType : kSelectablePartTypes) {
+                partTypes.insert(partType);
+            }
+            for (int lod = 0; lod < prepared->model.lodCount(); ++lod) {
+                matches = matches && buildCarUnwrapOverlaySet(
+                    prepared->model, prepared->liveryMasks, partTypes, lod)
+                    == prepared->carUnwrapOverlaySets[lod];
+            }
+            timings.insert(QStringLiteral("unwrap_matches_serial"), matches);
+            if (!matches) {
+                runs.append(timings);
+                return {{QStringLiteral("error"), QStringLiteral("parallel unwrap differs from serial calculation")},
+                        {QStringLiteral("runs"), runs}};
+            }
+        }
+        runs.append(timings);
+    }
+
+    return {{QStringLiteral("path"), path}, {QStringLiteral("textures"), loadTextures},
+            {QStringLiteral("runs"), runs}};
+}
 
 CarPreviewWidget::CarPreviewWidget(QWidget *parent)
     : QOpenGLWidget(parent) {
@@ -1430,9 +1499,27 @@ CarPreviewWidget::CarPreviewWidget(QWidget *parent)
     updateLodControl();
     setSidePanelVisible(false);
     updateModelStatus();
+    connect(this, &QOpenGLWidget::frameSwapped, this, [this]() {
+        if (!carLoadTimings_.contains(QStringLiteral("render_submit_ms"))
+            || carLoadTimings_.contains(QStringLiteral("first_frame_ms"))) {
+            return;
+        }
+        carLoadTimings_.insert(QStringLiteral("first_frame_ms"), carLoadTimer_.nsecsElapsed() / 1000000.0);
+        if (qEnvironmentVariableIsSet("FLS_PERF_LOG") || qEnvironmentVariableIsSet("FORZA_PERF_LOG")) {
+            qInfo().noquote() << "[car-load]" << QJsonDocument(carLoadTimings_).toJson(QJsonDocument::Compact);
+        }
+        const QString reportPath = qEnvironmentVariable("FLS_MODEL_LOAD_REPORT");
+        if (!reportPath.isEmpty()) {
+            QFile report(reportPath);
+            if (report.open(QIODevice::WriteOnly)) {
+                report.write(QJsonDocument(carLoadTimings_).toJson());
+            }
+        }
+    });
 }
 
 CarPreviewWidget::~CarPreviewWidget() {
+    cancelCarLoad();
     makeCurrent();
     carRenderer_.release();
     shapeRenderer_.release();
@@ -1441,30 +1528,64 @@ CarPreviewWidget::~CarPreviewWidget() {
 
 void CarPreviewWidget::loadCarAsync(const QString &path, CarLoadCallback callback) {
     const bool loadCarTextures = loadCarTextures_;
+    const QString key = assetFileIdentity(path) + QLatin1Char('|') + QString::number(loadCarTextures);
+    if (modelLoadPending_ && pendingCarKey_ == key) {
+        if (callback) {
+            carLoadCallbacks_.push_back(std::move(callback));
+        }
+        return;
+    }
+    if (!modelLoadPending_ && hasModel() && loadedCarKey_ == key) {
+        if (callback) {
+            callback(true, {});
+        }
+        return;
+    }
+    cancelCarLoad();
+    carLoadTimer_.start();
+    carLoadTimings_ = {};
+    pendingCarKey_ = key;
+    carLoadCancelled_ = std::make_shared<std::atomic_bool>(false);
+    const auto cancellation = carLoadCancelled_;
+    if (callback) {
+        carLoadCallbacks_.push_back(std::move(callback));
+    }
     const quint64 generation = ++carLoadGeneration_;
 
     modelLoadPending_ = true;
     updateModelStatus();
     QPointer<CarPreviewWidget> guard(this);
     QThreadPool::globalInstance()->start(
-        [guard, path, loadCarTextures, generation, callback = std::move(callback)]() mutable {
+        [guard, path, key, loadCarTextures, generation, cancellation, started = carLoadTimer_]() mutable {
             QString error;
+            QJsonObject timings;
+            const auto cancelled = [cancellation]() { return cancellation->load(std::memory_order_relaxed); };
+            timings.insert(QStringLiteral("worker_start_ms"), started.nsecsElapsed() / 1000000.0);
             std::shared_ptr<PreparedCar> prepared =
-                prepareCar(path, loadCarTextures, &error);
-            if (!guard) {
+                prepareCar(path, loadCarTextures, &error, &timings, cancelled);
+            timings.insert(QStringLiteral("cpu_ready_ms"), started.nsecsElapsed() / 1000000.0);
+            if (!guard || cancelled()) {
                 return;
             }
             QMetaObject::invokeMethod(
                 guard,
-                [guard, prepared = std::move(prepared), error = std::move(error),
-                 generation, callback = std::move(callback)]() mutable {
+                [guard, key, prepared = std::move(prepared), error = std::move(error),
+                 generation, timings = std::move(timings)]() mutable {
                     if (!guard || guard->carLoadGeneration_ != generation) {
                         return;
                     }
+                    QElapsedTimer adoption;
+                    adoption.start();
+                    timings.insert(QStringLiteral("gui_dispatch_ms"), guard->carLoadTimer_.nsecsElapsed() / 1000000.0
+                        - timings.value(QStringLiteral("cpu_ready_ms")).toDouble());
+                    guard->carLoadTimings_ = std::move(timings);
+                    guard->carLoadTimings_.insert(QStringLiteral("path"), prepared ? prepared->loadedCarPath : QString());
+                    std::vector<CarLoadCallback> callbacks = std::move(guard->carLoadCallbacks_);
+                    guard->pendingCarKey_.clear();
                     guard->modelLoadPending_ = false;
                     if (!prepared) {
                         guard->updateModelStatus();
-                        if (callback) {
+                        for (const CarLoadCallback &callback : callbacks) {
                             callback(false, error);
                         }
                         return;
@@ -1474,6 +1595,7 @@ void CarPreviewWidget::loadCarAsync(const QString &path, CarLoadCallback callbac
                     guard->manufacturerColors_ = std::move(prepared->manufacturerColors);
                     guard->extractedCarDir_ = std::move(prepared->extractedCarDir);
                     guard->loadedCarPath_ = std::move(prepared->loadedCarPath);
+                    guard->loadedCarKey_ = key;
                     guard->liveryMasks_ = std::move(prepared->liveryMasks);
                     guard->carUnwrapOverlaySets_ = std::move(
                         prepared->carUnwrapOverlaySets);
@@ -1489,7 +1611,8 @@ void CarPreviewWidget::loadCarAsync(const QString &path, CarLoadCallback callbac
                     guard->updateLodControl();
                     guard->updateModelStatus();
                     guard->update();
-                    if (callback) {
+                    guard->carLoadTimings_.insert(QStringLiteral("gui_adopt_ms"), adoption.nsecsElapsed() / 1000000.0);
+                    for (const CarLoadCallback &callback : callbacks) {
                         callback(true, {});
                     }
                 },
@@ -1498,6 +1621,12 @@ void CarPreviewWidget::loadCarAsync(const QString &path, CarLoadCallback callbac
 }
 
 void CarPreviewWidget::cancelCarLoad() {
+    if (carLoadCancelled_) {
+        carLoadCancelled_->store(true, std::memory_order_relaxed);
+    }
+    pendingCarKey_.clear();
+    carLoadCallbacks_.clear();
+    carLoadTimings_ = {};
     ++carLoadGeneration_;
     modelLoadPending_ = false;
     updateModelStatus();
@@ -1544,6 +1673,7 @@ QImage CarPreviewWidget::renderThumbnail(const QSize &size) {
 void CarPreviewWidget::clearModel() {
     cancelCarLoad();
     loadedCarPath_.clear();
+    loadedCarKey_.clear();
     manufacturerColors_ = {};
     selectedLodIndex_ = 0;
     selectedPartOptions_.clear();
@@ -1559,7 +1689,6 @@ void CarPreviewWidget::clearModel() {
     rebuildPartsPanel();
     updateCarColorControl();
     updateLodControl();
-    extractedCarDir_.reset();
     liveryMasks_ = {};
     carUnwrapOverlay_ = {};
     carUnwrapOverlaySets_.clear();
@@ -1650,7 +1779,6 @@ void CarPreviewWidget::setCarUnwrapSection(int liverySectionSlot) {
 
 void CarPreviewWidget::setProject(fls::Project *project) {
     project_ = project;
-    modelUploadPending_ = hasModel();
     invalidateCachedLivery();
     updateCarColorControl();
     update();
@@ -1669,7 +1797,6 @@ void CarPreviewWidget::setEditorState(EditorState *state) {
         connect(state_, &EditorState::transformLiveChanged, this, &CarPreviewWidget::markLiverySectionsDirty);
         connect(state_, &EditorState::canvasRepaintRequested, this, &CarPreviewWidget::markLiveryDirtyImmediate);
         connect(state_, &EditorState::projectPaintChanged, this, [this]() {
-            modelUploadPending_ = hasModel();
             updateCarColorControl();
             update();
         });
@@ -1752,7 +1879,6 @@ void CarPreviewWidget::chooseRegionColor(
     }
     state_->commitProjectEdit();
     state_->noteProjectPaintChanged();
-    modelUploadPending_ = true;
     update();
 }
 
@@ -1787,7 +1913,6 @@ void CarPreviewWidget::chooseRegionFinish(
     }
     state_->commitProjectEdit();
     state_->noteProjectPaintChanged();
-    modelUploadPending_ = true;
     update();
 }
 
@@ -1811,7 +1936,6 @@ void CarPreviewWidget::clearPaintOverrides() {
     project_->liveryPaint.materials.clear();
     state_->commitProjectEdit();
     state_->noteProjectPaintChanged();
-    modelUploadPending_ = true;
     update();
 }
 
@@ -2075,6 +2199,20 @@ void CarPreviewWidget::paintGL() {
         return;
     }
     QOpenGLFunctions *functions = ctx->functions();
+    const bool traceLoad = modelUploadPending_ && carLoadTimings_.contains(QStringLiteral("cpu_ready_ms"))
+        && !carLoadTimings_.contains(QStringLiteral("first_frame_ms"));
+    QElapsedTimer frameTimer;
+    qint64 previousTime = 0;
+    if (traceLoad) {
+        frameTimer.start();
+    }
+    const auto checkpoint = [&](const QString &stage) {
+        if (traceLoad) {
+            const qint64 time = frameTimer.nsecsElapsed();
+            carLoadTimings_.insert(stage, (time - previousTime) / 1000000.0);
+            previousTime = time;
+        }
+    };
 
     if (modelUploadPending_ && carRenderer_.isInitialized()) {
         carRenderer_.uploadModel(model_, selectedLodIndex_);
@@ -2085,10 +2223,12 @@ void CarPreviewWidget::paintGL() {
         }
         updateModelStatus();
     }
+    checkpoint(QStringLiteral("gpu_model_upload_ms"));
     if (liveryMasksPending_ && carRenderer_.isInitialized()) {
         carRenderer_.setLivery(model_, liveryMasks_);
         liveryMasksPending_ = false;
     }
+    checkpoint(QStringLiteral("gpu_masks_ms"));
 
     GLuint liveryTexture = 0;
     if (project_ != nullptr && geometryLoaded_ && shapeRenderer_.isInitialized()) {
@@ -2211,6 +2351,7 @@ void CarPreviewWidget::paintGL() {
         }
         liveryTexture = liveryTexture_;
     }
+    checkpoint(QStringLiteral("livery_texture_ms"));
     const qreal dpr = devicePixelRatioF();
     const int pw = std::max(
         1, static_cast<int>(std::lround(previewViewportWidth() * dpr)));
@@ -2232,6 +2373,7 @@ void CarPreviewWidget::paintGL() {
         project_ != nullptr ? &project_->liveryPaint : nullptr,
         manufacturerColors_.colors.isEmpty() ? nullptr : &manufacturerColors_,
         paintFinishes_.loaded() ? &paintFinishes_ : nullptr);
+    checkpoint(QStringLiteral("render_submit_ms"));
 }
 
 void CarPreviewWidget::paintEvent(QPaintEvent *event) {

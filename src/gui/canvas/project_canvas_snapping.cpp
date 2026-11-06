@@ -1,6 +1,8 @@
 #include "project_canvas.h"
 
 #include "project_canvas_internal.h"
+#include "raster_decals.h"
+#include "selection_geometry.h"
 
 namespace gui {
 namespace {
@@ -21,6 +23,35 @@ bool visibleForSnapping(const fls::scene::Layer &layer) {
     return true;
 }
 
+bool shapeHasSnapEdges(const fls::scene::Shape &shape, const ShapeGeometryStore &geometry,
+                       QHash<int, bool> &vectorShapes, QHash<quint32, bool> &rasterShapes) {
+    if (shape.color[ColorByteAlpha] != 255) {
+        return false;
+    }
+    if (shape.raster) {
+        auto found = rasterShapes.constFind(shape.rasterId);
+        if (found == rasterShapes.cend()) {
+            const fls::RasterDecal decal = fls::sharedRasterDecals().decal(shape.rasterId);
+            bool eligible = false;
+            if (decal.valid()) {
+                const QImage image(reinterpret_cast<const uchar *>(decal.rgba.constData()),
+                                   decal.width, decal.height, decal.width * 4, QImage::Format_RGBA8888);
+                eligible = !rasterHasSoftAlpha(image);
+            }
+            found = rasterShapes.insert(shape.rasterId, eligible);
+        }
+
+        return found.value();
+    }
+    auto found = vectorShapes.constFind(shape.shapeId);
+    if (found == vectorShapes.cend()) {
+        const ShapeGeometry *visual = geometry.shape(shape.shapeId);
+        found = vectorShapes.insert(shape.shapeId, visual != nullptr && !vectorHasSoftAlpha(*visual));
+    }
+
+    return found.value();
+}
+
 QTransform scaleAroundAnchor(const QTransform &frame, const QPointF &anchor, const QPointF &factors) {
     QTransform scale;
 
@@ -37,6 +68,8 @@ void ProjectCanvas::captureDragSnapGeometry() {
     const auto targets = dragTransformTargetIds();
     const QSet<QString> movingIds(targets.cbegin(), targets.cend());
     QVector<GeometrySnapOutline> stationaryOutlines;
+    QHash<int, bool> vectorShapes;
+    QHash<quint32, bool> rasterShapes;
 
     drag_.snapOutlines.clear();
     drag_.snapTargets = {};
@@ -58,7 +91,7 @@ void ProjectCanvas::captureDragSnapGeometry() {
             }
         }
         if (entry.shape != nullptr) {
-            if (entry.shape->color[ColorByteAlpha] == 0) continue;
+            if (!shapeHasSnapEdges(*entry.shape, geometry_, vectorShapes, rasterShapes)) continue;
             body = shapeSelectionBody(*entry.shape);
         } else if (moving && entry.guide != nullptr) {
             body.addRect(sceneLocalRect(*entry.guide, geometry_));

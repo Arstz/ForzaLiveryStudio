@@ -125,6 +125,8 @@ active-section isolation.
 
 Move and resize snapping cache scene outlines at drag start. `geometry_snap.*`
 indexes stationary contour segments and geometry alignment coordinates. Drag
+outlines use fully opaque shape layers with hard alpha boundaries. Shape alpha
+eligibility is reused by visual identifier for the duration of the drag. Drag
 corrections are measured in canvas pixels and solved within the active movement
 or scale constraints, using each selected leaf's transformed geometry. The solver
 returns active alignment and contact indicators with the correction; the canvas
@@ -172,7 +174,42 @@ Core decoders read `.modelbin` geometry and materials, assemble `.carbin` parts,
 extract zipped car folders, and decode `.swatchbin` textures and `LiveryMasks/`.
 Model preparation, material resolution, and enabled texture decoding run outside
 the UI thread. Shared material tuning is applied when resolved; native texture
-loading is an opt-in setting. Bounded caches retain decoded resources.
+loading is an opt-in setting. Bounded caches retain decoded resources. BC7
+decoding shares its graphics device and shaders across textures.
+
+Unwrap preparation shares projection and mask paths across levels of detail,
+then schedules independent jobs for each part and side on workers assigned to
+each load according to Qt's available CPU thread count. Superseded loads cancel
+pending jobs.
+Concurrent requests for the same model share preparation, and unchanged models
+already loaded in the preview are reused. Paint edits update render parameters
+while retaining uploaded mesh geometry.
+
+The canvas keeps one rasterized unwrap and wireframe overlay in memory. Layer
+edits reuse that image; changes to the view, display density, overlay geometry,
+or visibility settings regenerate it.
+
+Unchanged ZIPs share temporary extraction directories through reference-counted
+leases. A preview retains its most recent extraction until replacement or
+destruction; directories are removed after their final lease is released.
+
+The headless loading profiler measures CPU preparation without opening the
+editor or creating an OpenGL context:
+
+```powershell
+.\build\Release\ForzaLiveryStudio.exe --profile-car-load <car.zip> --repeat 2 --output <report.json>
+```
+
+Add `--textures` to include native texture decoding. `--verify-unwrap` compares
+all computed outlines, wireframes, and part bindings with the serial calculation.
+Verification time is excluded from preparation timings. Unwrap stage timings
+sum worker time; `unwrap_ms` measures elapsed time. GPU upload and rendering
+time are outside this report.
+
+Set `FLS_MODEL_LOAD_REPORT` to a JSON file path to record the latest GUI load
+through its first presented frame. The report includes CPU preparation,
+dispatch delay, GUI adoption, mesh and mask upload, and livery texture creation.
+`FLS_PERF_LOG` also emits the completed load report through Qt logging.
 
 The scene renderer rasterizes livery sections into isolated paint regions. The
 car shader maps transformed UV3 through the mask atlas into those regions;

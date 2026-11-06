@@ -6,9 +6,16 @@
 #include <QString>
 #include <QStringList>
 
+#include <memory>
+
+class QTemporaryDir;
+
 namespace fls {
 
 bool extractZipArchive(const QString &zipPath, const QString &destinationDir, QString *error = nullptr);
+
+std::shared_ptr<QTemporaryDir> sharedZipExtraction(
+    const QString &zipPath, QString *error = nullptr, bool *reused = nullptr);
 
 QByteArray readZipEntry(const QString &zipPath, const QString &entryPath, QString *error = nullptr);
 

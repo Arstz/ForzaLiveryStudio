@@ -11,6 +11,7 @@
 #include <QtOpenGL>
 
 #include <memory>
+#include <functional>
 #include <vector>
 
 namespace fls {
@@ -27,6 +28,10 @@ CarUnwrapOverlaySet buildCarUnwrapOverlaySet(
     const fls::LiveryMaskSet &masks,
     const QSet<int> &selectablePartTypes,
     int lodIndex = 0);
+std::vector<CarUnwrapOverlaySet> buildCarUnwrapOverlaySets(
+    const fls::CarModel &model, const fls::LiveryMaskSet &masks,
+    const QSet<int> &selectablePartTypes, QJsonObject *timings = nullptr,
+    const std::function<bool()> &cancelled = {});
 
 class CarModelRenderer {
 public:

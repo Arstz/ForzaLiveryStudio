@@ -7,6 +7,8 @@
 #include <algorithm>
 #include <array>
 #include <cstring>
+#include <memory>
+#include <mutex>
 #include <optional>
 
 #ifdef Q_OS_WIN
@@ -290,6 +292,103 @@ QString hresultString(const char *step, HRESULT hr) {
         .arg(static_cast<quint32>(hr), 8, 16, QLatin1Char('0'));
 }
 
+struct Bc7Decoder {
+    Microsoft::WRL::ComPtr<ID3D11Device> device;
+    Microsoft::WRL::ComPtr<ID3D11DeviceContext> context;
+    Microsoft::WRL::ComPtr<ID3D11VertexShader> vs;
+    Microsoft::WRL::ComPtr<ID3D11PixelShader> ps;
+    Microsoft::WRL::ComPtr<ID3D11SamplerState> sampler;
+
+    bool initialize(QString *error) {
+        using Microsoft::WRL::ComPtr;
+
+        const D3D_FEATURE_LEVEL levels[] = {
+            D3D_FEATURE_LEVEL_11_1,
+            D3D_FEATURE_LEVEL_11_0,
+            D3D_FEATURE_LEVEL_10_1,
+            D3D_FEATURE_LEVEL_10_0,
+        };
+        D3D_FEATURE_LEVEL selectedLevel = D3D_FEATURE_LEVEL_11_0;
+        HRESULT hr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr,
+                                       D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+                                       levels, ARRAYSIZE(levels), D3D11_SDK_VERSION,
+                                       &device, &selectedLevel, &context);
+        if (FAILED(hr)) {
+            hr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_WARP, nullptr,
+                                   D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+                                   levels, ARRAYSIZE(levels), D3D11_SDK_VERSION,
+                                   &device, &selectedLevel, &context);
+        }
+        if (FAILED(hr)) {
+            setError(error, hresultString("D3D11CreateDevice", hr));
+            return false;
+        }
+
+        static constexpr char kVs[] = R"(
+    struct VSOut {
+        float4 pos : SV_POSITION;
+        float2 uv : TEXCOORD0;
+    };
+    VSOut main(uint id : SV_VertexID) {
+        float2 pos[3] = { float2(-1.0, -1.0), float2(-1.0, 3.0), float2(3.0, -1.0) };
+        float2 uv[3] = { float2(0.0, 1.0), float2(0.0, -1.0), float2(2.0, 1.0) };
+        VSOut o;
+        o.pos = float4(pos[id], 0.0, 1.0);
+        o.uv = uv[id];
+        return o;
+    }
+    )";
+        static constexpr char kPs[] = R"(
+    Texture2D tex0 : register(t0);
+    SamplerState samp0 : register(s0);
+    float4 main(float4 pos : SV_POSITION, float2 uv : TEXCOORD0) : SV_Target {
+        return tex0.SampleLevel(samp0, uv, 0.0);
+    }
+    )";
+
+        ComPtr<ID3DBlob> vsBlob;
+        ComPtr<ID3DBlob> psBlob;
+        ComPtr<ID3DBlob> shaderError;
+        hr = D3DCompile(kVs, std::strlen(kVs), nullptr, nullptr, nullptr, "main", "vs_4_0",
+                        0, 0, &vsBlob, &shaderError);
+        if (FAILED(hr)) {
+            setError(error, hresultString("D3DCompile(VS)", hr));
+            return false;
+        }
+        hr = D3DCompile(kPs, std::strlen(kPs), nullptr, nullptr, nullptr, "main", "ps_4_0",
+                        0, 0, &psBlob, &shaderError);
+        if (FAILED(hr)) {
+            setError(error, hresultString("D3DCompile(PS)", hr));
+            return false;
+        }
+
+        hr = device->CreateVertexShader(vsBlob->GetBufferPointer(), vsBlob->GetBufferSize(), nullptr, &vs);
+        if (FAILED(hr)) {
+            setError(error, hresultString("CreateVertexShader", hr));
+            return false;
+        }
+        hr = device->CreatePixelShader(psBlob->GetBufferPointer(), psBlob->GetBufferSize(), nullptr, &ps);
+        if (FAILED(hr)) {
+            setError(error, hresultString("CreatePixelShader", hr));
+            return false;
+        }
+
+        D3D11_SAMPLER_DESC samplerDesc{};
+        samplerDesc.Filter = D3D11_FILTER_MIN_MAG_MIP_POINT;
+        samplerDesc.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP;
+        samplerDesc.AddressV = D3D11_TEXTURE_ADDRESS_CLAMP;
+        samplerDesc.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
+        samplerDesc.MaxLOD = D3D11_FLOAT32_MAX;
+        hr = device->CreateSamplerState(&samplerDesc, &sampler);
+        if (FAILED(hr)) {
+            setError(error, hresultString("CreateSamplerState", hr));
+            return false;
+        }
+
+        return true;
+    }
+};
+
 SwatchImage decodeBc7Surface(const QByteArray &data, int width, int height, QString *error) {
     const int blocksWide = (width + 3) / 4;
     const int blocksHigh = (height + 3) / 4;
@@ -300,30 +399,22 @@ SwatchImage decodeBc7Surface(const QByteArray &data, int width, int height, QStr
     }
 
     using Microsoft::WRL::ComPtr;
-
-    ComPtr<ID3D11Device> device;
-    ComPtr<ID3D11DeviceContext> context;
-    const D3D_FEATURE_LEVEL levels[] = {
-        D3D_FEATURE_LEVEL_11_1,
-        D3D_FEATURE_LEVEL_11_0,
-        D3D_FEATURE_LEVEL_10_1,
-        D3D_FEATURE_LEVEL_10_0,
-    };
-    D3D_FEATURE_LEVEL selectedLevel = D3D_FEATURE_LEVEL_11_0;
-    HRESULT hr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr,
-                                   D3D11_CREATE_DEVICE_BGRA_SUPPORT,
-                                   levels, ARRAYSIZE(levels), D3D11_SDK_VERSION,
-                                   &device, &selectedLevel, &context);
-    if (FAILED(hr)) {
-        hr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_WARP, nullptr,
-                               D3D11_CREATE_DEVICE_BGRA_SUPPORT,
-                               levels, ARRAYSIZE(levels), D3D11_SDK_VERSION,
-                               &device, &selectedLevel, &context);
+    static std::mutex decoderMutex;
+    static std::unique_ptr<Bc7Decoder> decoder;
+    const std::lock_guard lock(decoderMutex);
+    if (!decoder) {
+        auto initialized = std::make_unique<Bc7Decoder>();
+        if (!initialized->initialize(error)) {
+            return {};
+        }
+        decoder = std::move(initialized);
     }
-    if (FAILED(hr)) {
-        setError(error, hresultString("D3D11CreateDevice", hr));
-        return {};
-    }
+    const auto &device = decoder->device;
+    const auto &context = decoder->context;
+    const auto &vs = decoder->vs;
+    const auto &ps = decoder->ps;
+    const auto &sampler = decoder->sampler;
+    HRESULT hr = S_OK;
 
     D3D11_TEXTURE2D_DESC srcDesc{};
     srcDesc.Width = static_cast<UINT>(width);
@@ -375,70 +466,6 @@ SwatchImage decodeBc7Surface(const QByteArray &data, int width, int height, QStr
         return {};
     }
 
-    static constexpr char kVs[] = R"(
-struct VSOut {
-    float4 pos : SV_POSITION;
-    float2 uv : TEXCOORD0;
-};
-VSOut main(uint id : SV_VertexID) {
-    float2 pos[3] = { float2(-1.0, -1.0), float2(-1.0, 3.0), float2(3.0, -1.0) };
-    float2 uv[3] = { float2(0.0, 1.0), float2(0.0, -1.0), float2(2.0, 1.0) };
-    VSOut o;
-    o.pos = float4(pos[id], 0.0, 1.0);
-    o.uv = uv[id];
-    return o;
-}
-)";
-    static constexpr char kPs[] = R"(
-Texture2D tex0 : register(t0);
-SamplerState samp0 : register(s0);
-float4 main(float4 pos : SV_POSITION, float2 uv : TEXCOORD0) : SV_Target {
-    return tex0.SampleLevel(samp0, uv, 0.0);
-}
-)";
-
-    ComPtr<ID3DBlob> vsBlob;
-    ComPtr<ID3DBlob> psBlob;
-    ComPtr<ID3DBlob> shaderError;
-    hr = D3DCompile(kVs, std::strlen(kVs), nullptr, nullptr, nullptr, "main", "vs_4_0",
-                    0, 0, &vsBlob, &shaderError);
-    if (FAILED(hr)) {
-        setError(error, hresultString("D3DCompile(VS)", hr));
-        return {};
-    }
-    hr = D3DCompile(kPs, std::strlen(kPs), nullptr, nullptr, nullptr, "main", "ps_4_0",
-                    0, 0, &psBlob, &shaderError);
-    if (FAILED(hr)) {
-        setError(error, hresultString("D3DCompile(PS)", hr));
-        return {};
-    }
-
-    ComPtr<ID3D11VertexShader> vs;
-    ComPtr<ID3D11PixelShader> ps;
-    hr = device->CreateVertexShader(vsBlob->GetBufferPointer(), vsBlob->GetBufferSize(), nullptr, &vs);
-    if (FAILED(hr)) {
-        setError(error, hresultString("CreateVertexShader", hr));
-        return {};
-    }
-    hr = device->CreatePixelShader(psBlob->GetBufferPointer(), psBlob->GetBufferSize(), nullptr, &ps);
-    if (FAILED(hr)) {
-        setError(error, hresultString("CreatePixelShader", hr));
-        return {};
-    }
-
-    D3D11_SAMPLER_DESC samplerDesc{};
-    samplerDesc.Filter = D3D11_FILTER_MIN_MAG_MIP_POINT;
-    samplerDesc.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP;
-    samplerDesc.AddressV = D3D11_TEXTURE_ADDRESS_CLAMP;
-    samplerDesc.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
-    samplerDesc.MaxLOD = D3D11_FLOAT32_MAX;
-    ComPtr<ID3D11SamplerState> sampler;
-    hr = device->CreateSamplerState(&samplerDesc, &sampler);
-    if (FAILED(hr)) {
-        setError(error, hresultString("CreateSamplerState", hr));
-        return {};
-    }
-
     const float clear[4] = {0, 0, 0, 0};
     context->ClearRenderTargetView(rtv.Get(), clear);
     ID3D11RenderTargetView *rtvs[] = {rtv.Get()};
@@ -457,6 +484,7 @@ float4 main(float4 pos : SV_POSITION, float2 uv : TEXCOORD0) : SV_Target {
     context->PSSetShaderResources(0, 1, srvs);
     context->PSSetSamplers(0, 1, samplers);
     context->Draw(3, 0);
+    context->ClearState();
 
     D3D11_TEXTURE2D_DESC stagingDesc = dstDesc;
     stagingDesc.Usage = D3D11_USAGE_STAGING;

@@ -3,7 +3,7 @@
 #include "bucket_fill.h"
 #include "compact_fit_catalog.h"
 #include "svg_vector_objects.h"
-#include "car_unwrap_overlay.h"
+#include "car_unwrap_overlay_cache.h"
 #include "canvas_camera.h"
 #include "geometry_snap.h"
 #include "core_types.h"
@@ -678,7 +678,7 @@ private:
     mutable QHash<QString, QSharedPointer<QSvgRenderer>> guideSvgRendererCache_;
     mutable QHash<QString, QImage> sectionCanvasCache_;
     std::optional<FlipCycleState> flipCycle_;
-    CarUnwrapOverlay carUnwrapOverlay_;
+    CarUnwrapOverlayCache carUnwrapOverlay_;
     bool carUnwrapVisible_ = false;
     bool sectionWireframeVisible_ = false;
     RegionOverlayState region_;

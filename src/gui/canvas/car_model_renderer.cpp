@@ -6,15 +6,20 @@
 #include "region_fill.h"
 
 #include <QDebug>
+#include <QElapsedTimer>
 #include <QHash>
 #include <QOpenGLContext>
 #include <QOpenGLExtraFunctions>
 #include <QOpenGLFunctions>
+#include <QScopedValueRollback>
+#include <QThread>
 
 #include <clipper2/clipper.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
+#include <future>
 #include <limits>
 #include <optional>
 #include <utility>
@@ -23,6 +28,38 @@ namespace gui {
 namespace {
 
 constexpr double kUnwrapPathScale = 1024.0;
+using UnwrapCoveragePaths = std::array<Clipper2Lib::Paths64, fls::kLiverySideCount>;
+
+struct UnwrapTimings {
+    double projection = 0.0;
+    double coverage = 0.0;
+    double geometry = 0.0;
+    double clipping = 0.0;
+    double curves = 0.0;
+    double wireframe = 0.0;
+};
+
+thread_local UnwrapTimings *unwrapTimings = nullptr;
+
+class UnwrapStageTimer {
+public:
+    explicit UnwrapStageTimer(double UnwrapTimings::*field)
+        : value_(unwrapTimings != nullptr ? &(unwrapTimings->*field) : nullptr) {
+        if (value_ != nullptr) {
+            timer_.start();
+        }
+    }
+
+    ~UnwrapStageTimer() {
+        if (value_ != nullptr) {
+            *value_ += timer_.nsecsElapsed() / 1000000.0;
+        }
+    }
+
+private:
+    QElapsedTimer timer_;
+    double *value_ = nullptr;
+};
 
 template<typename BufferSet>
 void uploadCarMeshGeometry(BufferSet &buffers, QOpenGLShaderProgram &program,
@@ -1644,6 +1681,7 @@ struct LiveryProjectionData {
 
 LiveryProjectionData buildLiveryProjectionData(
     const fls::CarModel &model, const fls::LiveryMaskSet &masks) {
+    const UnwrapStageTimer timer(&UnwrapTimings::projection);
     std::array<float, fls::kLiverySideCount> minimumX;
     std::array<float, fls::kLiverySideCount> maximumX;
     std::array<float, fls::kLiverySideCount> minimumY;
@@ -1902,6 +1940,7 @@ QPainterPath projectedLiveryGeometryPath(
     const fls::LiveryMaskSet &masks,
     const LiveryProjectionData &projection,
     int sideIndex) {
+    const UnwrapStageTimer timer(&UnwrapTimings::geometry);
     QPainterPath path;
     path.setFillRule(Qt::WindingFill);
     for (const fls::CarMesh *mesh : meshes) {
@@ -1932,6 +1971,7 @@ QPainterPath projectedLiveryWireframePath(
     const fls::LiveryMaskSet &masks,
     const LiveryProjectionData &projection,
     int sideIndex) {
+    const UnwrapStageTimer timer(&UnwrapTimings::wireframe);
     QPainterPath path;
     for (const fls::CarMesh *mesh : meshes) {
         QSet<quint64> edges;
@@ -1975,15 +2015,21 @@ Clipper2Lib::Paths64 unwrapClipperPaths(const QPainterPath &path) {
 }
 
 QPainterPath rdpUnwrapPath(const QPainterPath &geometry,
-                           const QPainterPath &coverage) {
+                           const Clipper2Lib::Paths64 &coverage) {
     const RegionPenLoopConversionOptions options;
     Clipper2Lib::Clipper64 clipper;
     Clipper2Lib::Paths64 clipped;
-    clipper.AddSubject(unwrapClipperPaths(geometry));
-    clipper.AddClip(unwrapClipperPaths(coverage));
-    if (!clipper.Execute(Clipper2Lib::ClipType::Intersection,
-                         Clipper2Lib::FillRule::NonZero, clipped)) {
+    if (geometry.isEmpty() || coverage.empty()) {
         return {};
+    }
+    {
+        const UnwrapStageTimer timer(&UnwrapTimings::clipping);
+        clipper.AddSubject(unwrapClipperPaths(geometry));
+        clipper.AddClip(coverage);
+        if (!clipper.Execute(Clipper2Lib::ClipType::Intersection,
+                             Clipper2Lib::FillRule::NonZero, clipped)) {
+            return {};
+        }
     }
 
     QPainterPath path;
@@ -1999,6 +2045,7 @@ QPainterPath rdpUnwrapPath(const QPainterPath &geometry,
                 static_cast<double>(point.x) / kUnwrapPathScale,
                 static_cast<double>(point.y) / kUnwrapPathScale));
         }
+        const UnwrapStageTimer timer(&UnwrapTimings::curves);
         const QVector<PenPoint> points = fitClosedPolygonCubic(polygon, options.simplifyEpsilon);
         const PenContour contour = buildPenContour(points);
         if (contour.valid()) {
@@ -2067,7 +2114,7 @@ CarUnwrapOverlay buildCarUnwrapOverlayForMeshes(
     const std::vector<const fls::CarMesh *> &meshes,
     const fls::LiveryMaskSet &masks,
     const LiveryProjectionData &projection,
-    const std::array<QPainterPath, fls::kLiverySideCount> &coveragePaths) {
+    const UnwrapCoveragePaths &coveragePaths) {
     CarUnwrapOverlay overlay;
     for (int sideIndex = 0;
          sideIndex < fls::kLiverySideCount;
@@ -2113,7 +2160,7 @@ CarUnwrapOverlay buildCarUnwrapOverlay(const fls::CarModel &model,
                 baseMeshPointers, masks, projection, sideIndex);
         }
         overlay.sides[sideIndex].path = rdpUnwrapPath(
-            geometry, coverage);
+            geometry, unwrapClipperPaths(coverage));
         overlay.sides[sideIndex].wireframe = projectedLiveryWireframePath(
             selectedMeshPointers, masks, projection, sideIndex);
         if (overlay.sides[sideIndex].wireframe.isEmpty()
@@ -2126,60 +2173,58 @@ CarUnwrapOverlay buildCarUnwrapOverlay(const fls::CarModel &model,
     return overlay;
 }
 
-CarUnwrapOverlaySet buildCarUnwrapOverlaySet(
-    const fls::CarModel &model,
-    const fls::LiveryMaskSet &masks,
-    const QSet<int> &selectablePartTypes,
-    int lodIndex) {
-    CarUnwrapOverlaySet overlays;
-    if (model.meshes.empty() || !masks.valid()) {
-        return overlays;
-    }
+namespace {
 
+struct UnwrapMeshGroups {
     std::vector<const fls::CarMesh *> baseMeshes;
     QHash<int, std::vector<const fls::CarMesh *>> stockMeshes;
     QHash<int, QHash<int, std::vector<const fls::CarMesh *>>> optionMeshes;
+};
+
+UnwrapMeshGroups groupUnwrapMeshes(const fls::CarModel &model,
+    const QSet<int> &selectablePartTypes, int lodIndex) {
+    UnwrapMeshGroups groups;
     const auto categorize = [&](const std::vector<fls::CarMesh> &meshes) {
         for (const fls::CarMesh &mesh : meshes) {
             const bool selectable = selectablePartTypes.contains(mesh.carPartType)
                 && !mesh.partOptionIds.empty();
             if (!selectable) {
                 if (mesh.stockPart) {
-                    baseMeshes.push_back(&mesh);
+                    groups.baseMeshes.push_back(&mesh);
                 }
                 continue;
             }
             if (mesh.stockPart) {
-                stockMeshes[mesh.carPartType].push_back(&mesh);
+                groups.stockMeshes[mesh.carPartType].push_back(&mesh);
             }
             for (int optionId : mesh.partOptionIds) {
-                optionMeshes[mesh.carPartType][optionId].push_back(&mesh);
+                groups.optionMeshes[mesh.carPartType][optionId].push_back(&mesh);
             }
         }
     };
     categorize(model.meshesForLod(lodIndex));
     categorize(model.variantMeshesForLod(lodIndex));
 
-    const LiveryProjectionData projection =
-        buildLiveryProjectionData(model, masks);
-    std::array<QPainterPath, fls::kLiverySideCount> coveragePaths;
-    for (int sideIndex = 0;
-         sideIndex < fls::kLiverySideCount;
-         ++sideIndex) {
-        coveragePaths[sideIndex] = liveryCoveragePath(
-            masks.sides[sideIndex], sideIndex);
-    }
+    return groups;
+}
+
+CarUnwrapOverlaySet buildUnwrapOverlaySet(
+    const fls::CarModel &model, const fls::LiveryMaskSet &masks,
+    const QSet<int> &selectablePartTypes, int lodIndex,
+    const LiveryProjectionData &projection, const UnwrapCoveragePaths &coveragePaths) {
+    const UnwrapMeshGroups groups = groupUnwrapMeshes(model, selectablePartTypes, lodIndex);
+    CarUnwrapOverlaySet overlays;
     overlays.base = buildCarUnwrapOverlayForMeshes(
-        baseMeshes, masks, projection, coveragePaths);
+        groups.baseMeshes, masks, projection, coveragePaths);
     for (int partType : selectablePartTypes) {
         CarUnwrapPartOverlays partOverlays;
-        const auto stock = stockMeshes.constFind(partType);
-        if (stock != stockMeshes.cend()) {
+        const auto stock = groups.stockMeshes.constFind(partType);
+        if (stock != groups.stockMeshes.cend()) {
             partOverlays.stock = buildCarUnwrapOverlayForMeshes(
                 stock.value(), masks, projection, coveragePaths);
         }
-        const auto options = optionMeshes.constFind(partType);
-        if (options != optionMeshes.cend()) {
+        const auto options = groups.optionMeshes.constFind(partType);
+        if (options != groups.optionMeshes.cend()) {
             for (auto option = options->cbegin(); option != options->cend(); ++option) {
                 partOverlays.options.insert(
                     option.key(),
@@ -2191,6 +2236,136 @@ CarUnwrapOverlaySet buildCarUnwrapOverlaySet(
             overlays.parts.insert(partType, std::move(partOverlays));
         }
     }
+    return overlays;
+}
+
+UnwrapCoveragePaths unwrapCoveragePaths(
+    const fls::LiveryMaskSet &masks) {
+    const UnwrapStageTimer timer(&UnwrapTimings::coverage);
+    UnwrapCoveragePaths paths;
+    for (int side = 0; side < fls::kLiverySideCount; ++side) {
+        paths[side] = unwrapClipperPaths(liveryCoveragePath(masks.sides[side], side));
+    }
+
+    return paths;
+}
+
+} // namespace
+
+CarUnwrapOverlaySet buildCarUnwrapOverlaySet(
+    const fls::CarModel &model, const fls::LiveryMaskSet &masks,
+    const QSet<int> &selectablePartTypes, int lodIndex) {
+    if (model.meshes.empty() || !masks.valid()) {
+        return {};
+    }
+
+    return buildUnwrapOverlaySet(model, masks, selectablePartTypes, lodIndex,
+        buildLiveryProjectionData(model, masks), unwrapCoveragePaths(masks));
+}
+
+std::vector<CarUnwrapOverlaySet> buildCarUnwrapOverlaySets(
+    const fls::CarModel &model, const fls::LiveryMaskSet &masks,
+    const QSet<int> &selectablePartTypes, QJsonObject *timings,
+    const std::function<bool()> &cancelled) {
+    UnwrapTimings measured;
+    const QScopedValueRollback<UnwrapTimings *> profiling(unwrapTimings, timings != nullptr ? &measured : nullptr);
+    std::vector<CarUnwrapOverlaySet> overlays;
+    if (model.meshes.empty() || !masks.valid()) {
+        return overlays;
+    }
+    const LiveryProjectionData projection = buildLiveryProjectionData(model, masks);
+    const UnwrapCoveragePaths coverage = unwrapCoveragePaths(masks);
+    struct UnwrapGroup {
+        std::vector<const fls::CarMesh *> meshes;
+        CarUnwrapOverlay *overlay;
+    };
+    struct UnwrapJob {
+        size_t group;
+        int side;
+    };
+    std::vector<UnwrapGroup> groups;
+    std::vector<UnwrapJob> jobs;
+    overlays.resize(static_cast<size_t>(model.lodCount()));
+    for (int lod = 0; lod < model.lodCount(); ++lod) {
+        const UnwrapMeshGroups meshes = groupUnwrapMeshes(model, selectablePartTypes, lod);
+        CarUnwrapOverlaySet &overlay = overlays[lod];
+        for (int partType : selectablePartTypes) {
+            CarUnwrapPartOverlays part;
+            const auto options = meshes.optionMeshes.constFind(partType);
+            if (options != meshes.optionMeshes.cend()) {
+                for (auto option = options->cbegin(); option != options->cend(); ++option) {
+                    part.options.insert(option.key(), {});
+                }
+            }
+            overlay.parts.insert(partType, std::move(part));
+        }
+        groups.push_back({meshes.baseMeshes, &overlay.base});
+        for (auto part = overlay.parts.begin(); part != overlay.parts.end(); ++part) {
+            const auto stock = meshes.stockMeshes.constFind(part.key());
+            if (stock != meshes.stockMeshes.cend()) {
+                groups.push_back({stock.value(), &part->stock});
+            }
+            const auto options = meshes.optionMeshes.constFind(part.key());
+            if (options != meshes.optionMeshes.cend()) {
+                for (auto option = part->options.begin(); option != part->options.end(); ++option) {
+                    groups.push_back({options->value(option.key()), &option.value()});
+                }
+            }
+        }
+    }
+    for (size_t group = 0; group < groups.size(); ++group) {
+        for (int side = 0; side < fls::kLiverySideCount; ++side) {
+            jobs.push_back({group, side});
+        }
+    }
+    const int workerCount = std::min(static_cast<int>(jobs.size()),
+        std::max(1, QThread::idealThreadCount()));
+    std::vector<UnwrapTimings> workerTimings(static_cast<size_t>(workerCount));
+    std::atomic<size_t> nextJob = 0;
+    std::vector<std::future<void>> workers;
+    workers.reserve(static_cast<size_t>(workerCount));
+    for (int worker = 0; worker < workerCount; ++worker) {
+        workers.push_back(std::async(std::launch::async, [&, worker]() {
+            const QScopedValueRollback<UnwrapTimings *> profiling(
+                unwrapTimings, timings != nullptr ? &workerTimings[worker] : nullptr);
+            for (size_t index = nextJob.fetch_add(1); index < jobs.size(); index = nextJob.fetch_add(1)) {
+                if (cancelled && cancelled()) {
+                    break;
+                }
+                const UnwrapJob &job = jobs[index];
+                const UnwrapGroup &group = groups[job.group];
+                CarUnwrapSide &side = group.overlay->sides[job.side];
+                const QPainterPath geometry = projectedLiveryGeometryPath(group.meshes, masks, projection, job.side);
+                side.path = rdpUnwrapPath(geometry, coverage[job.side]);
+                side.wireframe = projectedLiveryWireframePath(group.meshes, masks, projection, job.side);
+            }
+        }));
+    }
+    for (std::future<void> &worker : workers) {
+        worker.get();
+    }
+    for (CarUnwrapOverlaySet &overlay : overlays) {
+        for (auto part = overlay.parts.begin(); part != overlay.parts.end();) {
+            part = part->stock.empty() && part->options.isEmpty() ? overlay.parts.erase(part) : ++part;
+        }
+    }
+    for (const UnwrapTimings &worker : workerTimings) {
+        measured.geometry += worker.geometry;
+        measured.clipping += worker.clipping;
+        measured.curves += worker.curves;
+        measured.wireframe += worker.wireframe;
+    }
+    if (timings != nullptr) {
+        *timings = {{QStringLiteral("workers"), workerCount},
+                    {QStringLiteral("jobs"), static_cast<qint64>(jobs.size())},
+                    {QStringLiteral("projection_ms"), measured.projection},
+                    {QStringLiteral("coverage_ms"), measured.coverage},
+                    {QStringLiteral("geometry_ms"), measured.geometry},
+                    {QStringLiteral("clipping_ms"), measured.clipping},
+                    {QStringLiteral("curve_fitting_ms"), measured.curves},
+                    {QStringLiteral("wireframe_ms"), measured.wireframe}};
+    }
+
     return overlays;
 }
 

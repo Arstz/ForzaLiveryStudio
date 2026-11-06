@@ -3,12 +3,15 @@
 #include "system_integration.h"
 #include "image_io.h"
 #include "car_model_renderer.h"
+#include "car_preview_widget.h"
 #include "livery_codec.h"
 
 #include <QApplication>
 #include <QCoreApplication>
+#include <QCommandLineParser>
 #include <QFile>
 #include <QFileInfo>
+#include <QJsonDocument>
 #include <QOffscreenSurface>
 #include <QOpenGLContext>
 #include <QTimer>
@@ -67,10 +70,43 @@ void openStartupFiles(gui::MainWindow &window, const QStringList &paths) {
 } // namespace
 
 int main(int argc, char *argv[]) {
-    QCoreApplication::setAttribute(Qt::AA_ShareOpenGLContexts);
-    QApplication app(argc, argv);
     QCoreApplication::setOrganizationName(QStringLiteral("ForzaTools"));
     QCoreApplication::setApplicationName(QStringLiteral("ForzaLiveryStudio"));
+    for (int index = 1; index < argc; ++index) {
+        if (QString::fromLocal8Bit(argv[index]) != QStringLiteral("--profile-car-load")) {
+            continue;
+        }
+        QCoreApplication app(argc, argv);
+        QCommandLineParser parser;
+        parser.addOption({QStringLiteral("profile-car-load"), QStringLiteral("Profile car preparation"), QStringLiteral("path")});
+        parser.addOption({QStringLiteral("textures"), QStringLiteral("Decode native textures")});
+        parser.addOption({QStringLiteral("verify-unwrap"), QStringLiteral("Compare unwraps with serial calculation")});
+        parser.addOption({QStringLiteral("repeat"), QStringLiteral("Number of loads"), QStringLiteral("count"), QStringLiteral("2")});
+        parser.addOption({QStringLiteral("output"), QStringLiteral("JSON report destination"), QStringLiteral("path")});
+        parser.process(app);
+        bool validCount = false;
+        const int repetitions = parser.value(QStringLiteral("repeat")).toInt(&validCount);
+        if (!validCount || repetitions < 1) {
+            return 1;
+        }
+        const QJsonObject report = gui::profileCarLoading(
+            parser.value(QStringLiteral("profile-car-load")), parser.isSet(QStringLiteral("textures")),
+            repetitions, parser.isSet(QStringLiteral("verify-unwrap")));
+        QFile output;
+        if (parser.isSet(QStringLiteral("output"))) {
+            output.setFileName(parser.value(QStringLiteral("output")));
+            if (!output.open(QIODevice::WriteOnly)) {
+                return 1;
+            }
+        } else if (!output.open(stdout, QIODevice::WriteOnly)) {
+            return 1;
+        }
+        output.write(QJsonDocument(report).toJson());
+
+        return report.contains(QStringLiteral("error")) ? 1 : 0;
+    }
+    QCoreApplication::setAttribute(Qt::AA_ShareOpenGLContexts);
+    QApplication app(argc, argv);
     gui::applyUiTheme(app, gui::loadUiTheme());
 
     if (QCoreApplication::arguments().contains(QStringLiteral("--shadertest"))) {

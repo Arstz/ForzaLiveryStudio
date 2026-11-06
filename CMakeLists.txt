@@ -252,6 +252,8 @@ qt_add_library(fls_editor_ui STATIC
     src/gui/canvas/car_model_renderer.cpp
     src/gui/canvas/car_model_renderer.h
     src/gui/canvas/car_unwrap_overlay.h
+    src/gui/canvas/car_unwrap_overlay_cache.cpp
+    src/gui/canvas/car_unwrap_overlay_cache.h
     src/gui/fill/bucket_fill.cpp
     src/gui/fill/bucket_fill.h
     src/gui/fill/svg_vector_objects.cpp
@@ -618,6 +620,17 @@ if(FLS_BUILD_TESTS)
     target_link_libraries(fls_positional_paint_tests PRIVATE fls_core Qt6::Core)
     target_compile_definitions(fls_positional_paint_tests PRIVATE FLS_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
     add_test(NAME positional_paint COMMAND fls_positional_paint_tests)
+    add_executable(fls_zip_extract_tests tools/tests/zip_extract/main.cpp)
+    target_link_libraries(fls_zip_extract_tests PRIVATE fls_core Qt6::Core ZLIB::ZLIB)
+    add_test(NAME zip_extract COMMAND fls_zip_extract_tests)
+    add_executable(fls_car_unwrap_cache_tests tools/tests/car_unwrap_cache/main.cpp)
+    target_link_libraries(fls_car_unwrap_cache_tests PRIVATE fls_editor_ui)
+    add_test(NAME car_unwrap_cache COMMAND fls_car_unwrap_cache_tests)
+    if(WIN32)
+        add_executable(fls_swatchbin_tests tools/tests/swatchbin/main.cpp)
+        target_link_libraries(fls_swatchbin_tests PRIVATE fls_core Qt6::Core)
+        add_test(NAME swatchbin COMMAND fls_swatchbin_tests)
+    endif()
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/fm23")
         add_test(NAME game_fm23_samples COMMAND fls_game_export_tests --fm23-samples
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/fm23")
@@ -801,6 +814,9 @@ else()
             "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/fls_wgs_save_writer_tests${CMAKE_EXECUTABLE_SUFFIX}"
             "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/fls_game_export_tests${CMAKE_EXECUTABLE_SUFFIX}"
             "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/fls_positional_paint_tests${CMAKE_EXECUTABLE_SUFFIX}"
+            "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/fls_zip_extract_tests${CMAKE_EXECUTABLE_SUFFIX}"
+            "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/fls_car_unwrap_cache_tests${CMAKE_EXECUTABLE_SUFFIX}"
+            "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/fls_swatchbin_tests${CMAKE_EXECUTABLE_SUFFIX}"
             "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/fls_game_roundtrip_tests${CMAKE_EXECUTABLE_SUFFIX}"
             "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/fls_export_target_tests${CMAKE_EXECUTABLE_SUFFIX}"
             "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/fls_guide_preprocess_metadata_tests${CMAKE_EXECUTABLE_SUFFIX}"

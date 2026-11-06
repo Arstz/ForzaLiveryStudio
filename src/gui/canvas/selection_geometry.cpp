@@ -7,6 +7,29 @@
 
 namespace gui {
 
+bool vectorHasSoftAlpha(const ShapeGeometry &geometry) {
+    return std::any_of(geometry.triangles.cbegin(), geometry.triangles.cend(), [](const ShapeTriangle &triangle) {
+        const bool visible = triangle.alpha0 > 0.0 || triangle.alpha1 > 0.0 || triangle.alpha2 > 0.0;
+
+        return visible && (triangle.alpha0 < 1.0 || triangle.alpha1 < 1.0 || triangle.alpha2 < 1.0);
+    });
+}
+
+bool rasterHasSoftAlpha(const QImage &image) {
+    const QImage pixels = image.convertToFormat(QImage::Format_ARGB32);
+    for (int y = 0; y < pixels.height(); ++y) {
+        const auto *row = reinterpret_cast<const QRgb *>(pixels.constScanLine(y));
+        for (int x = 0; x < pixels.width(); ++x) {
+            const int alpha = qAlpha(row[x]);
+            if (alpha > 0 && alpha < 255) {
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
 QPainterPath vectorSelectionBody(const ShapeGeometry &geometry) {
     QPainterPath path;
 

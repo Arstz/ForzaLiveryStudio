@@ -24,6 +24,8 @@ struct CarUnwrapSide {
     QPainterPath path;
     QPainterPath wireframe;
 
+    bool operator==(const CarUnwrapSide &) const = default;
+
     bool valid() const {
         return !path.isEmpty();
     }
@@ -31,6 +33,8 @@ struct CarUnwrapSide {
 
 struct CarUnwrapOverlay {
     std::array<CarUnwrapSide, fls::kLiverySideCount> sides;
+
+    bool operator==(const CarUnwrapOverlay &) const = default;
 
     bool empty() const {
         for (const CarUnwrapSide &side : sides) {
@@ -46,11 +50,15 @@ struct CarUnwrapOverlay {
 struct CarUnwrapPartOverlays {
     CarUnwrapOverlay stock;
     QHash<int, CarUnwrapOverlay> options;
+
+    bool operator==(const CarUnwrapPartOverlays &) const = default;
 };
 
 struct CarUnwrapOverlaySet {
     CarUnwrapOverlay base;
     QHash<int, CarUnwrapPartOverlays> parts;
+
+    bool operator==(const CarUnwrapOverlaySet &) const = default;
 
     CarUnwrapOverlay selected(const QHash<int, int> &partSelections) const {
         CarUnwrapOverlay overlay = base;

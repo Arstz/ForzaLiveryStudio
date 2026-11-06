@@ -75,6 +75,30 @@ void testRasterBody() {
     require(gui::rasterSelectionBody(QImage()).isEmpty(), "missing images must have no selection body");
 }
 
+void testSoftAlpha() {
+    gui::ShapeGeometry geometry;
+    appendRectangle(geometry, QRectF(0, 0, 10, 10));
+    geometry.triangles.push_back({{20, 20}, {30, 20}, {20, 30}, 0, 0, 0});
+    require(!gui::vectorHasSoftAlpha(geometry), "transparent padding disabled solid geometry snapping");
+    geometry.triangles[0].alpha0 = 0;
+    require(gui::vectorHasSoftAlpha(geometry), "interpolated alpha gradient was missed");
+    require(gui::vectorSelectionBody(geometry).contains({2, 2}), "gradient lost selection geometry");
+    geometry.triangles[0].alpha0 = 1;
+    geometry.triangles[1].alpha0 = 0.5;
+    geometry.triangles[1].alpha1 = 0.5;
+    geometry.triangles[1].alpha2 = 0.5;
+    require(gui::vectorHasSoftAlpha(geometry), "translucent geometry was missed");
+
+    QImage image(2, 2, QImage::Format_RGBA8888);
+    image.fill(Qt::transparent);
+    image.setPixelColor(0, 0, QColor(255, 0, 0, 255));
+    require(!gui::rasterHasSoftAlpha(image), "hard raster transparency disabled snapping");
+    image.setPixelColor(1, 0, QColor(255, 0, 0, 1));
+    require(gui::rasterHasSoftAlpha(image), "faint raster gradient was missed");
+    image.setPixelColor(1, 0, QColor(255, 0, 0, 254));
+    require(gui::rasterHasSoftAlpha(image), "near-opaque raster gradient was missed");
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -83,6 +107,7 @@ int main(int argc, char **argv) {
         testVectorBody();
         testCompoundBody();
         testRasterBody();
+        testSoftAlpha();
     } catch (const std::exception &error) {
         QTextStream(stderr) << error.what() << '\n';
         return 1;

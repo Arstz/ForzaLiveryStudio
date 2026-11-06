@@ -445,7 +445,7 @@ void ProjectCanvas::setDisplayAnchorsDuringTransformDrag(bool enabled) {
 }
 
 void ProjectCanvas::setCarUnwrapOverlay(const CarUnwrapOverlay &overlay) {
-    carUnwrapOverlay_ = overlay;
+    carUnwrapOverlay_.setOverlay(overlay);
     update();
 }
 
