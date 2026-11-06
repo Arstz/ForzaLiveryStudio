@@ -43,6 +43,8 @@ From the repository root:
 The build script invokes `tools/configure.ps1` and builds Release into
 `build/Release`. The executable is `build/Release/ForzaLiveryStudio.exe`.
 Close the editor before replacing it during a build.
+Pass `-DisablePrivacyPolicy` to the build script to configure privacy policy as
+`OFF`; the default remains `ON`.
 
 ### Linux
 
@@ -194,6 +196,29 @@ pending jobs.
 Concurrent requests for the same model share preparation, and unchanged models
 already loaded in the preview are reused. Paint edits update render parameters
 while retaining uploaded mesh geometry.
+
+The preview drawer contains individual paint-slot rows whose active mesh bindings
+have non-zero triangle area. Slot discovery follows the renderer's LOD, part
+selection, and paint-binding rules. Finish choices and input
+color counts come from the title's paint database. Generic paint finishes appear
+directly in the material menu; special materials appear in its final hover
+submenu. Color buttons appear for generic finishes according to their input
+count. The custom color popup shares live RGB, HSV, and hexadecimal values with
+a saturation/value square and offers native manufacturer colors and project
+swatches as color presets. Live changes update render parameters, with one undo entry committed
+when the popup closes.
+Cancellation restores the paint state captured when the popup opened.
+
+Finish assets merge shader defaults with material parameters. Masked finishes
+retain separate mask textures and linear thread tints. Finish sampling
+retains the material's UV source and tiling independently of livery coverage.
+Woven finishes use transformed UV coordinates, mask-directed anisotropic
+reflections, and separate surface and clear-coat roughness.
+Normal mapping uses the tangent channel matching the UV coordinates, with
+handedness decoded as a unit sign. Authored
+mip levels and anisotropic texture filtering retain texture detail across viewing
+angles. Lighting runs in linear color space and converts to display color at
+the shader output.
 
 The canvas keeps one rasterized unwrap and wireframe overlay in memory. Layer
 edits reuse that image; changes to the view, display density, overlay geometry,

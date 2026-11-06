@@ -40,14 +40,29 @@ struct PaintFinishRender {
     float gloss = 0.45f;
     float metallic = 0.0f;
     float flakeAmount = 0.0f;
+    float anisotropy = 0.0f;
+    float normalIntensity = 1.0f;
+    float clearCoatCoverage = -1.0f;
+    float clearCoatRoughness = 0.0f;
     std::array<float, 3> materialColor = {0.5f, 0.5f, 0.5f};
     SwatchImage patternImage;      // BaseColorAlpha colour/pattern
     SwatchImage detailNormalImage; // weave / brushed / flake normal
     SwatchImage roughMetalAoImage; // packed roughness/metal/AO
+    SwatchImage weaveMaskImage;
+    std::vector<SwatchImage> patternMips;
+    std::vector<SwatchImage> detailNormalMips;
+    std::vector<SwatchImage> roughMetalAoMips;
+    std::vector<SwatchImage> weaveMaskMips;
+    std::array<float, 3> weaveColorTintA = {};
+    std::array<float, 3> weaveColorTintB = {};
+    std::array<float, 2> tiling = {1.0f, 1.0f};
+    float uvOrientationDegrees = 0.0f;
+    int uvChannel = -1;
 
     bool hasPattern() const { return patternImage.valid(); }
     bool hasDetailNormal() const { return detailNormalImage.valid(); }
     bool hasRoughMetalAo() const { return roughMetalAoImage.valid(); }
+    bool hasWeaveMask() const { return weaveMaskImage.valid(); }
 };
 
 // Decodes each painttype .materialbin into render parameters keyed by finish code.

@@ -532,6 +532,18 @@ void bakeWheelTransform(CarMesh &mesh, const AxleSizing &axle) {
             normal.z /= length;
         }
     }
+    for (auto &channel : mesh.tangentChannels) {
+        for (auto &tangent : channel) {
+            const auto direction = mesh.boneTransform.transformVector(
+                {tangent.x * widthScale, tangent.y * radialScale, tangent.z * radialScale});
+            const float length = std::sqrt(direction.x * direction.x + direction.y * direction.y + direction.z * direction.z);
+            if (length > 0.000001f) {
+                tangent.x = direction.x / length;
+                tangent.y = direction.y / length;
+                tangent.z = direction.z / length;
+            }
+        }
+    }
     mesh.boneTransform = ModelMat4{};
 }
 
@@ -1040,6 +1052,7 @@ void appendApproximateTires(
             mesh.stockPart = true;
             mesh.paintMaterialHash = 0;
             mesh.boneTransform = ModelMat4{};
+            mesh.tangentChannels.clear();
 
             for (size_t i = 0; i < mesh.positions.size(); ++i) {
                 const ModelVec3 p = sourceMesh.boneTransform.transformPoint(sourceMesh.positions[i]);

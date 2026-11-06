@@ -26,11 +26,10 @@ QByteArray solidBlock(bool white) {
     return block;
 }
 
-QByteArray swatch(int width, int height, bool white) {
+QByteArray swatch(int width, int height, const QByteArray &block, int encoding) {
     constexpr int metadata = 44;
     constexpr int header = metadata + 8;
     constexpr int pixels = header + 68;
-    const QByteArray block = solidBlock(white);
     const int size = ((width + 3) / 4) * ((height + 3) / 4) * block.size();
     QByteArray bytes(pixels + size, '\0');
     const auto u16 = [&](int offset, quint16 value) {
@@ -54,7 +53,7 @@ QByteArray swatch(int width, int height, bool white) {
     u32(header + 0x18, width);
     u32(header + 0x1c, height);
     u32(header + 0x38, 64);
-    u32(header + 64, 9);
+    u32(header + 64, encoding);
     for (int offset = pixels; offset < bytes.size(); offset += block.size()) {
         bytes.replace(offset, block.size(), block);
     }
@@ -63,12 +62,66 @@ QByteArray swatch(int width, int height, bool white) {
 
 void checkImage(int width, int height, bool white) {
     QString error;
-    const fls::SwatchImage image = fls::decodeSwatchImage(swatch(width, height, white), &error);
+    const fls::SwatchImage image = fls::decodeSwatchImage(swatch(width, height, solidBlock(white), 9), &error);
     require(image.valid() && image.width == width && image.height == height, qPrintable(error));
     const uint8_t expected = white ? 255 : 0;
     for (uint8_t channel : image.rgba) {
         require(channel == expected, "BC7 pixel mismatch");
     }
+}
+
+void checkBc4Image() {
+    QByteArray block(8, '\0');
+    block[0] = 32;
+    block[1] = static_cast<char>(224);
+    block[2] = 8;
+    const auto bytes = swatch(5, 3, block, 3);
+    QString error;
+    const auto image = fls::decodeSwatchImage(bytes, &error);
+    const auto mask = fls::decodeSwatchMask(bytes, &error);
+    require(image.valid() && mask.valid(), qPrintable(error));
+    require(image.width == 5 && image.height == 3, "BC4 image dimensions changed");
+    require(image.rgba[0] == 32 && image.rgba[4] == 224, "BC4 endpoints changed");
+    for (size_t pixel = 0; pixel < mask.coverage.size(); ++pixel) {
+        for (int channel = 0; channel < 3; ++channel)
+            require(image.rgba[pixel * 4 + channel] == mask.coverage[pixel], "BC4 color/mask pixels differ");
+        require(image.rgba[pixel * 4 + 3] == 255, "BC4 color image alpha is not opaque");
+    }
+    require(!fls::decodeSwatchImage(bytes.left(bytes.size() - 1)).valid(), "truncated BC4 color data accepted");
+}
+
+void checkAuthoredMips() {
+    constexpr int header = 52;
+    constexpr int payload = header + 100;
+    QByteArray block(8, '\0');
+    block[0] = block[1] = 32;
+    QByteArray bytes = swatch(8, 4, block, 3);
+    bytes.insert(header + 68, QByteArray(32, '\0'));
+    bytes.append(block);
+    bytes[payload] = bytes[payload + 1] = static_cast<char>(224);
+    const auto u32 = [&](int offset, quint32 value) { qToLittleEndian(value, bytes.data() + offset); };
+    u32(32, payload);
+    u32(36, 24);
+    u32(40, 24);
+    u32(header + 32, 1);
+    qToLittleEndian<quint16>(1, bytes.data() + header + 36);
+    bytes[header + 38] = 2;
+    u32(header + 68, 76);
+    u32(header + 72, 4294967295u);
+    u32(header + 76, 16);
+    u32(header + 80, 8);
+    u32(header + 84, 88);
+    u32(header + 88, 8);
+    u32(header + 92, 0);
+    u32(header + 96, 4294967295u);
+    QString error;
+    const auto levels = fls::decodeSwatchMipImages(bytes, &error);
+    require(levels.size() == 2, qPrintable(error));
+    require(levels[0].width == 8 && levels[0].height == 4 && levels[0].rgba[0] == 32, "base mip descriptor ignored");
+    require(levels[1].width == 4 && levels[1].height == 2 && levels[1].rgba[0] == 224, "lower mip descriptor ignored");
+    require(fls::decodeSwatchImage(bytes).rgba == levels[0].rgba, "base image and mip image disagree");
+    u32(header + 92, 24);
+    require(fls::decodeSwatchMipImages(bytes).empty(), "invalid lower mip payload accepted");
 }
 
 } // namespace
@@ -78,6 +131,8 @@ int main(int argc, char **argv) {
     try {
         checkImage(4, 4, true);
         checkImage(8, 4, false);
+        checkBc4Image();
+        checkAuthoredMips();
         std::vector<std::future<void>> requests;
         for (int index = 0; index < 8; ++index) {
             requests.push_back(std::async(std::launch::async, [index]() {
@@ -89,7 +144,7 @@ int main(int argc, char **argv) {
         for (auto &request : requests) {
             request.get();
         }
-        qInfo("BC7 pixels, dimension changes, and concurrent decoding checks passed");
+        qInfo("BC4 color images, BC7 pixels, dimension changes, and concurrent decoding checks passed");
         return 0;
     } catch (const std::exception &error) {
         qCritical("%s", error.what());

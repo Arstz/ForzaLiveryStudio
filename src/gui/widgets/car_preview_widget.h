@@ -1,6 +1,7 @@
 #pragma once
 
 #include "car_model_renderer.h"
+#include "car_paint_catalog.h"
 #include "core_types.h"
 #include "livery_masks.h"
 #include "manufacturer_colors.h"
@@ -18,10 +19,10 @@
 #include <optional>
 
 class QTemporaryDir;
-class QButtonGroup;
+class QComboBox;
 class QFrame;
 class QLabel;
-class QStackedWidget;
+class QPushButton;
 class QToolButton;
 class QVBoxLayout;
 
@@ -90,6 +91,13 @@ private:
         QRect clipRect;
     };
 
+    struct PaintControls {
+        CarPaintSlot slot;
+        QComboBox *material = nullptr;
+        QPushButton *primary = nullptr;
+        QPushButton *secondary = nullptr;
+    };
+
     QMatrix4x4 cameraView() const;
     QMatrix4x4 cameraProjection() const;
     QSize liveryTextureSize() const;
@@ -97,24 +105,18 @@ private:
     void fitCameraToModel();
     void invalidateCachedLivery();
     void updateModelStatus();
-    void updateLodControl();
     void layoutOverlayControls();
-    void rebuildPartsPanel();
+    void resetPartSelections();
     void rebuildColorsPanel();
-    void rebuildModelPanel();
-    void selectPartOption(int partType, int optionId);
+    void syncPaintControls();
     void selectLod(int lodIndex);
-    void syncPartOptionControls();
     void switchCarUnwrapOverlay();
     void setSidePanelVisible(bool visible);
     int previewViewportWidth() const;
-    void chooseRegionColor(const QVector<quint64> &materialHashes,
-                           bool secondary,
-                           const QVector<quint64> &fallbackHashes = {});
-    void chooseRegionFinish(const QVector<quint64> &materialHashes,
-                            quint32 finish);
-    QVector<quint64> effectivePaintHashes(
-        const QVector<quint64> &materialHashes) const;
+    void chooseSlotColor(const CarPaintSlot &slot, bool secondary, QWidget *anchor);
+    void chooseSlotFinish(quint64 hash, quint32 finish);
+    fls::LiveryPaintMaterial slotPaint(const CarPaintSlot &slot) const;
+    QColor slotColor(const CarPaintSlot &slot, bool secondary) const;
     void clearPaintOverrides();
     void updateCarColorControl();
 
@@ -127,7 +129,8 @@ private:
     bool geometryLoaded_ = false;
 
     fls::Project *project_ = nullptr;
-    EditorState *state_ = nullptr;
+    QPointer<EditorState> state_;
+    QPointer<PaintColorPopup> paintPopup_;
 
     fls::CarModel model_;
     fls::ManufacturerColorPalette manufacturerColors_;
@@ -167,18 +170,14 @@ private:
     QLabel *modelStatus_ = nullptr;
     QFrame *sidePanel_ = nullptr;
     QToolButton *sidePanelToggle_ = nullptr;
-    QButtonGroup *categoryButtons_ = nullptr;
-    QStackedWidget *categoryPages_ = nullptr;
-    QWidget *partsPage_ = nullptr;
     QWidget *colorsPage_ = nullptr;
-    QWidget *modelPage_ = nullptr;
-    QVBoxLayout *partsOptionsLayout_ = nullptr;
     QVBoxLayout *colorsLayout_ = nullptr;
-    QVBoxLayout *modelOptionsLayout_ = nullptr;
+    QPushButton *clearPaintButton_ = nullptr;
+    QVector<PaintControls> paintControls_;
+    QVector<CarPaintFinish> paintFinishChoices_;
     QHash<int, int> selectedPartOptions_;
     int selectedLodIndex_ = 0;
     bool sidePanelVisible_ = false;
-    bool overrideBodyChildPaint_ = true;
 
     QVector3D target_;
     float modelRadius_ = 1.0f;

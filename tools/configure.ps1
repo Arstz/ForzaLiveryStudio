@@ -1,3 +1,7 @@
+param(
+    [switch]$DisablePrivacyPolicy
+)
+
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
@@ -18,12 +22,13 @@ Remove-Item Env:QT_PLUGIN_PATH -ErrorAction SilentlyContinue
 $env:QT_QPA_PLATFORM_PLUGIN_PATH = Join-Path $env:VCPKG_ROOT "installed\x64-windows\Qt6\plugins\platforms"
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
+$privacyPolicy = if ($DisablePrivacyPolicy) { "OFF" } else { "ON" }
 Push-Location $repoRoot
 try {
     cmake -S . -B build `
         -DCMAKE_TOOLCHAIN_FILE="$toolchain" `
         -DVCPKG_TARGET_TRIPLET=x64-windows `
-        -DFLS_PRIVACY_POLICY=ON `
+        "-DFLS_PRIVACY_POLICY=$privacyPolicy" `
         -DFLS_BUILD_HELPER_TOOLS=OFF `
         -DFLS_BUILD_LIVERY_COMPARE=OFF `
         -DFLS_ENABLE_IMGGEN_MENU=OFF `

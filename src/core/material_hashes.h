@@ -275,6 +275,17 @@ inline constexpr std::array<quint32, 2> kFlakeAmount = {
 inline constexpr quint32 kColorTexture = 0x85E937A9;
 inline constexpr quint32 kNormalTexture = 0xF9E8078D;
 inline constexpr quint32 kSurfaceTexture = 0x8D9C56EF;
+inline constexpr quint32 kWeaveMask = 3131701925;
+inline constexpr quint32 kWeaveColorTintA = 2956167777;
+inline constexpr quint32 kWeaveColorTintB = 701623392;
+inline constexpr quint32 kWeaveMetalness = 3750855534;
+inline constexpr quint32 kWeaveRoughness = 2690608703;
+inline constexpr quint32 kWeaveNormalIntensity = 1292058032;
+inline constexpr quint32 kAnisotropy = 1448136802;
+inline constexpr quint32 kClearCoatCoverage = 583758430;
+inline constexpr quint32 kUserColorSwitch = 3440540967;
+inline constexpr quint32 kUserCarColor = 2221386404;
+inline constexpr quint32 kUvOrientation = 2339586987;
 
 inline constexpr std::array<quint32, 4> kDetailNormalTexture = {
     0xEC13FF23, 0x87078E77, 0xB59BE3AB, 0xB61760D8,

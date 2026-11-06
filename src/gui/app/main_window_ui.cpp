@@ -285,11 +285,6 @@ void MainWindow::setupDocks() {
     carPreview_->setProject(project());
     connect(carPreview_, &CarPreviewWidget::unwrapOverlayChanged,
             this, &MainWindow::updateCarUnwrapOverlay);
-    auto *cycleLodAction = new QAction(this);
-    registerShortcutAction(
-        cycleLodAction, QStringLiteral("preview_cycle_lod"),
-        QStringLiteral("3D Preview: Cycle LOD"), {}, false, carPreview_);
-    connect(cycleLodAction, &QAction::triggered, carPreview_, &CarPreviewWidget::cycleLod);
     auto *cycleDebugAction = new QAction(this);
     registerShortcutAction(
         cycleDebugAction, QStringLiteral("preview_cycle_debug_mode"),

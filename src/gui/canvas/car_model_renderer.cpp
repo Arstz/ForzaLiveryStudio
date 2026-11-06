@@ -1,4 +1,5 @@
 #include "car_model_renderer.h"
+#include "car_paint_geometry.h"
 
 #include "material_hashes.h"
 #include "model_material.h"
@@ -13,6 +14,7 @@
 #include <QOpenGLFunctions>
 #include <QScopedValueRollback>
 #include <QThread>
+#include <QtMath>
 
 #include <clipper2/clipper.h>
 
@@ -28,6 +30,7 @@ namespace gui {
 namespace {
 
 constexpr double kUnwrapPathScale = 1024.0;
+constexpr float kWeavePreviewTilingScale = 2.0f;
 using UnwrapCoveragePaths = std::array<Clipper2Lib::Paths64, fls::kLiverySideCount>;
 
 struct UnwrapTimings {
@@ -40,6 +43,18 @@ struct UnwrapTimings {
 };
 
 thread_local UnwrapTimings *unwrapTimings = nullptr;
+
+void configureTextureAnisotropy(QOpenGLContext *context) {
+    constexpr GLenum kMaximumAnisotropy = 34047;
+    constexpr GLenum kTextureAnisotropy = 34046;
+    constexpr float kPreferredAnisotropy = 16.0f;
+    auto *functions = context->functions();
+    GLfloat maximum = 1.0f;
+
+    if (!context->hasExtension(QByteArrayLiteral("GL_EXT_texture_filter_anisotropic"))) return;
+    functions->glGetFloatv(kMaximumAnisotropy, &maximum);
+    functions->glTexParameterf(GL_TEXTURE_2D, kTextureAnisotropy, std::min(maximum, kPreferredAnisotropy));
+}
 
 class UnwrapStageTimer {
 public:
@@ -67,7 +82,9 @@ void uploadCarMeshGeometry(BufferSet &buffers, QOpenGLShaderProgram &program,
                            const std::vector<quint32> &indices, bool materialUv) {
     constexpr int kBaseVertexComponents = 8;
     constexpr int kMaterialUvComponents = 2;
-    const int stride = (kBaseVertexComponents + (materialUv ? kMaterialUvComponents : 0)) * sizeof(float);
+    constexpr int kFinishUvComponents = 2;
+    constexpr int kTangentComponents = 8;
+    const int stride = (kBaseVertexComponents + (materialUv ? kMaterialUvComponents + kFinishUvComponents + kTangentComponents : 0)) * sizeof(float);
 
     buffers.vao.create();
     buffers.vao.bind();
@@ -86,6 +103,12 @@ void uploadCarMeshGeometry(BufferSet &buffers, QOpenGLShaderProgram &program,
     if (materialUv) {
         program.enableAttributeArray(3);
         program.setAttributeBuffer(3, GL_FLOAT, 8 * sizeof(float), 2, stride);
+        program.enableAttributeArray(4);
+        program.setAttributeBuffer(4, GL_FLOAT, 10 * sizeof(float), 2, stride);
+        program.enableAttributeArray(5);
+        program.setAttributeBuffer(5, GL_FLOAT, 12 * sizeof(float), 4, stride);
+        program.enableAttributeArray(6);
+        program.setAttributeBuffer(6, GL_FLOAT, 16 * sizeof(float), 4, stride);
     }
     buffers.vao.release();
     buffers.vbo.release();
@@ -97,6 +120,9 @@ layout(location = 0) in vec3 in_position;
 layout(location = 1) in vec3 in_normal;
 layout(location = 2) in vec2 in_uv;
 layout(location = 3) in vec2 in_material_uv;
+layout(location = 4) in vec2 in_finish_uv;
+layout(location = 5) in vec4 in_tangent;
+layout(location = 6) in vec4 in_finish_tangent;
 
 uniform mat4 mvp;
 uniform mat4 model;
@@ -105,6 +131,9 @@ out vec3 v_normal;
 out vec3 v_world;
 out vec2 v_uv;
 out vec2 v_material_uv;
+out vec2 v_finish_uv;
+out vec4 v_tangent;
+out vec4 v_finish_tangent;
 
 void main()
 {
@@ -114,6 +143,9 @@ void main()
     v_world = world.xyz;
     v_uv = in_uv;
     v_material_uv = in_material_uv;
+    v_finish_uv = in_finish_uv;
+    v_tangent = vec4(mat3(model) * in_tangent.xyz, in_tangent.w);
+    v_finish_tangent = vec4(mat3(model) * in_finish_tangent.xyz, in_finish_tangent.w);
 }
 )";
 
@@ -122,6 +154,9 @@ in vec3 v_normal;
 in vec3 v_world;
 in vec2 v_uv;
 in vec2 v_material_uv;
+in vec2 v_finish_uv;
+in vec4 v_tangent;
+in vec4 v_finish_tangent;
 
 uniform sampler2D livery_tex;
 uniform sampler2DArray side_masks;
@@ -163,7 +198,15 @@ uniform int has_finish_pattern;
 uniform int has_finish_normal;
 uniform int has_finish_surface;
 uniform int finish_self_colored;
-uniform float finish_tiling;
+uniform vec2 finish_tiling;
+uniform int finish_own_uv;
+uniform float finish_anisotropy;
+uniform float finish_normal_intensity;
+uniform sampler2D weave_mask;
+uniform int has_weave_mask;
+uniform vec3 weave_color_tint_a;
+uniform vec3 weave_color_tint_b;
+uniform float finish_uv_rotation;
 uniform float finish_flake;
 uniform float clear_coat_roughness;
 uniform float clear_coat_intensity;
@@ -185,6 +228,20 @@ const vec3 ENVIRONMENT_LOW_COLOR = vec3(0.025, 0.028, 0.035);
 const vec3 ENVIRONMENT_HIGH_COLOR = vec3(0.58, 0.64, 0.72);
 
 const float PI = 3.14159265359;
+
+vec3 srgbToLinear(vec3 color)
+{
+    vec3 low = color / 12.92;
+    vec3 high = pow((color + 0.055) / 1.055, vec3(2.4));
+    return mix(high, low, lessThanEqual(color, vec3(0.04045)));
+}
+
+vec3 linearToSrgb(vec3 color)
+{
+    vec3 low = color * 12.92;
+    vec3 high = 1.055 * pow(max(color, vec3(0.0)), vec3(1.0 / 2.4)) - 0.055;
+    return mix(high, low, lessThanEqual(color, vec3(0.0031308)));
+}
 
 float distributionGGX(vec3 N, vec3 H, float roughness)
 {
@@ -208,6 +265,27 @@ float geometrySmith(vec3 N, vec3 V, vec3 L, float roughness)
     float NdotV = max(dot(N, V), 0.0);
     float NdotL = max(dot(N, L), 0.0);
     return geometrySchlickGGX(NdotV, roughness) * geometrySchlickGGX(NdotL, roughness);
+}
+
+vec2 anisotropicAxes(float roughness, float strength)
+{
+    float aspect = sqrt(1.0 - 0.9 * strength);
+    float alpha = roughness * roughness;
+    return max(vec2(alpha / aspect, alpha * aspect), vec2(0.0016));
+}
+
+float distributionAnisotropic(vec3 N, vec3 T, vec3 B, vec3 H, vec2 axes)
+{
+    vec3 projected = vec3(dot(T, H) / axes.x, dot(B, H) / axes.y, max(dot(N, H), 0.0));
+    float denominator = dot(projected, projected);
+    return 1.0 / max(PI * axes.x * axes.y * denominator * denominator, 0.000001);
+}
+
+float anisotropicLambda(vec3 N, vec3 T, vec3 B, vec3 direction, vec2 axes)
+{
+    vec2 projected = vec2(dot(T, direction), dot(B, direction)) * axes;
+    float normal = max(dot(N, direction), 0.0001);
+    return (sqrt(1.0 + dot(projected, projected) / (normal * normal)) - 1.0) * 0.5;
 }
 
 vec3 fresnelSchlick(float cosTheta, vec3 F0)
@@ -261,11 +339,32 @@ mat3 materialTangentFrame(vec3 normal, vec3 position, vec2 uv)
 
 vec3 finishBaseColor(vec2 uv, vec3 paint)
 {
-    if (has_finish_pattern == 0 || finish_self_colored == 0) {
+    if (has_weave_mask == 1) {
+        float weave = texture(weave_mask, uv * finish_tiling).r;
+        return mix(weave_color_tint_a, weave_color_tint_b, weave);
+    }
+    if (has_finish_pattern == 0) {
         return paint;
     }
-    vec3 pattern = texture(finish_pattern, fract(uv * finish_tiling)).rgb;
-    return pattern;
+    vec3 pattern = texture(finish_pattern, uv * finish_tiling).rgb;
+    return finish_self_colored == 1 ? pattern : paint * pattern;
+}
+
+mat3 authoredTangentFrame(vec3 normal, vec3 position, vec2 uv, vec4 authored)
+{
+    vec3 tangent = authored.xyz - normal * dot(normal, authored.xyz);
+    if (dot(tangent, tangent) < 0.000001) return materialTangentFrame(normal, position, uv);
+    tangent = normalize(tangent);
+    vec3 bitangent = normalize(cross(normal, tangent)) * (authored.w < 0.0 ? -1.0 : 1.0);
+    return mat3(tangent, bitangent, normal);
+}
+
+vec3 mappedNormal(sampler2D normalTexture, vec2 uv, float intensity)
+{
+    vec3 mapped = texture(normalTexture, uv).xyz * 2.0 - 1.0;
+    mapped.xy *= max(intensity, 0.0);
+    mapped.z = sqrt(max(1.0 - dot(mapped.xy, mapped.xy), 0.0));
+    return normalize(mapped);
 }
 
 // Procedural metal-flake sparkle: quantise world space into tiny cells, keep only the
@@ -285,6 +384,8 @@ float finishGlitter(vec3 worldPos, float facing)
     float lit = smoothstep(0.92, 1.0, facing + (rnd2 - 0.5) * 0.05);
     return activeFlake * lit;
 }
+)"
+R"(
 
 void main()
 {
@@ -295,10 +396,8 @@ void main()
         n = -n;
     }
     vec2 materialUv = v_material_uv;
-    if (has_native_normal == 1) {
-        vec3 mappedNormal = texture(native_normal, materialUv).xyz * 2.0 - 1.0;
-        mappedNormal.z = sqrt(max(1.0 - dot(mappedNormal.xy, mappedNormal.xy), 0.0));
-        n = normalize(materialTangentFrame(n, v_world, materialUv) * mappedNormal);
+    if (has_native_normal == 1 && finish_own_uv == 0) {
+        n = normalize(authoredTangentFrame(n, v_world, materialUv, v_tangent) * mappedNormal(native_normal, materialUv, 1.0));
     }
     vec3 viewDir = normalize(eye_position - v_world);
     float edge = pow(1.0 - max(dot(n, viewDir), 0.0), 2.0);
@@ -315,9 +414,13 @@ void main()
     if (outputAlpha < 0.02) {
         discard;
     }
-    vec3 albedo = surfacePaint;
-    vec2 finishUv = vec2(0.0);
-    bool finishUvValid = false;
+    vec2 finishUv = finish_own_uv == 1 ? v_finish_uv : materialUv;
+    if (finish_own_uv == 1) {
+        float cosine = cos(finish_uv_rotation);
+        float sine = sin(finish_uv_rotation);
+        finishUv = vec2(cosine * finishUv.x - sine * finishUv.y, sine * finishUv.x + cosine * finishUv.y);
+    }
+    vec3 albedo = finishBaseColor(finishUv, surfacePaint);
     if (has_livery == 1 && side_count > 0) {
         if (use_direct_uv == 1) {
             vec2 atlasUv = v_uv * direct_uv_scale;
@@ -369,14 +472,13 @@ void main()
                 out_color = vec4(sideColor(coveredSide), 1.0);
                 return;
             }
-            if (coveredSide >= 0) {
+            if (coveredSide >= 0 && finish_own_uv == 0) {
                 finishUv = paintUv;
-                finishUvValid = true;
                 albedo = finishBaseColor(paintUv, surfacePaint);
             }
             if (coverage > 0.5) {
                 vec4 paint = texture(livery_tex, paintUv);
-                albedo = albedo * (1.0 - paint.a) + paint.rgb;
+                albedo = albedo * (1.0 - paint.a) + srgbToLinear(paint.rgb);
             }
         } else {
         float bestScore = -1.0;
@@ -438,28 +540,28 @@ void main()
             out_color = vec4(sideColor(bestSide), 1.0);
             return;
         }
-        if (bestSide >= 0) {
+        if (bestSide >= 0 && finish_own_uv == 0) {
             finishUv = bestUv;
-            finishUvValid = true;
             albedo = finishBaseColor(bestUv, surfacePaint);
         }
         if (bestCoverage > 0.5) {
             vec4 paint = texture(livery_tex, bestUv);
-            albedo = albedo * (1.0 - paint.a) + paint.rgb;
+            albedo = albedo * (1.0 - paint.a) + srgbToLinear(paint.rgb);
         }
         }
     }
     float surfaceGloss = material_gloss;
     float surfaceMetallic = material_metallic;
     float surfaceAo = 1.0;
-    if (has_native_surface == 1) {
+    if (has_native_surface == 1 && finish_own_uv == 0) {
         vec3 packedSurface = texture(native_surface, materialUv).rgb;
         surfaceGloss = 1.0 - packedSurface.r;
         surfaceMetallic = packedSurface.g;
         surfaceAo = packedSurface.b;
     }
-    if (finishUvValid) {
-        vec2 finishTiledUv = fract(finishUv * finish_tiling);
+    vec3 coatNormal = n;
+    vec2 finishTiledUv = finishUv * finish_tiling;
+    {
         if (has_finish_surface == 1) {
             vec3 packedFinish = texture(finish_surface, finishTiledUv).rgb;
             surfaceGloss = 1.0 - packedFinish.r;
@@ -467,9 +569,10 @@ void main()
             surfaceAo = packedFinish.b;
         }
         if (has_finish_normal == 1) {
-            vec3 mapped = texture(finish_normal, finishTiledUv).xyz * 2.0 - 1.0;
-            mapped.z = sqrt(max(1.0 - dot(mapped.xy, mapped.xy), 0.0));
-            n = normalize(materialTangentFrame(n, v_world, finishTiledUv) * mapped);
+            mat3 frame = finish_own_uv == 1
+                ? authoredTangentFrame(n, v_world, finishTiledUv, v_finish_tangent)
+                : materialTangentFrame(n, v_world, finishTiledUv);
+            n = normalize(frame * mappedNormal(finish_normal, finishTiledUv, finish_normal_intensity));
         }
     }
     vec3 nativeEmission = has_native_emissive == 1
@@ -485,6 +588,26 @@ void main()
     vec3 H = normalize(l + v);
     float D = distributionGGX(n, H, roughness);
     float G = geometrySmith(n, v, l, roughness);
+    vec3 environmentNormal = n;
+    if (finish_anisotropy > 0.0 && has_weave_mask == 1) {
+        float mask = texture(weave_mask, finishTiledUv).r;
+        mat3 frame = authoredTangentFrame(coatNormal, v_world, finishTiledUv, v_finish_tangent);
+        vec3 tangent = frame[0] * (1.0 - mask) + frame[1] * mask;
+        tangent -= n * dot(n, tangent);
+        if (dot(tangent, tangent) < 0.000001) {
+            tangent = cross(abs(n.y) < 0.99 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0), n);
+        }
+        tangent = normalize(tangent);
+        vec3 bitangent = normalize(cross(n, tangent));
+        vec2 axes = anisotropicAxes(roughness, finish_anisotropy);
+        D = distributionAnisotropic(n, tangent, bitangent, H, axes);
+        G = 1.0 / (1.0 + anisotropicLambda(n, tangent, bitangent, v, axes)
+                       + anisotropicLambda(n, tangent, bitangent, l, axes));
+        vec3 bentNormal = v - tangent * dot(v, tangent);
+        if (dot(bentNormal, bentNormal) > 0.000001) {
+            environmentNormal = normalize(mix(n, normalize(bentNormal), finish_anisotropy * (1.0 - roughness)));
+        }
+    }
     vec3 F = fresnelSchlick(max(dot(H, v), 0.0), F0);
     vec3 kS = F;
     vec3 kD = (vec3(1.0) - kS) * (1.0 - surfaceMetallic);
@@ -493,7 +616,7 @@ void main()
     vec3 lo = (diffuse + specular) * vec3(3.0) * NdotL;
     vec3 ambient = vec3(0.25) * albedo * surfaceAo;
     vec3 color = ambient + lo;
-    vec3 reflected = reflect(-v, n);
+    vec3 reflected = reflect(-v, environmentNormal);
     float envUp = reflected.y * 0.5 + 0.5;
     vec3 envColor = mix(ENVIRONMENT_LOW_COLOR, ENVIRONMENT_HIGH_COLOR, clamp(envUp, 0.0, 1.0));
     vec3 Fenv = fresnelSchlickRoughness(NdotV, F0, roughness);
@@ -504,18 +627,22 @@ void main()
     color += vec3(glitter * finish_flake * 1.4) * Fenv;
     if (clear_coat_intensity > 0.01) {
         float ccRoughness = clamp(clear_coat_roughness, 0.04, 1.0);
-        float ccD = distributionGGX(n, H, ccRoughness);
-        float ccG = geometrySmith(n, v, l, ccRoughness);
+        float ccNdotV = max(dot(coatNormal, v), 0.0);
+        float ccNdotL = max(dot(coatNormal, l), 0.0);
+        float ccD = distributionGGX(coatNormal, H, ccRoughness);
+        float ccG = geometrySmith(coatNormal, v, l, ccRoughness);
         vec3 ccF = fresnelSchlick(max(dot(H, v), 0.0), vec3(0.04));
-        vec3 ccSpecular = (ccD * ccG * ccF) / max(4.0 * NdotV * NdotL, 0.001);
-        color += ccSpecular * vec3(3.0) * NdotL * clear_coat_intensity;
-        vec3 ccEnvF = fresnelSchlickRoughness(NdotV, vec3(0.04), ccRoughness);
-        color += envColor * ccEnvF * mix(0.15, 0.95, 1.0 - ccRoughness) * clear_coat_intensity;
-        float ccFresnelEdge = pow(1.0 - NdotV, 4.0);
+        vec3 ccSpecular = (ccD * ccG * ccF) / max(4.0 * ccNdotV * ccNdotL, 0.001);
+        color += ccSpecular * vec3(3.0) * ccNdotL * clear_coat_intensity;
+        vec3 ccReflected = reflect(-v, coatNormal);
+        vec3 ccEnvColor = mix(ENVIRONMENT_LOW_COLOR, ENVIRONMENT_HIGH_COLOR, clamp(ccReflected.y * 0.5 + 0.5, 0.0, 1.0));
+        vec3 ccEnvF = fresnelSchlickRoughness(ccNdotV, vec3(0.04), ccRoughness);
+        color += ccEnvColor * ccEnvF * mix(0.15, 0.95, 1.0 - ccRoughness) * clear_coat_intensity;
+        float ccFresnelEdge = pow(1.0 - ccNdotV, 4.0);
         color += vec3(ccFresnelEdge * 0.06 * clear_coat_intensity);
     }
     color += material_emissive + nativeEmission;
-    out_color = vec4(color, outputAlpha);
+    out_color = vec4(linearToSrgb(max(color, vec3(0.0))), outputAlpha);
 }
 )";
 
@@ -705,11 +832,12 @@ const QVector3D kTailLampEmissionColor(1.0f, 0.025f, 0.012f);
 const QVector3D kIndicatorEmissionColor(1.0f, 0.30f, 0.025f);
 const QVector3D kHeadLampEmissionColor(1.0f, 0.86f, 0.68f);
 
-float linearToDisplay(float value) {
-    const float linear = std::clamp(value, 0.0f, 1.0f);
-    return linear <= 0.0031308f
-        ? linear * 12.92f
-        : 1.055f * std::pow(linear, 1.0f / 2.4f) - 0.055f;
+QVector3D srgbToLinear(const QVector3D &color) {
+    const auto channel = [](float value) {
+        return value <= 0.04045f ? value / 12.92f : std::pow((value + 0.055f) / 1.055f, 2.4f);
+    };
+
+    return {channel(color.x()), channel(color.y()), channel(color.z())};
 }
 
 std::optional<MaterialFallback> exteriorMaterialFallback(const fls::CarMesh &mesh) {
@@ -837,6 +965,14 @@ void CarModelRenderer::initialize() {
     hasFinishSurfaceLocation_ = program_.uniformLocation("has_finish_surface");
     finishSelfColoredLocation_ = program_.uniformLocation("finish_self_colored");
     finishTilingLocation_ = program_.uniformLocation("finish_tiling");
+    finishOwnUvLocation_ = program_.uniformLocation("finish_own_uv");
+    finishAnisotropyLocation_ = program_.uniformLocation("finish_anisotropy");
+    finishNormalIntensityLocation_ = program_.uniformLocation("finish_normal_intensity");
+    weaveMaskLocation_ = program_.uniformLocation("weave_mask");
+    hasWeaveMaskLocation_ = program_.uniformLocation("has_weave_mask");
+    weaveColorTintALocation_ = program_.uniformLocation("weave_color_tint_a");
+    weaveColorTintBLocation_ = program_.uniformLocation("weave_color_tint_b");
+    finishUvRotationLocation_ = program_.uniformLocation("finish_uv_rotation");
     finishFlakeLocation_ = program_.uniformLocation("finish_flake");
     clearCoatRoughnessLocation_ = program_.uniformLocation("clear_coat_roughness");
     clearCoatIntensityLocation_ = program_.uniformLocation("clear_coat_intensity");
@@ -1124,6 +1260,41 @@ bool isFrontWheelPaintMesh(const fls::CarMesh &mesh) {
     return z / static_cast<double>(mesh.positions.size()) >= 0.0;
 }
 
+bool visibleCarPart(int partType, bool stockPart, const std::vector<int> &optionIds,
+                    const QHash<int, int> &selections) {
+    const auto selected = selections.constFind(partType);
+    if (selected == selections.cend() || optionIds.empty()) {
+        return stockPart;
+    }
+
+    return std::find(optionIds.begin(), optionIds.end(), selected.value()) != optionIds.end();
+}
+
+bool meshHasSurfaceArea(const fls::CarMesh &mesh) {
+    for (size_t index = 0; index + 2 < mesh.indices.size(); index += 3) {
+        const quint32 first = mesh.indices[index];
+        const quint32 second = mesh.indices[index + 1];
+        const quint32 third = mesh.indices[index + 2];
+        if (first >= mesh.positions.size() || second >= mesh.positions.size() || third >= mesh.positions.size()) continue;
+        const auto a = mesh.boneTransform.transformPoint(mesh.positions[first]);
+        const auto b = mesh.boneTransform.transformPoint(mesh.positions[second]);
+        const auto c = mesh.boneTransform.transformPoint(mesh.positions[third]);
+        const double ux = static_cast<double>(b.x) - a.x;
+        const double uy = static_cast<double>(b.y) - a.y;
+        const double uz = static_cast<double>(b.z) - a.z;
+        const double vx = static_cast<double>(c.x) - a.x;
+        const double vy = static_cast<double>(c.y) - a.y;
+        const double vz = static_cast<double>(c.z) - a.z;
+        const double x = uy * vz - uz * vy;
+        const double y = uz * vx - ux * vz;
+        const double z = ux * vy - uy * vx;
+        const double squaredArea = x * x + y * y + z * z;
+        if (std::isfinite(squaredArea) && squaredArea > 0.0) return true;
+    }
+
+    return false;
+}
+
 std::vector<quint64> paintMaterialHashes(const fls::CarMesh &mesh, bool cockpitOnly) {
     if (cockpitOnly || isBrakeRotorMesh(mesh)) {
         return {};
@@ -1136,32 +1307,33 @@ std::vector<quint64> paintMaterialHashes(const fls::CarMesh &mesh, bool cockpitO
         }
     };
     if (!isWheelPaintMesh(mesh)) {
+        if (mesh.paintMaterialHash != fls::material_hashes::binding::kBodyPaint
+            && fls::material_hashes::contains(fls::material_hashes::binding::kLiveryMaterials, mesh.paintMaterialHash)) {
+            append(mesh.paintMaterialHash);
+        }
         append(semanticHash != 0 ? semanticHash : mesh.paintMaterialHash);
         return hashes;
     }
 
     using namespace fls::material_hashes::binding;
-    // Axle-specific overrides must win over raw and shared rim material hashes. Some cars reuse
-    // the same raw hash for both axles, so checking it first makes a front-only edit affect the
-    // rear wheels too.
     const auto &axleHashes = isFrontWheelPaintMesh(mesh)
         ? kFrontWheelPaint
         : kRearWheelPaint;
-    for (quint64 hash : axleHashes) {
-        append(hash);
+    if (fls::material_hashes::contains(kFrontWheelPaint, mesh.paintMaterialHash)
+        || fls::material_hashes::contains(kRearWheelPaint, mesh.paintMaterialHash)
+        || (mesh.paintMaterialHash != kRims && fls::material_hashes::contains(kWheelPaintGroups, mesh.paintMaterialHash))) {
+        append(mesh.paintMaterialHash);
     }
-    append(semanticHash != 0 ? semanticHash : mesh.paintMaterialHash);
+    append(axleHashes.front());
     const QString material = paintMaterialToken(mesh.materialName);
-    if (material == QStringLiteral("rim")) append(kRims);
     if (material == QStringLiteral("rim2")) append(kRims2);
     if (material == QStringLiteral("rim3")) append(kRims3);
     if (material == QStringLiteral("inner_rim")) append(kRimsInner);
     if (material == QStringLiteral("lip")) append(kRimsLip);
     if (material == QStringLiteral("detail")) append(kWheel1);
     if (material == QStringLiteral("detail2")) append(kWheel2);
-    for (quint64 hash : kWheelPaintGroups) {
-        append(hash);
-    }
+    append(semanticHash != 0 ? semanticHash : mesh.paintMaterialHash);
+    append(kRims);
     return hashes;
 }
 
@@ -2098,6 +2270,23 @@ std::vector<uint8_t> upsampleCoverageMask(const fls::SwatchMask &mask, int dstW,
 
 } // namespace
 
+QSet<quint64> carPaintableBindings(const fls::CarModel &model, int lodIndex,
+                                 const QHash<int, int> &partSelections) {
+    QSet<quint64> bindings;
+    const auto collect = [&](const std::vector<fls::CarMesh> &meshes) {
+        for (const auto &mesh : meshes) {
+            if (!visibleCarPart(mesh.carPartType, mesh.stockPart, mesh.partOptionIds, partSelections)
+                || isPrebakedLiveryMesh(mesh) || isInteriorWindowShell(mesh.name) || isCoarseInteriorLod(mesh)) continue;
+            const auto hashes = paintMaterialHashes(mesh, isCockpitOnly(mesh));
+            if (!hashes.empty() && meshHasSurfaceArea(mesh)) bindings.insert(hashes.front());
+        }
+    };
+    collect(model.meshesForLod(lodIndex));
+    collect(model.variantMeshesForLod(lodIndex));
+
+    return bindings;
+}
+
 namespace {
 
 std::vector<const fls::CarMesh *> meshPointers(
@@ -2555,6 +2744,7 @@ void CarModelRenderer::uploadModel(const fls::CarModel &model, int lodIndex) {
         functions->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         functions->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
         functions->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+        configureTextureAnisotropy(context);
         functions->glTexImage2D(
             GL_TEXTURE_2D, 0, srgb ? GL_SRGB8_ALPHA8 : GL_RGBA8,
             texture->image.width, texture->image.height, 0, GL_RGBA, GL_UNSIGNED_BYTE,
@@ -2593,41 +2783,32 @@ void CarModelRenderer::uploadModel(const fls::CarModel &model, int lodIndex) {
         const bool brakeRotor = isBrakeRotorMesh(mesh);
         const bool windowGlass = isWindowGlassMaterial(mesh);
         const fls::TexCoordTransform &uvTransform = mesh.texCoordTransforms[3];
-        int materialUvIndex = 0;
-        float materialUTiling = mesh.material ? mesh.material->uTiling : 1.0f;
-        float materialVTiling = mesh.material ? mesh.material->vTiling : 1.0f;
-        bool rawMaterialUv = false;
-        // The car_carbonfiber shader (into which resolveExteriorMaterials injects the twin-twill
-        // weave) samples its weave on RAW UV channel 0 tiled by the material's U/V tiling. Decompiled
-        // from the game PS+VS (see docs/SHADER_ANALYSIS.md "Carbon Weave UV & Tiling"): the pixel
-        // shader samples the weave at raw TEXCOORD0; the vertex shader builds TEXCOORD0 = channel0 *
-        // (U_Tiling, V_Tiling) with U_Tiling=V_Tiling=32 for carbonfiber.materialbin (the ID15 variant
-        // bakes 75). We must NOT apply channel 0's decoded transform — for carbon that is a ~0.03
-        // livery-atlas packing the game replaces with the tiling — so sample channel 0 raw × tiling.
-        QString carbonResource = mesh.material ? mesh.material->resourcePath : QString();
-        carbonResource.replace(QLatin1Char('\\'), QLatin1Char('/'));
-        if (carbonResource.contains(QStringLiteral("carbonfiber/carbonfiber"), Qt::CaseInsensitive)) {
-            materialUvIndex = 0;
-            rawMaterialUv = true;
-            // Force the shader's U_Tiling if the shared-library merge didn't resolve it (leaving 1).
-            if (materialUTiling <= 1.5f) {
-                materialUTiling = 32.0f;
-            }
-            if (materialVTiling <= 1.5f) {
-                materialVTiling = 32.0f;
-            }
-        }
+        const int materialUvIndex = materialResourceIdentity(mesh).contains(QStringLiteral("/carbonfiber/carbonfiber"))
+            && mesh.uvChannels.size() > 1 && mesh.uvChannels[1].size() == mesh.positions.size() ? 1 : 0;
+        const float materialUTiling = mesh.material ? mesh.material->uTiling : 1.0f;
+        const float materialVTiling = mesh.material ? mesh.material->vTiling : 1.0f;
+        const float materialRotation = mesh.material ? qDegreesToRadians(mesh.material->uvOrientationDegrees) : 0.0f;
+        const float materialCosine = std::cos(materialRotation);
+        const float materialSine = std::sin(materialRotation);
         const std::vector<fls::ModelVec2> *materialUv =
             materialUvIndex < static_cast<int>(mesh.uvChannels.size())
             && mesh.uvChannels[materialUvIndex].size() == mesh.positions.size()
             ? &mesh.uvChannels[materialUvIndex]
             : nullptr;
-        const fls::TexCoordTransform identityUvTransform;
-        const fls::TexCoordTransform &materialUvTransform =
-            rawMaterialUv ? identityUvTransform : mesh.texCoordTransforms[materialUvIndex];
+        const auto &materialUvTransform = mesh.texCoordTransforms[materialUvIndex];
+        const int finishUvChannel = mesh.uvChannels.size() > 1 && mesh.uvChannels[1].size() == mesh.positions.size() ? 1 : 0;
+        const auto *finishUv = mesh.uvChannels.size() > static_cast<size_t>(finishUvChannel)
+            && mesh.uvChannels[finishUvChannel].size() == mesh.positions.size() ? &mesh.uvChannels[finishUvChannel] : nullptr;
+        const auto &finishUvTransform = mesh.texCoordTransforms[finishUvChannel];
+        const auto tangentsFor = [&](int channel) -> const std::vector<fls::ModelVec4> * {
+            return mesh.tangentChannels.size() > static_cast<size_t>(channel)
+                && mesh.tangentChannels[channel].size() == mesh.positions.size() ? &mesh.tangentChannels[channel] : nullptr;
+        };
+        const auto *materialTangents = tangentsFor(materialUvIndex);
+        const auto *finishTangents = tangentsFor(finishUvChannel);
 
         std::vector<float> interleaved;
-        interleaved.reserve(mesh.positions.size() * 10);
+        interleaved.reserve(mesh.positions.size() * 20);
         for (size_t i = 0; i < mesh.positions.size(); ++i) {
             const fls::ModelVec3 &p = mesh.positions[i];
             const fls::ModelVec3 &n = i < mesh.normals.size() ? mesh.normals[i] : fls::ModelVec3{0.0f, 1.0f, 0.0f};
@@ -2645,17 +2826,24 @@ void CarModelRenderer::uploadModel(const fls::CarModel &model, int lodIndex) {
                 interleaved.push_back(0.0f);
             }
             if (materialUv != nullptr) {
-                // The car_carbonfiber weave rides raw TEXCOORD0 (V NOT flipped); every other native
-                // material samples with the usual V-flip. Flipping the weave mirrors the twill
-                // diagonal (/ vs \), which reads as the wrong orientation.
-                const float mv = rawMaterialUv ? (*materialUv)[i].v : (1.0f - (*materialUv)[i].v);
-                interleaved.push_back(((*materialUv)[i].u * materialUvTransform.scaleU
-                                       + materialUvTransform.offsetU) * materialUTiling);
-                interleaved.push_back((mv * materialUvTransform.scaleV
-                                       + materialUvTransform.offsetV) * materialVTiling);
+                const float transformedU = (*materialUv)[i].u * materialUvTransform.scaleU + materialUvTransform.offsetU;
+                const float transformedV = (1.0f - (*materialUv)[i].v) * materialUvTransform.scaleV + materialUvTransform.offsetV;
+                interleaved.push_back((materialCosine * transformedU - materialSine * transformedV) * materialUTiling);
+                interleaved.push_back((materialSine * transformedU + materialCosine * transformedV) * materialVTiling);
             } else {
                 interleaved.push_back(0.0f);
                 interleaved.push_back(0.0f);
+            }
+            if (finishUv != nullptr) {
+                interleaved.push_back((*finishUv)[i].u * finishUvTransform.scaleU + finishUvTransform.offsetU);
+                interleaved.push_back((1.0f - (*finishUv)[i].v) * finishUvTransform.scaleV + finishUvTransform.offsetV);
+            } else {
+                interleaved.push_back(0.0f);
+                interleaved.push_back(0.0f);
+            }
+            for (const auto *tangents : {materialTangents, finishTangents}) {
+                const auto tangent = tangents != nullptr ? (*tangents)[i] : fls::ModelVec4{};
+                interleaved.insert(interleaved.end(), {tangent.x, tangent.y, tangent.z, tangent.w});
             }
         }
 
@@ -2677,9 +2865,7 @@ void CarModelRenderer::uploadModel(const fls::CarModel &model, int lodIndex) {
         if (mesh.material) {
             buffers->hasMaterialColor = mesh.material->hasBaseColor;
             buffers->materialColor = QVector3D(
-                linearToDisplay(mesh.material->baseColor[0]),
-                linearToDisplay(mesh.material->baseColor[1]),
-                linearToDisplay(mesh.material->baseColor[2]));
+                mesh.material->baseColor[0], mesh.material->baseColor[1], mesh.material->baseColor[2]);
             buffers->emissiveColor = QVector3D(
                 mesh.material->emissiveColor[0], mesh.material->emissiveColor[1], mesh.material->emissiveColor[2]);
             buffers->emissiveIntensity = mesh.material->emissiveIntensity;
@@ -2936,6 +3122,9 @@ struct ClearCoat {
 };
 
 ClearCoat bodyClearCoat(bool bodyPaint, const fls::PaintFinishRender *finish, float gloss) {
+    if (finish != nullptr && finish->valid && finish->clearCoatCoverage >= 0.0f) {
+        return {finish->clearCoatCoverage, std::max(finish->clearCoatRoughness, kClearCoatMinRoughness)};
+    }
     if (!bodyPaint) {
         return {};
     }
@@ -2966,8 +3155,12 @@ void applyLegacyPaintFinish(const fls::LiveryPaintMaterial &paint, float &second
         gloss = 0.12f;
         break;
     case 4:
+    case 70:
+    case 71:
+    case 72:
         gloss = 0.78f;
         metallic = 0.85f;
+        secondaryMix = paint.secondary.enabled ? kFlakeSecondaryMixMax : 0.0f;
         break;
     case 50:
         gloss = 0.12f;
@@ -3013,7 +3206,7 @@ void applyPaintFinish(const fls::LiveryPaintMaterial &paint, const fls::PaintFin
 
 } // namespace
 
-GLuint CarModelRenderer::uploadSwatchTexture(const fls::SwatchImage &image) {
+GLuint CarModelRenderer::uploadSwatchTexture(const fls::SwatchImage &image, const std::vector<fls::SwatchImage> &mips, bool srgb) {
     if (!image.valid()) {
         return 0;
     }
@@ -3025,13 +3218,21 @@ GLuint CarModelRenderer::uploadSwatchTexture(const fls::SwatchImage &image) {
     GLuint texture = 0;
     functions->glGenTextures(1, &texture);
     functions->glBindTexture(GL_TEXTURE_2D, texture);
-    functions->glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, image.width, image.height, 0, GL_RGBA,
+    functions->glTexImage2D(GL_TEXTURE_2D, 0, srgb ? GL_SRGB8_ALPHA8 : GL_RGBA8, image.width, image.height, 0, GL_RGBA,
                             GL_UNSIGNED_BYTE, image.rgba.data());
-    functions->glGenerateMipmap(GL_TEXTURE_2D);
+    int level = 1;
+    for (const auto &mip : mips) {
+        if (!mip.valid()) break;
+        functions->glTexImage2D(GL_TEXTURE_2D, level++, srgb ? GL_SRGB8_ALPHA8 : GL_RGBA8, mip.width, mip.height,
+                              0, GL_RGBA, GL_UNSIGNED_BYTE, mip.rgba.data());
+    }
+    if (level == 1) functions->glGenerateMipmap(GL_TEXTURE_2D);
+    else functions->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, level - 1);
     functions->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
     functions->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
     functions->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
     functions->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    configureTextureAnisotropy(context);
     functions->glBindTexture(GL_TEXTURE_2D, 0);
 
     return texture;
@@ -3044,9 +3245,10 @@ const CarModelRenderer::FinishTextureEntry *CarModelRenderer::ensurePaintFinishT
         return &existing.value();
     }
     FinishTextureEntry entry;
-    entry.pattern = uploadSwatchTexture(render.patternImage);
-    entry.normal = uploadSwatchTexture(render.detailNormalImage);
-    entry.surface = uploadSwatchTexture(render.roughMetalAoImage);
+    entry.pattern = uploadSwatchTexture(render.patternImage, render.patternMips, true);
+    entry.normal = uploadSwatchTexture(render.detailNormalImage, render.detailNormalMips, false);
+    entry.surface = uploadSwatchTexture(render.roughMetalAoImage, render.roughMetalAoMips, false);
+    entry.weaveMask = uploadSwatchTexture(render.weaveMaskImage, render.weaveMaskMips, false);
 
     return &*finishTextureCache_.insert(code, entry);
 }
@@ -3055,9 +3257,9 @@ void CarModelRenderer::clearPaintFinishTextures() {
     if (!finishTextureCache_.isEmpty()) {
         if (QOpenGLContext *context = QOpenGLContext::currentContext()) {
             QVector<GLuint> ids;
-            ids.reserve(finishTextureCache_.size() * 3);
+            ids.reserve(finishTextureCache_.size() * 4);
             for (const FinishTextureEntry &entry : std::as_const(finishTextureCache_)) {
-                for (GLuint id : {entry.pattern, entry.normal, entry.surface}) {
+                for (GLuint id : {entry.pattern, entry.normal, entry.surface, entry.weaveMask}) {
                     if (id != 0) {
                         ids.push_back(id);
                     }
@@ -3091,15 +3293,7 @@ void CarModelRenderer::render(
 
     const auto partVisible = [this](int partType, bool stockPart,
                                     const std::vector<int> &optionIds) {
-        const auto selected = partSelections_.constFind(partType);
-        if (selected == partSelections_.cend()) {
-            return stockPart;
-        }
-        if (optionIds.empty()) {
-            return stockPart;
-        }
-        return std::find(optionIds.begin(), optionIds.end(), selected.value())
-            != optionIds.end();
+        return visibleCarPart(partType, stockPart, optionIds, partSelections_);
     };
 
     functions->glEnable(GL_DEPTH_TEST);
@@ -3117,10 +3311,10 @@ void CarModelRenderer::render(
 
     program_.bind();
     program_.setUniformValue(wireframeOverlayLocation_, 0);
-    const QVector3D fallbackColor(
+    const QVector3D fallbackColor = srgbToLinear(QVector3D(
         static_cast<float>(basePaint.redF()),
         static_cast<float>(basePaint.greenF()),
-        static_cast<float>(basePaint.blueF()));
+        static_cast<float>(basePaint.blueF())));
 
     bool eyeValid = false;
     const QVector3D eye = view.inverted(&eyeValid).map(QVector3D(0.0f, 0.0f, 0.0f));
@@ -3180,9 +3374,9 @@ void CarModelRenderer::render(
             liveryCustomPainted = true;
             const quint32 key = (quint32(paint->primary.bgra[0]) << 16)
                 | (quint32(paint->primary.bgra[1]) << 8) | quint32(paint->primary.bgra[2]);
-            const QVector3D color(paint->primary.bgra[2] / 255.0f,
+            const QVector3D color = srgbToLinear(QVector3D(paint->primary.bgra[2] / 255.0f,
                                   paint->primary.bgra[1] / 255.0f,
-                                  paint->primary.bgra[0] / 255.0f);
+                                  paint->primary.bgra[0] / 255.0f));
             const int weight = std::max(1, m.indexCount);
             paintedPanels.push_back({m.center, color, static_cast<float>(weight)});
             primaryCounts[key] += weight;
@@ -3226,7 +3420,7 @@ void CarModelRenderer::render(
             ? &*resolvedPaint : nullptr;
         const fls::ManufacturerColor *manufacturerColor =
             paint != nullptr && manufacturerColors != nullptr
-                && (positionalPaint || !liveryCustomPainted)
+                && (positionalPaint || !paint->primary.enabled)
             ? manufacturerColors->find(paint->manufacturerSelector)
             : nullptr;
         const int effectiveFinishCode = mesh.windowGlass
@@ -3242,13 +3436,11 @@ void CarModelRenderer::render(
             ? paintFinishes->find(previewFinishCode)
             : nullptr;
         const auto decodedColor = [](const fls::LiveryPaintColor &color) {
-            return QVector3D(color.bgra[2] / 255.0f, color.bgra[1] / 255.0f, color.bgra[0] / 255.0f);
+            return srgbToLinear(QVector3D(color.bgra[2] / 255.0f, color.bgra[1] / 255.0f, color.bgra[0] / 255.0f));
         };
         const auto decodedManufacturerColor = [](const std::array<float, 3> &color) {
             return QVector3D(
-                linearToDisplay(color[0]),
-                linearToDisplay(color[1]),
-                linearToDisplay(color[2]));
+                color[0], color[1], color[2]);
         };
         if (manufacturerColor != nullptr) {
             primary = decodedManufacturerColor(manufacturerColor->primary);
@@ -3280,7 +3472,7 @@ void CarModelRenderer::render(
         if (effectiveFinishCode != 0) {
             fls::LiveryPaintMaterial effectivePaint = paint != nullptr
                 ? *paint : fls::LiveryPaintMaterial{};
-            effectivePaint.finish = static_cast<quint32>(effectiveFinishCode);
+            effectivePaint.finish = static_cast<quint32>(previewFinishCode > 0 ? previewFinishCode : effectiveFinishCode);
             applyPaintFinish(
                 effectivePaint, finish, primary, secondary, secondaryMix, gloss, metallic);
         }
@@ -3330,9 +3522,24 @@ void CarModelRenderer::render(
                             finishNormalLocation_, hasFinishNormalLocation_);
         bindMaterialTexture(9, finishTextures != nullptr ? finishTextures->surface : 0,
                             finishSurfaceLocation_, hasFinishSurfaceLocation_);
+        bindMaterialTexture(10, finishTextures != nullptr ? finishTextures->weaveMask : 0,
+                            weaveMaskLocation_, hasWeaveMaskLocation_);
+        program_.setUniformValue(weaveColorTintALocation_, finish != nullptr
+            ? QVector3D(finish->weaveColorTintA[0], finish->weaveColorTintA[1], finish->weaveColorTintA[2]) : QVector3D());
+        program_.setUniformValue(weaveColorTintBLocation_, finish != nullptr
+            ? QVector3D(finish->weaveColorTintB[0], finish->weaveColorTintB[1], finish->weaveColorTintB[2]) : QVector3D());
+        program_.setUniformValue(finishUvRotationLocation_, finish != nullptr ? qDegreesToRadians(finish->uvOrientationDegrees) : 0.0f);
         program_.setUniformValue(finishSelfColoredLocation_,
                                  (finish != nullptr && finish->selfColored) ? 1 : 0);
-        program_.setUniformValue(finishTilingLocation_, 1.0f);
+        QVector2D finishTiling = finish != nullptr
+            ? QVector2D(finish->tiling[0], finish->tiling[1]) : QVector2D(1.0f, 1.0f);
+        if (finish != nullptr && finish->hasWeaveMask()) {
+            finishTiling *= kWeavePreviewTilingScale;
+        }
+        program_.setUniformValue(finishTilingLocation_, finishTiling);
+        program_.setUniformValue(finishOwnUvLocation_, finish != nullptr && finish->uvChannel >= 0 ? 1 : 0);
+        program_.setUniformValue(finishAnisotropyLocation_, finish != nullptr ? finish->anisotropy : 0.0f);
+        program_.setUniformValue(finishNormalIntensityLocation_, finish != nullptr ? finish->normalIntensity : 1.0f);
         program_.setUniformValue(
             finishFlakeLocation_,
             finish != nullptr ? finish->flakeAmount : manufacturerFlake);

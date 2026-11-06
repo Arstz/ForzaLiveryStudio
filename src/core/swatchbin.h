@@ -33,4 +33,6 @@ SwatchImage loadSwatchImage(const QString &path, QString *error = nullptr);
 
 SwatchImage decodeSwatchImage(const QByteArray &bytes, QString *error = nullptr);
 
+std::vector<SwatchImage> decodeSwatchMipImages(const QByteArray &bytes, QString *error = nullptr);
+
 } // namespace fls

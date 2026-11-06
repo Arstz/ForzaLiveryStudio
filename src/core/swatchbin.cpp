@@ -10,6 +10,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <utility>
 
 #ifdef Q_OS_WIN
 #  include <d3d11.h>
@@ -35,6 +36,7 @@ struct TextureSurface {
     int width = 0;
     int height = 0;
     int formatEncoded = -1;
+    int mipCount = 1;
     QByteArray pixels;
 };
 
@@ -527,7 +529,7 @@ SwatchImage decodeBc7Surface(const QByteArray &, int, int, QString *error) {
 }
 #endif
 
-std::optional<TextureSurface> readTextureSurface(const QByteArray &bytes, QString *error) {
+std::optional<TextureSurface> readTextureSurface(const QByteArray &bytes, QString *error, int mipIndex = 0) {
     if (bytes.size() < 8 || readLeU32(bytes, 0) != kBundleMagic) {
         setError(error, QStringLiteral("not a Grub bundle (bad magic)"));
         return std::nullopt;
@@ -586,6 +588,7 @@ std::optional<TextureSurface> readTextureSurface(const QByteArray &bytes, QStrin
         const int platform = packed >> 14;
         const qint32 transcoding = static_cast<qint32>(readLeU32(bytes, txchData + 0x28));
         const quint32 slicesOffset = readLeU32(bytes, txchData + 0x38);
+        const int mipCount = static_cast<quint8>(bytes[txchData + 0x26]);
 
         if (platform != 0) {
             setError(error, QStringLiteral("swatchbin is Xbox/Durango format (tiled); not supported"));
@@ -596,7 +599,12 @@ std::optional<TextureSurface> readTextureSurface(const QByteArray &bytes, QStrin
             return std::nullopt;
         }
 
-        const int sliceEnc = static_cast<int>(readLeU32(bytes, txchData + static_cast<int>(slicesOffset)));
+        const qint64 sliceRecord = static_cast<qint64>(txchData) + slicesOffset;
+        if (sliceRecord < 0 || sliceRecord + 4 > bytes.size() || mipCount > 32 || mipIndex < 0) {
+            setError(error, QStringLiteral("swatchbin slice metadata out of range"));
+            return std::nullopt;
+        }
+        const int sliceEnc = static_cast<int>(readLeU32(bytes, static_cast<int>(sliceRecord)));
         int formatEncoded = sliceEnc;
         if (transcoding > 1) {
             formatEncoded = transcoding - 2;
@@ -612,6 +620,29 @@ std::optional<TextureSurface> readTextureSurface(const QByteArray &bytes, QStrin
         surface.height = height;
         surface.formatEncoded = formatEncoded;
         surface.pixels = bytes.mid(static_cast<int>(dataOffset), static_cast<int>(sizeToRead));
+        if (mipCount > 0 && sliceRecord + 12 <= bytes.size()) {
+            const quint32 descriptorsOffset = readLeU32(bytes, static_cast<int>(sliceRecord) + 4);
+            const qint64 descriptor = static_cast<qint64>(txchData) + descriptorsOffset + static_cast<qint64>(mipIndex) * 12;
+            if (descriptorsOffset == 0 || mipIndex >= mipCount || descriptor < 0 || descriptor + 12 > bytes.size()) {
+                setError(error, QStringLiteral("swatchbin mip descriptor out of range"));
+                return std::nullopt;
+            }
+            const quint32 byteLength = readLeU32(bytes, static_cast<int>(descriptor));
+            const quint32 byteOffset = readLeU32(bytes, static_cast<int>(descriptor) + 4);
+            if (static_cast<quint64>(byteOffset) + byteLength > sizeToRead) {
+                setError(error, QStringLiteral("swatchbin mip payload out of range"));
+                return std::nullopt;
+            }
+            surface.mipCount = mipCount;
+            surface.pixels = surface.pixels.mid(byteOffset, byteLength);
+            for (int level = 0; level < mipIndex; ++level) {
+                surface.width = (std::max)(1, surface.width / 2);
+                surface.height = (std::max)(1, surface.height / 2);
+            }
+        } else if (mipIndex != 0) {
+            setError(error, QStringLiteral("swatchbin mip level unavailable"));
+            return std::nullopt;
+        }
         return surface;
     }
 
@@ -619,40 +650,27 @@ std::optional<TextureSurface> readTextureSurface(const QByteArray &bytes, QStrin
     return std::nullopt;
 }
 
-} // namespace
-
-SwatchMask decodeSwatchMask(const QByteArray &bytes, QString *error) {
-    const auto surface = readTextureSurface(bytes, error);
-    if (!surface) {
-        return {};
-    }
-
-    switch (static_cast<Encoding>(surface->formatEncoded)) {
-    case Encoding::UnsignedBc4:
-    case Encoding::SignedBc4:
-        return decodeBc4Surface(surface->pixels, surface->width, surface->height, error);
-    case Encoding::R8:
-    case Encoding::A8:
-        return decodeR8Surface(surface->pixels, surface->width, surface->height, error);
-    default:
-        setError(error, QStringLiteral("swatchbin encoding %1 not supported (only BC4/R8 masks)")
-                            .arg(surface->formatEncoded));
-        return {};
-    }
-}
-
-SwatchImage decodeSwatchImage(const QByteArray &bytes, QString *error) {
-    const auto surface = readTextureSurface(bytes, error);
-    if (!surface) {
-        return {};
-    }
-
+SwatchImage decodeSurfaceImage(const TextureSurface *surface, QString *error) {
     switch (static_cast<Encoding>(surface->formatEncoded)) {
     case Encoding::Bc1:
     case Encoding::Bc2:
     case Encoding::Bc3:
         return decodeBcSurface(surface->pixels, surface->width, surface->height,
                                static_cast<Encoding>(surface->formatEncoded), error);
+    case Encoding::UnsignedBc4: {
+        const SwatchMask mask = decodeBc4Surface(surface->pixels, surface->width, surface->height, error);
+        if (!mask.valid()) return {};
+        SwatchImage image;
+        image.width = mask.width;
+        image.height = mask.height;
+        image.rgba.resize(mask.coverage.size() * kRgbaChannels);
+        for (size_t pixel = 0; pixel < mask.coverage.size(); ++pixel) {
+            std::fill_n(image.rgba.begin() + pixel * kRgbaChannels, 3, mask.coverage[pixel]);
+            image.rgba[pixel * kRgbaChannels + 3] = 255;
+        }
+
+        return image;
+    }
     case Encoding::UnsignedBc5:
     case Encoding::SignedBc5:
         return decodeBc5Surface(surface->pixels, surface->width, surface->height, error);
@@ -671,6 +689,47 @@ SwatchImage decodeSwatchImage(const QByteArray &bytes, QString *error) {
                             .arg(surface->formatEncoded));
         return {};
     }
+}
+
+} // namespace
+
+SwatchMask decodeSwatchMask(const QByteArray &bytes, QString *error) {
+    const auto surface = readTextureSurface(bytes, error);
+    if (!surface) return {};
+    switch (static_cast<Encoding>(surface->formatEncoded)) {
+    case Encoding::UnsignedBc4:
+    case Encoding::SignedBc4:
+        return decodeBc4Surface(surface->pixels, surface->width, surface->height, error);
+    case Encoding::R8:
+    case Encoding::A8:
+        return decodeR8Surface(surface->pixels, surface->width, surface->height, error);
+    default:
+        setError(error, QStringLiteral("swatchbin encoding %1 not supported (only BC4/R8 masks)").arg(surface->formatEncoded));
+        return {};
+    }
+}
+
+SwatchImage decodeSwatchImage(const QByteArray &bytes, QString *error) {
+    const auto surface = readTextureSurface(bytes, error);
+
+    return surface ? decodeSurfaceImage(&*surface, error) : SwatchImage{};
+}
+
+std::vector<SwatchImage> decodeSwatchMipImages(const QByteArray &bytes, QString *error) {
+    std::vector<SwatchImage> images;
+    const auto first = readTextureSurface(bytes, error);
+
+    if (!first) return {};
+    images.reserve(first->mipCount);
+    for (int level = 0; level < first->mipCount; ++level) {
+        const auto surface = level == 0 ? first : readTextureSurface(bytes, error, level);
+        if (!surface) return {};
+        auto image = decodeSurfaceImage(&*surface, error);
+        if (!image.valid()) return {};
+        images.push_back(std::move(image));
+    }
+
+    return images;
 }
 
 SwatchMask loadSwatchMask(const QString &path, QString *error) {

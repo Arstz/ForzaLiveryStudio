@@ -252,6 +252,7 @@ qt_add_library(fls_editor_ui STATIC
     src/gui/canvas/car_model_renderer.cpp
     src/gui/canvas/car_model_renderer.h
     src/gui/canvas/car_unwrap_overlay.h
+    src/gui/canvas/car_paint_geometry.h
     src/gui/canvas/car_unwrap_overlay_cache.cpp
     src/gui/canvas/car_unwrap_overlay_cache.h
     src/gui/fill/bucket_fill.cpp
@@ -332,6 +333,10 @@ qt_add_library(fls_editor_ui STATIC
     src/gui/canvas/project_canvas_events.cpp
     src/gui/widgets/car_preview_widget.cpp
     src/gui/widgets/car_preview_widget.h
+    src/gui/widgets/car_paint_catalog.cpp
+    src/gui/widgets/car_paint_catalog.h
+    src/gui/widgets/paint_color_popup.cpp
+    src/gui/widgets/paint_color_popup.h
     src/gui/widgets/clipboard_buffer_widget.cpp
     src/gui/widgets/clipboard_buffer_widget.h
     src/gui/widgets/color_palette_widget.cpp
@@ -632,6 +637,20 @@ if(FLS_BUILD_TESTS)
     add_executable(fls_car_unwrap_cache_tests tools/tests/car_unwrap_cache/main.cpp)
     target_link_libraries(fls_car_unwrap_cache_tests PRIVATE fls_editor_ui)
     add_test(NAME car_unwrap_cache COMMAND fls_car_unwrap_cache_tests)
+    add_executable(fls_paint_finish_tests tools/tests/paint_finishes/main.cpp)
+    target_link_libraries(fls_paint_finish_tests PRIVATE fls_core Qt6::Core)
+    add_test(NAME paint_finishes COMMAND fls_paint_finish_tests)
+    add_executable(fls_paint_controls_tests tools/tests/paint_controls/main.cpp)
+    target_link_libraries(fls_paint_controls_tests PRIVATE fls_editor_ui)
+    if(WIN32)
+        add_custom_command(TARGET fls_paint_controls_tests POST_BUILD
+            COMMAND "${CMAKE_COMMAND}" -E make_directory "$<TARGET_FILE_DIR:fls_paint_controls_tests>/platforms"
+            COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+                "${Qt6_DIR}/../../Qt6/plugins/platforms/qminimal.dll"
+                "$<TARGET_FILE_DIR:fls_paint_controls_tests>/platforms/qminimal.dll")
+    endif()
+    add_test(NAME paint_controls COMMAND fls_paint_controls_tests)
+    set_tests_properties(paint_controls PROPERTIES WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
     if(WIN32)
         add_executable(fls_swatchbin_tests tools/tests/swatchbin/main.cpp)
         target_link_libraries(fls_swatchbin_tests PRIVATE fls_core Qt6::Core)
@@ -822,6 +841,8 @@ else()
             "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/fls_positional_paint_tests${CMAKE_EXECUTABLE_SUFFIX}"
             "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/fls_zip_extract_tests${CMAKE_EXECUTABLE_SUFFIX}"
             "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/fls_car_unwrap_cache_tests${CMAKE_EXECUTABLE_SUFFIX}"
+            "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/fls_paint_controls_tests${CMAKE_EXECUTABLE_SUFFIX}"
+            "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/fls_paint_finish_tests${CMAKE_EXECUTABLE_SUFFIX}"
             "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/fls_swatchbin_tests${CMAKE_EXECUTABLE_SUFFIX}"
             "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/fls_game_roundtrip_tests${CMAKE_EXECUTABLE_SUFFIX}"
             "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/fls_export_target_tests${CMAKE_EXECUTABLE_SUFFIX}"

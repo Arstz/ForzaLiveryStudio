@@ -1,4 +1,5 @@
 param(
+    [switch]$DisablePrivacyPolicy,
     [Parameter(Position = 0, ValueFromRemainingArguments = $true)]
     [string[]]$BuildOptions = @()
 )
@@ -95,7 +96,7 @@ try {
 
     Write-BuildProgress -Percent 0 -Status "Configuring CMake"
     $ErrorActionPreference = "Continue"
-    & (Join-Path $PSScriptRoot "configure.ps1") 2>&1 | ForEach-Object {
+    & (Join-Path $PSScriptRoot "configure.ps1") -DisablePrivacyPolicy:$DisablePrivacyPolicy 2>&1 | ForEach-Object {
         Write-BuildLogLine -Line $_ -Percent 0 -Status "Configuring CMake"
     }
     $configureExitCode = $LASTEXITCODE

@@ -124,9 +124,10 @@ private:
         GLuint pattern = 0;
         GLuint normal = 0;
         GLuint surface = 0;
+        GLuint weaveMask = 0;
     };
 
-    GLuint uploadSwatchTexture(const fls::SwatchImage &image);
+    GLuint uploadSwatchTexture(const fls::SwatchImage &image, const std::vector<fls::SwatchImage> &mips, bool srgb);
     const FinishTextureEntry *ensurePaintFinishTextures(int code, const fls::PaintFinishRender &render);
     void clearPaintFinishTextures();
 
@@ -201,6 +202,14 @@ private:
     int hasFinishSurfaceLocation_ = -1;
     int finishSelfColoredLocation_ = -1;
     int finishTilingLocation_ = -1;
+    int finishOwnUvLocation_ = -1;
+    int finishAnisotropyLocation_ = -1;
+    int finishNormalIntensityLocation_ = -1;
+    int weaveMaskLocation_ = -1;
+    int hasWeaveMaskLocation_ = -1;
+    int weaveColorTintALocation_ = -1;
+    int weaveColorTintBLocation_ = -1;
+    int finishUvRotationLocation_ = -1;
     int finishFlakeLocation_ = -1;
     int clearCoatRoughnessLocation_ = -1;
     int clearCoatIntensityLocation_ = -1;

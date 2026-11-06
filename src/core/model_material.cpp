@@ -85,6 +85,9 @@ ModelMaterialParameter readParameter(Cursor &cursor) {
         if (atLeast(parameter.versionMajor, parameter.versionMinor, 1, 1)) {
             parameter.samplerFilter = cursor.i32();
         }
+        if (atLeast(parameter.versionMajor, parameter.versionMinor, 3, 4)) {
+            cursor.u32();
+        }
         break;
     case ModelMaterialParameterType::ColorGradient: {
         const quint32 count = cursor.u32();
@@ -158,6 +161,11 @@ void applyPreviewParameter(ModelMaterial &material, const ModelMaterialParameter
         && parameter.nameHash == material_hashes::parameter::kClearcoatRoughness
         && std::isfinite(parameter.scalar)) {
         material.gloss = std::clamp(1.0f - parameter.scalar, 0.0f, 1.0f);
+    }
+    if (parameter.type == ModelMaterialParameterType::Float
+        && parameter.nameHash == material_hashes::parameter::kUvOrientation
+        && std::isfinite(parameter.scalar)) {
+        material.uvOrientationDegrees = parameter.scalar;
     }
     if (parameter.type == ModelMaterialParameterType::Float
         && parameter.nameHash == material_hashes::parameter::kTextureTilingU
