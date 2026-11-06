@@ -42,11 +42,18 @@ QJsonObject loadPaintDatabase() {
 }
 
 QString finishMaterial(const QJsonObject &finish) {
-    QString path = finish.value(QStringLiteral("MaterialPath")).toString();
+    const QString suffix = QStringLiteral(".materialbin");
+    QString path = finish.value(QStringLiteral("Material")).toString();
+    if (path.isEmpty()) {
+        path = finish.value(QStringLiteral("MaterialPath")).toString();
+    }
     path.replace(QLatin1Char('\\'), QLatin1Char('/'));
     QString material = path.mid(path.lastIndexOf(QLatin1Char('/')) + 1).toLower();
-    if (material == QStringLiteral("metalflakelarge.materialbin")) {
-        material = QStringLiteral("metallicpaint.materialbin");
+    if (material.endsWith(suffix)) {
+        material.chop(suffix.size());
+    }
+    if (material == QStringLiteral("metalflakelarge")) {
+        material = QStringLiteral("metallicpaint");
     }
 
     return material;

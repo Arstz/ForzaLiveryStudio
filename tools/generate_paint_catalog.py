@@ -3,6 +3,8 @@ import json
 from pathlib import Path
 import sqlite3
 
+from append_manufacturer_palettes import compact_catalog
+
 
 DATABASES = {
     "FH2": "FH2gamedbRC.slt",
@@ -69,10 +71,10 @@ def main():
     catalog = {
         **previous,
         "version": 1,
-        "manufacturer_selector_mapping": "Native selectors are not assumed to equal database Sequence values.",
         "games": games,
     }
-    options.output.write_text(format_catalog(catalog) + "\n", encoding="utf-8")
+    catalog = compact_catalog(catalog)
+    options.output.write_text(format_catalog(catalog) + "\n", encoding="utf-8", newline="\n")
     for game, data in catalog["games"].items():
         print(game, "cars", len(data["manufacturer_colors"]), "finishes", len(data["finishes"]))
     print(options.output)

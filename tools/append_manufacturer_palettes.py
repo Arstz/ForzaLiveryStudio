@@ -12,6 +12,39 @@ import zlib
 
 PALETTE_TAG = 0x4D4E434C
 PALETTE_KEY = "manufacturer_palettes"
+ZIP_LZX = 21
+XMEM_FRAME_SIZE = 32768
+LZX_WINDOW_BITS = (16, 17, 15, 18, 19, 20, 21)
+CATALOG_METADATA = frozenset({
+    "manufacturer_selector_mapping", "model", "archive", "zip_entry",
+    "bundle_version", "palette_version", "binary_sha256", "opaque_tail",
+    "BaseTexture", "DamageTexture", "PreviewTexture", "CameraPreset",
+    "IconPath", "ErrorString", "SortOrder", "releaseOrder",
+})
+
+
+def material_name(path):
+    name = path.replace("\\", "/").rsplit("/", 1)[-1]
+    for suffix in (".materialbin", ".matpresetbin"):
+        if name.lower().endswith(suffix):
+            return name[:-len(suffix)]
+    return name
+
+
+def compact_catalog(value):
+    if isinstance(value, list):
+        return [compact_catalog(item) for item in value]
+    if isinstance(value, dict):
+        result = {}
+        for key, item in value.items():
+            if key in CATALOG_METADATA:
+                continue
+            if key in ("MaterialPath", "material"):
+                key = "Material" if key == "MaterialPath" else "name"
+                item = material_name(item)
+            result[key] = compact_catalog(item)
+        return result
+    return value
 
 
 class Cursor:
@@ -120,6 +153,96 @@ def decode_palette(data):
     return result
 
 
+def xmem_frames(data, expanded_size):
+    frames = []
+    offset = 0
+    produced = 0
+    view = memoryview(data)
+    while produced < expanded_size:
+        if offset >= len(data):
+            raise ValueError("Truncated XMem frame header")
+        header_size = 5 if data[offset] == 255 else 2
+        if offset + header_size > len(data):
+            raise ValueError("Truncated XMem frame header")
+        if header_size == 5:
+            expanded, compressed = struct.unpack_from(">HH", data, offset + 1)
+        else:
+            expanded = min(XMEM_FRAME_SIZE, expanded_size - produced)
+            compressed = struct.unpack_from(">H", data, offset)[0]
+        offset += header_size
+        if not 0 < expanded <= min(XMEM_FRAME_SIZE, expanded_size - produced):
+            raise ValueError("Invalid XMem frame output size")
+        if not compressed or offset + compressed > len(data):
+            raise ValueError("Invalid XMem frame compressed size")
+        frames.append((view[offset:offset + compressed], expanded))
+        offset += compressed
+        produced += expanded
+    if data[offset:] not in (b"", b"\x00\x00", b"\x00" * 5, b"\xff\x00\x00\x00\x00"):
+        raise ValueError("Unexpected data after XMem frames")
+    return frames
+
+
+def decompress_xmem(data, expanded_size, expected_crc):
+    frames = xmem_frames(data, expanded_size)
+    if not frames:
+        if expected_crc:
+            raise ValueError("Invalid CRC for empty XMem entry")
+        return b""
+    try:
+        from refinery.lib.seven.lzx import LzxDecoder
+    except ImportError as error:
+        raise RuntimeError("ZIP method 21 requires binary-refinery; install it with: "
+                           "python -m pip install binary-refinery") from error
+    failure = ""
+    for window_bits in LZX_WINDOW_BITS:
+        decoder = LzxDecoder()
+        decoder.set_params_and_alloc(window_bits)
+        output = bytearray()
+        try:
+            for frame, expanded in frames:
+                block = decoder.decompress(frame, expanded)
+                if len(block) != expanded:
+                    raise ValueError("LZX frame size differs from its header")
+                output.extend(block)
+                decoder.keep_history = True
+            if len(output) != expanded_size:
+                raise ValueError("LZX entry size differs from its ZIP header")
+            if zlib.crc32(output) != expected_crc:
+                raise ValueError("Invalid CRC for LZX entry")
+            return bytes(output)
+        except (EOFError, IndexError, ValueError, RuntimeError, ArithmeticError) as error:
+            failure = str(error)
+    raise ValueError(f"ZIP method 21 LZX decoding failed: {failure}")
+
+
+def read_zip_entry(archive, name):
+    entry = archive.getinfo(name)
+    if entry.compress_type != ZIP_LZX:
+        return archive.read(entry)
+    if entry.flag_bits & 65:
+        raise ValueError("Encrypted ZIP entries are unsupported")
+    stream = archive.fp
+    stream.seek(entry.header_offset)
+    header = stream.read(30)
+    if len(header) != 30 or header[:4] != b"PK\x03\x04":
+        raise ValueError("Invalid ZIP local header")
+    _, _, flags, method, _, _, _, _, _, name_size, extra_size = struct.unpack("<4s5H3I2H", header)
+    if method != ZIP_LZX or flags & 65:
+        raise ValueError("Invalid LZX ZIP local header")
+    local_name = stream.read(name_size)
+    encoding = "utf-8" if flags & 2048 else "cp437"
+    if local_name.decode(encoding) != entry.orig_filename:
+        raise ValueError("ZIP entry name differs from its local header")
+    offset = entry.header_offset + 30 + name_size + extra_size
+    if offset + entry.compress_size > archive.start_dir:
+        raise ValueError("ZIP entry overlaps the central directory")
+    stream.seek(offset)
+    data = stream.read(entry.compress_size)
+    if len(data) != entry.compress_size:
+        raise ValueError("Truncated LZX ZIP entry")
+    return decompress_xmem(data, entry.file_size, entry.CRC)
+
+
 def read_archive(path):
     try:
         with zipfile.ZipFile(path) as archive:
@@ -132,7 +255,7 @@ def read_archive(path):
             if len(candidates) != 1:
                 raise ValueError("Multiple manufacturer palette files")
             name = candidates[0]
-            palette = decode_palette(archive.read(name))
+            palette = decode_palette(read_zip_entry(archive, name))
         return {"archive": path.name, "status": "ok", "palette": {
             "model": path.stem, "archive": path.name, "zip_entry": name, **palette,
         }}
@@ -209,7 +332,9 @@ def format_catalog(value, depth=0):
 
 def main():
     script_directory = Path(__file__).resolve().parent
-    parser = argparse.ArgumentParser(description="Append manufacturer colors into paint json")
+    parser = argparse.ArgumentParser(
+        description="Append manufacturer colors into paint json",
+        epilog="ZIP method 21 (XMem LZX) requires: python -m pip install binary-refinery")
     parser.add_argument("--game", nargs=2, action="append", required=True, metavar=("GAME", "CARS_DIRECTORY"))
     parser.add_argument("--catalog", type=Path, default=script_directory / "paint_colors.json",
                         help="Paint catalog JSON (default: paint_colors.json beside this script)")
@@ -237,7 +362,7 @@ def main():
                     for summary in summaries for entry in summary["errors"]]
         if failures:
             raise ValueError("Palette import failed; catalog was not changed:\n" + "\n".join(failures))
-        options.catalog.write_text(format_catalog(catalog) + "\n", encoding="utf-8")
+        options.catalog.write_text(format_catalog(compact_catalog(catalog)) + "\n", encoding="utf-8", newline="\n")
         for summary in summaries:
             print(f"{summary['game']}: appended {summary['imported_cars']} car palettes, "
                   f"{summary['palette_indices']} color indices, {summary['material_entries']} material entries; "

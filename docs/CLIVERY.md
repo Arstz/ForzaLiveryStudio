@@ -259,8 +259,11 @@ database identifiers rather than interpreted as native save selectors. Finish
 translation between titles uses material identity and destination availability.
 
 The optional per-car `manufacturer_palettes` map stores native selector order,
-normalized RGB floats, material references, and material masks or slot names.
-Palette entries retain all material assignments and versioned color overrides.
+normalized RGB floats, color names, and material masks or slot names.
+Palette entries retain all section assignments and color overrides. Finish
+definitions use short material identities in `Material`; manufacturer entries
+use short color identities in `name`. Archive metadata and texture references
+are omitted from the catalog.
 `tools/append_manufacturer_palettes.py` populates these records from car archives;
 repeat its `--game` argument to import multiple titles. Database regeneration
 preserves the appended native palettes.
