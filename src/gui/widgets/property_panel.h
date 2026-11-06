@@ -31,7 +31,7 @@ public:
                       const QVector<fls::scene::Group *> &groups,
                       const QVector<fls::scene::Layer *> &contours = {});
     void refreshTransformFields();
-    void refreshTransformFieldsFromBox(const QPointF &center,
+    bool refreshTransformFieldsFromBox(const QPointF &center,
                                        double width,
                                        double height,
                                        const QTransform &boxFrame,

@@ -306,16 +306,40 @@ void ProjectCanvas::captureDragStarts() {
                                       guide->rotation, 0.0, guide->opacity});
         }
     }
+    drag_.transformFrames.clear();
+    drag_.transformFrames.reserve(drag_.layers.size() + drag_.contours.size() + drag_.guides.size());
+    QHash<const fls::scene::Layer *, QTransform> parentWorlds;
+    const auto captureFrame = [&](fls::scene::Layer *node, const EntryStart &start) {
+        const fls::scene::Layer *parent = node->parent();
+        auto found = parentWorlds.constFind(parent);
+        if (found == parentWorlds.cend()) {
+            found = parentWorlds.insert(parent, parentWorldTransform(*node));
+        }
+        DragTransformFrame frame;
+        frame.node = node;
+        frame.local = entryStartTransform(start);
+        frame.parentWorld = found.value();
+        frame.parentInverse = frame.parentWorld.inverted(&frame.parentInvertible);
+        frame.skew = start.skew;
+        drag_.transformFrames.push_back(std::move(frame));
+    };
+    for (auto *layer : drag_.layers) {
+        captureFrame(layer, drag_.starts.value(layer->id));
+    }
+    for (auto *figure : drag_.contours) {
+        captureFrame(figure, drag_.starts.value(figure->id));
+    }
+    for (auto *guide : drag_.guides) {
+        captureFrame(guide, drag_.guideStarts.value(guide->id));
+    }
+    drag_.transformTargetIds = buildTransformTargetIds(drag_.groupIds, drag_.layers, drag_.guides);
+    for (const auto *figure : drag_.contours) {
+        drag_.transformTargetIds.push_back(figure->id);
+    }
 }
 
 QVector<QString> ProjectCanvas::dragTransformTargetIds() const {
-    QVector<QString> result = buildTransformTargetIds(drag_.groupIds, drag_.layers, drag_.guides);
-
-    for (const auto *figure : drag_.contours) {
-        result.push_back(figure->id);
-    }
-
-    return result;
+    return drag_.transformTargetIds;
 }
 
 QString ProjectCanvas::transformSelectionSignature() const {
@@ -361,24 +385,7 @@ void ProjectCanvas::captureScaleHintReference() {
 }
 
 void ProjectCanvas::applyWorldTransformToDragItems(const QTransform &worldTransform) {
-    const auto applyItem = [&](auto *item, const EntryStart &start) {
-        const ScaleDecomposition dec = decomposeScaleResult(localResultForWorldTransform(*item, start, worldTransform), start.skew);
-        if (dec.ok) {
-            assignDecomposition(item, dec);
-        }
-    };
-    for (fls::scene::Shape *layer : drag_.layers) {
-        applyItem(layer, drag_.starts.value(layer->id));
-    }
-    for (auto *figure : drag_.contours) {
-        applyItem(figure, drag_.starts.value(figure->id));
-    }
-    for (fls::scene::GuideLayer *guide : drag_.guides) {
-        applyItem(guide, drag_.guideStarts.value(guide->id));
-    }
-    if (!drag_.groupStartFrames.isEmpty()) {
-        state_->setGroupFramesFromStart(drag_.groupStartFrames, worldTransform);
-    }
+    applyDragTransform(worldTransform, false);
 }
 
 void ProjectCanvas::applyMoveDrag(const QPointF &screenPoint, Qt::KeyboardModifiers modifiers) {
@@ -770,22 +777,18 @@ void ProjectCanvas::applyScaleDrag(const QPointF &screenPoint, Qt::KeyboardModif
 }
 
 void ProjectCanvas::applyDragTransform(const QTransform &transform, bool preMultiply) {
-    const auto apply = [&](auto *item, const EntryStart &start) {
-        const QTransform result = preMultiply ? (transform * entryStartTransform(start))
-                                              : localResultForWorldTransform(*item, start, transform);
-        const ScaleDecomposition dec = decomposeScaleResult(result, start.skew);
+    for (const DragTransformFrame &frame : drag_.transformFrames) {
+        const QTransform result = preMultiply ? transform * frame.local
+            : frame.parentInvertible ? frame.local * frame.parentWorld * transform * frame.parentInverse
+                                     : frame.local;
+        const ScaleDecomposition dec = decomposeScaleResult(result, frame.skew);
         if (dec.ok) {
-            assignDecomposition(item, dec);
+            if (frame.node->kind() == fls::scene::LayerKind::Shape) {
+                assignDecomposition(static_cast<fls::scene::Shape *>(frame.node), dec);
+            } else {
+                assignDecomposition(frame.node, dec);
+            }
         }
-    };
-    for (fls::scene::Shape *layer : drag_.layers) {
-        apply(layer, drag_.starts.value(layer->id));
-    }
-    for (auto *figure : drag_.contours) {
-        apply(figure, drag_.starts.value(figure->id));
-    }
-    for (fls::scene::GuideLayer *guide : drag_.guides) {
-        apply(guide, drag_.guideStarts.value(guide->id));
     }
     if (!preMultiply && !drag_.groupStartFrames.isEmpty()) {
         state_->setGroupFramesFromStart(drag_.groupStartFrames, transform);
@@ -935,9 +938,12 @@ void ProjectCanvas::resetDragState() {
     drag_.guides.clear();
     drag_.groupIds.clear();
     drag_.groupStartFrames.clear();
+    drag_.transformFrames.clear();
+    drag_.transformTargetIds.clear();
     drag_.snapOutlines.clear();
     drag_.snapTargets = {};
     drag_.snapIndicators.clear();
+    selectionBoxCache_.reset();
     updateCursorForPoint(mapFromGlobal(QCursor::pos()));
     update();
 }

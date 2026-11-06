@@ -320,9 +320,8 @@ void MainWindow::connectEditorStateSignals() {
             canvas_->invalidateContourLeewayCache();
             canvas_->update();
         }
-        if (properties_ != nullptr) {
+        if (properties_ != nullptr && !refreshPropertyBoxFieldsFromCanvas()) {
             properties_->refreshTransformFields();
-            refreshPropertyBoxFieldsFromCanvas();
         }
     });
     connect(state_, &EditorState::canvasRepaintRequested, this, [this]() {

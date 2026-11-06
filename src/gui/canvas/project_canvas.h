@@ -310,6 +310,15 @@ private:
         QTransform localToWorld;
     };
 
+    struct DragTransformFrame {
+        QTransform local;
+        QTransform parentWorld;
+        QTransform parentInverse;
+        fls::scene::Layer *node = nullptr;
+        bool parentInvertible = false;
+        double skew = 0.0;
+    };
+
     struct DragState {
         SelectionBox startBox;
         QRectF startSelectionBounds;
@@ -330,6 +339,8 @@ private:
         QHash<QString, EntryStart> starts;
         QHash<QString, EntryStart> guideStarts;
         QHash<QString, QTransform> groupStartFrames;
+        QVector<DragTransformFrame> transformFrames;
+        QVector<QString> transformTargetIds;
         QVector<GeometrySnapOutline> snapOutlines;
         GeometrySnapTargets snapTargets;
         QVector<GeometrySnapIndicator> snapIndicators;
@@ -444,6 +455,7 @@ private:
     QRectF selectedWorldBounds() const;
     const QRectF &cachedSelectionWorldBounds() const;
     SelectionBox currentSelectionBox() const;
+    SelectionBox buildSelectionBox() const;
     QTransform boxToScreen(const SelectionBox &box) const;
     bool boxContainsScreenPoint(const SelectionBox &box, const QPointF &screenPoint) const;
     QVector<fls::scene::Shape *> selectedLayers() const;
@@ -683,6 +695,7 @@ private:
     bool sectionWireframeVisible_ = false;
     RegionOverlayState region_;
     mutable std::optional<QRectF> selectionWorldBoundsCache_;
+    mutable std::optional<SelectionBox> selectionBoxCache_;
 };
 
 } // namespace gui

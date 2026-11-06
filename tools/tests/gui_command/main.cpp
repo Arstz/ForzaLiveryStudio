@@ -755,6 +755,194 @@ void gradientSnapping(Harness &h) {
     canvas->setAutomaticSnapping(false);
 }
 
+void liveRenderEntries(Harness &h) {
+    auto project = fixture();
+    project.isLivery = true;
+    auto *source = static_cast<fls::scene::Group *>(project.root->children[0].get());
+    auto *destination = static_cast<fls::scene::Group *>(project.root->children[1].get());
+    source->isLiverySection = true;
+    source->liverySectionSlot = 0;
+    destination->isLiverySection = true;
+    destination->liverySectionSlot = 1;
+    h.reset(std::move(project));
+    const auto check = [&]() {
+        for (const auto &entry : h.state->renderEntries())
+            sameWorld(gui::sceneWorldTransform(*entry.node), entry.worldTransform, "live full entry " + entry.nodeId);
+        for (const auto &entry : h.state->activeRenderEntries()) {
+            require(h.state->activeSectionId_.isEmpty() || entry.sectionGroupId == h.state->activeSectionId_,
+                    "active entry section changed");
+            sameWorld(gui::sceneWorldTransform(*entry.node), entry.worldTransform, "live active entry " + entry.nodeId);
+        }
+    };
+    for (const QString &section : {QStringLiteral("source"), QStringLiteral("destination"), QString()}) {
+        h.state->setActiveSectionId(section);
+        h.state->activeRenderEntries();
+        h.state->sceneNode("a")->x += 3;
+        h.state->noteTransformLiveChanged({"a"});
+        check();
+        h.state->sceneNode("source")->rotation += 7;
+        h.state->noteTransformLiveChanged({"source", "a"});
+        check();
+        h.state->sceneNode("d")->y -= 5;
+        h.state->noteTransformLiveChanged({"d"});
+        check();
+    }
+    h.state->setActiveSectionId("source");
+    h.state->noteProjectGeometryChanged(false);
+    check();
+}
+
+void cachedTransformDrags(Harness &h) {
+    gui::ProjectCanvas *canvas = nullptr;
+    for (QWidget *widget : h.window.findChildren<QWidget *>()) {
+        if (auto *found = dynamic_cast<gui::ProjectCanvas *>(widget)) canvas = found;
+    }
+    require(canvas != nullptr, "transform checks need a canvas");
+    gui::ShapeGeometryStore geometry;
+    require(geometry.loadDefault(), "transform checks need geometry");
+    canvas->resize(1000, 600);
+    canvas->setAutomaticSnapping(false);
+    canvas->setMoveToolAutoSelect(false);
+    canvas->setTransformRelativeMode(true);
+    for (bool grouped : {false, true}) {
+        for (const QString &tool : {QStringLiteral("move"), QStringLiteral("rotate"), QStringLiteral("transform")}) {
+            h.reset();
+            h.select(grouped ? QVector<QString>{"source", "loose"} : QVector<QString>{"a", "b", "loose"});
+            canvas->setTool(tool);
+            canvas->refitView();
+            gui::BoundsAccumulator bounds;
+            for (const auto &entry : h.state->renderEntries()) {
+                const QRectF local = entry.shape != nullptr ? canvas->shapeInkBounds(entry.shape->shapeId)
+                    : gui::sceneLocalRect(*entry.node, geometry);
+                bounds.add(entry.worldTransform, local);
+            }
+            gui::CanvasCamera camera;
+            camera.setViewBounds(bounds.bounds());
+            camera.recompute({28, 28}, canvas->width() - 28, canvas->height() - 28);
+            QPointF start(620, 290);
+            if (tool == "transform") {
+                QPointF center;
+                double width, height;
+                QTransform frame;
+                require(canvas->currentTransformBox(&center, &width, &height, &frame), "missing transform box");
+                const QPointF corner = frame.inverted().map(center) + QPointF(width * 0.5, height * 0.5);
+                start = camera.worldToScreen(frame.map(corner));
+            }
+            QHash<QString, QTransform> before;
+            for (const auto *node : h.state->selectedLayers()) before.insert(node->id, gui::sceneWorldTransform(*node));
+            const QByteArray original = fls::encodeProjectDocument(*h.state->project());
+            QMouseEvent press(QEvent::MouseButtonPress, start, canvas->mapToGlobal(start.toPoint()), Qt::LeftButton, Qt::LeftButton, {});
+            QApplication::sendEvent(canvas, &press);
+            for (const QPointF delta : {QPointF(12, 5), QPointF(25, 11)}) {
+                const QPointF point = start + delta;
+                QMouseEvent move(QEvent::MouseMove, point, canvas->mapToGlobal(point.toPoint()), Qt::NoButton, Qt::LeftButton, {});
+                QApplication::sendEvent(canvas, &move);
+                const QString first = before.cbegin().key();
+                const QTransform motion = before.value(first).inverted() * gui::sceneWorldTransform(*h.state->sceneNode(first));
+                require(!motion.isIdentity(), "drag did not change geometry");
+                for (auto it = before.cbegin(); it != before.cend(); ++it)
+                    sameWorld(it.value() * motion, gui::sceneWorldTransform(*h.state->sceneNode(it.key())), tool + " " + it.key());
+                for (const auto &entry : h.state->renderEntries())
+                    sameWorld(gui::sceneWorldTransform(*entry.node), entry.worldTransform, "drag render entry " + entry.nodeId);
+                QPointF center;
+                double width, height;
+                QTransform frame;
+                require(canvas->currentTransformBox(&center, &width, &height, &frame), "drag lost selection box");
+                QPointF repeatedCenter;
+                double repeatedWidth, repeatedHeight;
+                QTransform repeatedFrame;
+                canvas->currentTransformBox(&repeatedCenter, &repeatedWidth, &repeatedHeight, &repeatedFrame);
+                require(center == repeatedCenter && width == repeatedWidth && height == repeatedHeight && frame == repeatedFrame,
+                        "selection box changed between consumers");
+            }
+            QMouseEvent release(QEvent::MouseButtonRelease, start + QPointF(25, 11),
+                                canvas->mapToGlobal((start + QPointF(25, 11)).toPoint()), Qt::LeftButton, Qt::NoButton, {});
+            QApplication::sendEvent(canvas, &release);
+            const QByteArray edited = fls::encodeProjectDocument(*h.state->project());
+            h.trigger("undo");
+            require(fls::encodeProjectDocument(*h.state->project()) == original, "cached drag undo changed the document");
+            h.trigger("redo");
+            require(fls::encodeProjectDocument(*h.state->project()) == edited, "cached drag redo changed the document");
+        }
+    }
+}
+
+void profileTransforms(Harness &h, const QString &outputPath) {
+    gui::ProjectCanvas *canvas = nullptr;
+    for (QWidget *widget : h.window.findChildren<QWidget *>()) {
+        if (auto *found = dynamic_cast<gui::ProjectCanvas *>(widget)) canvas = found;
+    }
+    require(canvas != nullptr, "transform profile needs a canvas");
+    canvas->resize(1000, 600);
+    canvas->setAutomaticSnapping(false);
+    canvas->setMoveToolAutoSelect(false);
+    QJsonArray reports;
+    for (const QString &scenario : {QStringLiteral("loose-1000"), QStringLiteral("loose-5000"),
+                                    QStringLiteral("group-5000"), QStringLiteral("livery-1000")}) {
+        for (const QString &tool : {QStringLiteral("move"), QStringLiteral("rotate")}) {
+            const int count = scenario.contains("5000") ? 5000 : 1000;
+            const bool livery = scenario.startsWith("livery");
+            const bool grouped = scenario.startsWith("group");
+            fls::Project project;
+            fls::scene::ensureProjectSceneRoot(project);
+            project.isLivery = livery;
+            auto parent = std::make_unique<fls::scene::Group>();
+            parent->id = "moving-parent";
+            parent->transform = {10, 20, 1.2, 0.8, 23, 0.15};
+            parent->isLiverySection = livery;
+            parent->liverySectionSlot = 0;
+            QVector<QString> selected;
+            for (int index = 0; index < count; ++index) {
+                auto node = shape(QStringLiteral("moving-%1").arg(index), index % 100 * 4);
+                node->y = index / 100 * 4;
+                selected.push_back(node->id);
+                parent->append(std::move(node));
+            }
+            project.root->append(std::move(parent));
+            if (livery) {
+                auto inactive = std::make_unique<fls::scene::Group>();
+                inactive->id = "inactive";
+                inactive->isLiverySection = true;
+                inactive->liverySectionSlot = 1;
+                for (int index = 0; index < 9000; ++index)
+                    inactive->append(shape(QStringLiteral("inactive-%1").arg(index), index));
+                project.root->append(std::move(inactive));
+            }
+            h.reset(std::move(project));
+            h.select(grouped ? QVector<QString>{"moving-parent"} : selected);
+            canvas->setTool(tool);
+            canvas->setTransformRelativeMode(true);
+            canvas->refitView();
+            const QPointF start(620, 290);
+            QMouseEvent press(QEvent::MouseButtonPress, start, canvas->mapToGlobal(start.toPoint()), Qt::LeftButton, Qt::LeftButton, {});
+            QApplication::sendEvent(canvas, &press);
+            const QTransform before = gui::sceneWorldTransform(*h.state->sceneNode(selected.front()));
+            QElapsedTimer timer;
+            timer.start();
+            constexpr int samples = 30;
+            for (int sample = 0; sample < samples; ++sample) {
+                const QPointF point = start + QPointF(sample + 1, sample * 0.3 + 1);
+                QMouseEvent move(QEvent::MouseMove, point, canvas->mapToGlobal(point.toPoint()), Qt::NoButton, Qt::LeftButton, {});
+                QApplication::sendEvent(canvas, &move);
+                h.state->activeRenderEntries();
+                canvas->currentTransformBox(nullptr, nullptr, nullptr, nullptr);
+                canvas->currentTransformBox(nullptr, nullptr, nullptr, nullptr);
+            }
+            const double milliseconds = timer.nsecsElapsed() / (1000000.0 * samples);
+            require(gui::sceneWorldTransform(*h.state->sceneNode(selected.front())) != before,
+                    "profile input did not transform the selection");
+            QMouseEvent release(QEvent::MouseButtonRelease, start + QPointF(samples, 10),
+                                canvas->mapToGlobal((start + QPointF(samples, 10)).toPoint()), Qt::LeftButton, Qt::NoButton, {});
+            QApplication::sendEvent(canvas, &release);
+            reports.append(QJsonObject{{"scenario", scenario}, {"tool", tool}, {"layers", count},
+                                       {"milliseconds_per_update", milliseconds}});
+        }
+    }
+    QFile output(outputPath);
+    require(output.open(QIODevice::WriteOnly), "profile output creation");
+    output.write(QJsonDocument(QJsonObject{{"cpu_transform_updates", reports}}).toJson());
+}
+
 void liningCaps() {
     QVector<gui::PenPoint> points{{{0, 0}, gui::PenPointKind::Hard}, {{100, 0}, gui::PenPointKind::Hard}};
     points.front().endCap = 0;
@@ -1080,6 +1268,10 @@ int main(int argc, char **argv) {
     gui::applyUiTheme(application, gui::loadUiTheme());
     try {
         Harness harness;
+        if (argc == 3 && QString::fromLocal8Bit(argv[1]) == QStringLiteral("--profile-transforms")) {
+            profileTransforms(harness, QString::fromLocal8Bit(argv[2]));
+            return 0;
+        }
         flags(harness);
         properties(harness);
         reparent(harness);
@@ -1089,6 +1281,8 @@ int main(int argc, char **argv) {
         liveryMoves(harness);
         moveAutoSelection(harness);
         gradientSnapping(harness);
+        liveRenderEntries(harness);
+        cachedTransformDrags(harness);
         liningCaps();
         toolSettingsControls(harness);
     } catch (const std::exception &error) {

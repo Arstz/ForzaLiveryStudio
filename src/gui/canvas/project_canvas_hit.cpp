@@ -287,27 +287,16 @@ const QRectF &ProjectCanvas::cachedSelectionWorldBounds() const {
         BoundsAccumulator acc;
         if (project_ != nullptr && state_ != nullptr) {
             const QSet<QString> selected = state_->selectedLayerIds();
-            if (!selected.isEmpty()) {
-                forEachSceneShape([&](const fls::scene::Shape &shape, const QTransform &world, int) {
-                    if (selected.contains(shape.id)) {
-                        acc.add(world, flatEntryVisualRect(shape, geometry_));
-                    }
-                    return true;
-                }, /*reverse=*/false);
-            }
-            for (const SceneRenderEntry &entry : state_->renderEntries()) {
-                if (fls::scene::isContourGeometry(entry.kind) && selected.contains(entry.nodeId)) {
-                    acc.add(entry.worldTransform, sceneLocalRect(*entry.node, geometry_));
-                }
-            }
             const QSet<QString> selectedGuides = state_->selectedGuideLayerIds();
-            if (!selectedGuides.isEmpty()) {
-                forEachSceneGuide([&](const fls::scene::GuideLayer &guide, const QTransform &world, const QString &) {
-                    if (selectedGuides.contains(guide.id)) {
-                        acc.add(world, flatEntryRect(guide));
-                    }
-                    return true;
-                }, /*reverse=*/false);
+            for (const SceneRenderEntry &entry : state_->renderEntries()) {
+                if (entry.shape != nullptr && selected.contains(entry.nodeId) && isSectionActive(entry.sectionGroupId)) {
+                    acc.add(entry.worldTransform, flatEntryVisualRect(*entry.shape, geometry_));
+                } else if (fls::scene::isContourGeometry(entry.kind) && selected.contains(entry.nodeId)) {
+                    acc.add(entry.worldTransform, sceneLocalRect(*entry.node, geometry_));
+                } else if (entry.guide != nullptr && selectedGuides.contains(entry.nodeId)
+                           && isSectionActive(entry.sectionGroupId)) {
+                    acc.add(entry.worldTransform, flatEntryRect(*entry.guide));
+                }
             }
         }
         selectionWorldBoundsCache_ = acc.hasBounds() ? acc.bounds() : QRectF();
@@ -327,6 +316,14 @@ QRectF ProjectCanvas::selectedScreenBounds() const {
 }
 
 ProjectCanvas::SelectionBox ProjectCanvas::currentSelectionBox() const {
+    if (!selectionBoxCache_.has_value()) {
+        selectionBoxCache_ = buildSelectionBox();
+    }
+
+    return *selectionBoxCache_;
+}
+
+ProjectCanvas::SelectionBox ProjectCanvas::buildSelectionBox() const {
     SelectionBox box;
     if (project_ == nullptr || state_ == nullptr) {
         return box;
@@ -441,19 +438,20 @@ ProjectCanvas::SelectionBox ProjectCanvas::currentSelectionBox() const {
                 break;
             }
         }
-        for (const fls::scene::Shape *layer : sceneShapeLeaves(*project_->root)) {
-            if (!hasPrimary && effective.looseLayerIds.contains(layer->id)) {
-                primaryRotation = layer->rotation;
-                hasPrimary = true;
-                break;
+        if (!hasPrimary) {
+            for (const SceneRenderEntry &entry : state_->renderEntries()) {
+                if (entry.shape != nullptr && effective.looseLayerIds.contains(entry.nodeId)) {
+                    primaryRotation = entry.shape->rotation;
+                    hasPrimary = true;
+                    break;
+                }
             }
         }
     }
     if (!hasPrimary && project_->root) {
-        for (const fls::scene::GuideLayer *guide : sceneGuideLeaves(*project_->root)) {
-            if (effective.looseGuideIds.contains(guide->id)) {
-                primaryRotation = guide->rotation;
-                hasPrimary = true;
+        for (const SceneRenderEntry &entry : state_->renderEntries()) {
+            if (entry.guide != nullptr && effective.looseGuideIds.contains(entry.nodeId)) {
+                primaryRotation = entry.guide->rotation;
                 break;
             }
         }
@@ -499,26 +497,13 @@ ProjectCanvas::SelectionBox ProjectCanvas::currentSelectionBox() const {
             }
         }
     };
-    if (project_->root) {
-        for (const fls::scene::Shape *layer : sceneShapeLeaves(*project_->root)) {
-            if (!selLayers.contains(layer->id)) {
-                continue;
-            }
-            accumulate(sceneWorldTransform(*layer), flatEntryVisualRect(*layer, geometry_));
-        }
-        for (const auto *figure : sceneLeaves<fls::scene::ContourFigure, fls::scene::LayerKind::Contour>(*project_->root)) {
-            if (selLayers.contains(figure->id)) {
-                accumulate(sceneWorldTransform(*figure), sceneLocalRect(*figure, geometry_));
-            }
-        }
-        for (const auto *mesh : sceneLeaves<fls::scene::Mesh, fls::scene::LayerKind::Mesh>(*project_->root)) {
-            if (selLayers.contains(mesh->id)) accumulate(sceneWorldTransform(*mesh), sceneLocalRect(*mesh, geometry_));
-        }
-        for (const fls::scene::GuideLayer *guide : sceneGuideLeaves(*project_->root)) {
-            if (!selGuides.contains(guide->id)) {
-                continue;
-            }
-            accumulate(sceneWorldTransform(*guide), flatEntryRect(*guide));
+    for (const SceneRenderEntry &entry : state_->renderEntries()) {
+        if (entry.shape != nullptr && selLayers.contains(entry.nodeId)) {
+            accumulate(entry.worldTransform, flatEntryVisualRect(*entry.shape, geometry_));
+        } else if (fls::scene::isContourGeometry(entry.kind) && selLayers.contains(entry.nodeId)) {
+            accumulate(entry.worldTransform, sceneLocalRect(*entry.node, geometry_));
+        } else if (entry.guide != nullptr && selGuides.contains(entry.nodeId)) {
+            accumulate(entry.worldTransform, flatEntryRect(*entry.guide));
         }
     }
     if (!hasExtent) {

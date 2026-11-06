@@ -124,6 +124,7 @@ void EditorState::invalidateRenderCache() const {
     activeRenderCacheDirty_ = true;
     renderEntries_.clear();
     activeRenderEntries_.clear();
+    activeRenderEntryIndices_.clear();
     renderEntryByNodeId_.clear();
 }
 
@@ -207,14 +208,20 @@ void EditorState::updateRenderCacheTransforms(const QVector<QString> &targetIds)
     if (renderCacheDirty_ || targetIds.isEmpty()) {
         return;
     }
-    activeRenderCacheDirty_ = true;
     ensureSceneTree();
+    QHash<const fls::scene::Layer *, QTransform> parentWorlds;
     std::function<void(const fls::scene::Layer &, const QTransform &)> apply =
         [&](const fls::scene::Layer &node, const QTransform &parentWorld) {
             const QTransform world = sceneLocalTransform(node) * parentWorld;
             const int idx = renderEntryByNodeId_.value(node.id, -1);
             if (idx >= 0) {
                 renderEntries_[idx].worldTransform = world;
+                if (!activeRenderCacheDirty_) {
+                    const int activeIndex = activeRenderEntryIndices_[idx];
+                    if (activeIndex >= 0) {
+                        activeRenderEntries_[activeIndex].worldTransform = world;
+                    }
+                }
             }
             if (node.kind() == fls::scene::LayerKind::Group) {
                 for (const auto &child : static_cast<const fls::scene::Group &>(node).children) {
@@ -227,9 +234,13 @@ void EditorState::updateRenderCacheTransforms(const QVector<QString> &targetIds)
         if (node == nullptr) {
             continue;
         }
-        const QTransform parentWorld =
-            node->parent() != nullptr ? toQTransform(node->parent()->worldMatrix()) : QTransform();
-        apply(*node, parentWorld);
+        const fls::scene::Layer *parent = node->parent();
+        auto found = parentWorlds.constFind(parent);
+        if (found == parentWorlds.cend()) {
+            found = parentWorlds.insert(parent, parent != nullptr
+                ? toQTransform(parent->worldMatrix()) : QTransform());
+        }
+        apply(*node, found.value());
     }
 }
 
@@ -245,8 +256,11 @@ const QVector<SceneRenderEntry> &EditorState::activeRenderEntries() const {
     }
     if (activeRenderCacheDirty_) {
         activeRenderEntries_.clear();
-        for (const SceneRenderEntry &entry : renderEntries_) {
+        activeRenderEntryIndices_.fill(-1, renderEntries_.size());
+        for (qsizetype index = 0; index < renderEntries_.size(); ++index) {
+            const SceneRenderEntry &entry = renderEntries_[index];
             if (entry.sectionGroupId == activeSectionId_) {
+                activeRenderEntryIndices_[index] = activeRenderEntries_.size();
                 activeRenderEntries_.append(entry);
             }
         }

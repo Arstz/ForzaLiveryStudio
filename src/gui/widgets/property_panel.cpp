@@ -1062,16 +1062,16 @@ void PropertyPanel::refreshTransformFields() {
     loading_ = false;
 }
 
-void PropertyPanel::refreshTransformFieldsFromBox(const QPointF &center,
+bool PropertyPanel::refreshTransformFieldsFromBox(const QPointF &center,
                                                   double width,
                                                   double height,
                                                   const QTransform &boxFrame,
                                                   bool valid) {
     if (loading_ || applyingChange_ || valueLabelDragging_ || !isBoxSelection()) {
-        return;
+        return false;
     }
     if (!valid || width <= 1e-9 || height <= 1e-9) {
-        return;
+        return false;
     }
 
     QSet<QString> groupedLayerIds;
@@ -1086,7 +1086,7 @@ void PropertyPanel::refreshTransformFieldsFromBox(const QPointF &center,
 
     const AffineDecomposition frame = decomposeAffine(boxFrame, 0.0);
     if (!frame.ok) {
-        return;
+        return false;
     }
 
     double scaleXValue = 1.0;
@@ -1130,6 +1130,8 @@ void PropertyPanel::refreshTransformFieldsFromBox(const QPointF &center,
 
     const auto blockers = makeSignalBlockers({x_, y_, scaleX_, scaleY_, rotation_, skew_});
     setBoxProxyValues(center, scaleXValue, scaleYValue, rotationValue, skewValue);
+
+    return true;
 }
 
 void PropertyPanel::setPositionScaleRotation(const fls::scene::Transform2D &transform) {

@@ -861,16 +861,17 @@ void MainWindow::refreshSelectionProperties() {
     refreshPropertyBoxFieldsFromCanvas();
 }
 
-void MainWindow::refreshPropertyBoxFieldsFromCanvas() {
+bool MainWindow::refreshPropertyBoxFieldsFromCanvas() {
     if (properties_ == nullptr || canvas_ == nullptr) {
-        return;
+        return false;
     }
     QPointF center;
     double width = 0.0;
     double height = 0.0;
     QTransform boxFrame;
     const bool valid = canvas_->currentTransformBox(&center, &width, &height, &boxFrame);
-    properties_->refreshTransformFieldsFromBox(center, width, height, boxFrame, valid);
+
+    return properties_->refreshTransformFieldsFromBox(center, width, height, boxFrame, valid);
 }
 
 void MainWindow::deleteSelectedLayers() {

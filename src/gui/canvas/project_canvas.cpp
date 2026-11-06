@@ -229,6 +229,7 @@ QString ProjectCanvas::tool() const {
 void ProjectCanvas::invalidateSelectionCache() {
     hitCacheDirty_ = true;
     selectionWorldBoundsCache_.reset();
+    selectionBoxCache_.reset();
     hoverLayerId_.clear();
     hoverBody_ = {};
     updateSelectionFlashState();

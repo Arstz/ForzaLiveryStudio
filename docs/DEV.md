@@ -123,6 +123,16 @@ canvas, layer model, and preview. Reparenting preserves world placement through
 recalculated local transforms. Authored visibility is stored independently of
 active-section isolation.
 
+Live transforms update affected render entries and their active-section copies
+in place. Drag targets retain their starting local and parent frames throughout
+the gesture. Selection bounds use cached world transforms, and the canvas shares
+one selection-box calculation between property controls and painting until the
+selection or geometry changes.
+
+The headless GUI command harness accepts `--profile-transforms <report.json>`
+to measure CPU input processing with snapping disabled. Rendering time is
+excluded from these measurements.
+
 Move and resize snapping cache scene outlines at drag start. `geometry_snap.*`
 indexes stationary contour segments and geometry alignment coordinates. Drag
 outlines use fully opaque shape layers with hard alpha boundaries. Shape alpha

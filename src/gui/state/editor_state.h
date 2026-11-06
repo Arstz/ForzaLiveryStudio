@@ -311,6 +311,7 @@ private:
     mutable bool renderCacheDirty_ = true;
     mutable QVector<SceneRenderEntry> renderEntries_;
     mutable QVector<SceneRenderEntry> activeRenderEntries_;
+    mutable QVector<int> activeRenderEntryIndices_;
     mutable bool activeRenderCacheDirty_ = true;
     mutable QHash<QString, int> renderEntryByNodeId_;
 };
