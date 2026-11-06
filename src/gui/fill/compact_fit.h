@@ -12,6 +12,7 @@ inline constexpr int kDefaultEvaluationBudget = 60000;
 inline constexpr double kDefaultInwardAllowance = 0.5;
 inline constexpr double kDefaultObservationScale = 1.0;
 inline constexpr int kNoTimeBudget = -1;
+inline constexpr double kCoverageReferenceDiameter = 256.0;
 
 struct ReusableCandidate {
     PenPlacement placement;
@@ -44,6 +45,8 @@ struct FillOptions {
     double inwardAllowance = kDefaultInwardAllowance;
     double observationScale = kDefaultObservationScale;
 };
+
+double scaleCoverageToRegion(PenFillRequest &request, FillOptions &options);
 
 catalog::FillResult fillRegion(const PenFillRequest &request,
                                const QVector<catalog::Primitive> &primitives,
