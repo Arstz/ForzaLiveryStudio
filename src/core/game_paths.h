@@ -1,14 +1,17 @@
 #pragma once
 
 #include <QString>
+#include <QStringList>
+#include <QSet>
 
 namespace fls {
 
-// Resolves the resource locations the editor needs from a single Forza game
-// install folder. The folder may be the install root or its `media` directory.
-
+QStringList carModelGames(const QString &preferredGame = {});
 QString gameMediaDir(const QString &gameFolder);
+QStringList gameCarsDirs(const QString &gameFolder);
 QString gameCarsDir(const QString &gameFolder);
+QString findCarModelPath(const QString &carsFolder, const QString &modelCode);
+QSet<QString> availableCarModelCodes(const QString &gameFolder);
 QString gamePaintMaterialsArchive(const QString &gameFolder);
 QString gamePaintTexturesArchive(const QString &gameFolder);
 

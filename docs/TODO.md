@@ -1,17 +1,18 @@
 Small changes:
     -State corruption on paste to empty section
-    -Wire other games car model load
     -Add toggle for selection outline
-    -Shrink description
-    -Add month/day selector as well, autofill with current datetime
+    -Anull UV cache on model change
+    -Deny export to games with no car model
+    -Change car model with missing install should say "No model found within configured games folders (expected one of %gamesSupported), continue without?"
+    -Target car in Header should say "%carName (No model found)" and paint orange only in that case
 
 Medium changes:
     -Discard shapes/logos per version
-    -Rework car selector to show versions
     -On import prompt missing model, provide closest match
 
 Big changes:
     -Color aware point snapping for Pen contours
+    -Add support for xb360 titles (.liv)
 
 Manual tasks:
     -Create splash screen image

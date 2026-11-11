@@ -1,5 +1,8 @@
 #include "car_registry.h"
+#include "game_paths.h"
+#include "theme_manager.h"
 
+#include <QApplication>
 #include <QCoreApplication>
 #include <QDialog>
 #include <QDialogButtonBox>
@@ -9,16 +12,74 @@
 #include <QJsonObject>
 #include <QLabel>
 #include <QLineEdit>
-#include <QListWidget>
+#include <QHeaderView>
+#include <QPainter>
 #include <QPushButton>
+#include <QStyledItemDelegate>
+#include <QStyle>
+#include <QStyleOptionViewItem>
+#include <QTreeWidget>
 #include <QVBoxLayout>
 
 #include <algorithm>
+#include <numeric>
 
 namespace gui {
 namespace {
 
-const QColor kUnsupportedCarColor(255, 213, 79);
+const QColor kMissingModelColor(255, 165, 0);
+const QColor kAvailableModelColor(Qt::white);
+constexpr int kVersionsRole = Qt::UserRole + 1;
+constexpr int kAvailableVersionsRole = Qt::UserRole + 2;
+constexpr int kVersionSpacing = 10;
+constexpr int kVersionMargin = 4;
+constexpr int kCarDialogWidth = 1000;
+constexpr int kCarDialogHeight = 560;
+
+class CarVersionDelegate final : public QStyledItemDelegate {
+public:
+    using QStyledItemDelegate::QStyledItemDelegate;
+
+    void paint(QPainter *painter, const QStyleOptionViewItem &option, const QModelIndex &index) const override {
+        QStyleOptionViewItem itemOption(option);
+        const QStringList versions = index.data(kVersionsRole).toStringList();
+        const QStringList available = index.siblingAtColumn(1).data(kAvailableVersionsRole).toStringList();
+        const QWidget *widget = option.widget;
+        QStyle *style = widget != nullptr ? widget->style() : QApplication::style();
+
+        if (index.column() == 0) {
+            if (available.isEmpty()) itemOption.palette.setColor(QPalette::HighlightedText, kMissingModelColor);
+            QStyledItemDelegate::paint(painter, itemOption, index);
+            return;
+        }
+        initStyleOption(&itemOption, index);
+        const QRect textRect = style->subElementRect(QStyle::SE_ItemViewItemText, &itemOption, widget);
+        int x = textRect.left();
+        itemOption.text.clear();
+        style->drawControl(QStyle::CE_ItemViewItem, &itemOption, painter, widget);
+        painter->save();
+        painter->setClipRect(textRect);
+        painter->setFont(itemOption.font);
+        for (const QString &version : versions) {
+            const int width = itemOption.fontMetrics.horizontalAdvance(version);
+            painter->setPen(available.contains(version) ? kAvailableModelColor : kMissingModelColor);
+            painter->drawText(QRect(x, textRect.top(), width, textRect.height()), Qt::AlignLeft | Qt::AlignVCenter, version);
+            x += width + kVersionSpacing;
+        }
+        painter->restore();
+    }
+
+    QSize sizeHint(const QStyleOptionViewItem &option, const QModelIndex &index) const override {
+        QSize size = QStyledItemDelegate::sizeHint(option, index);
+        const QStringList versions = index.data(kVersionsRole).toStringList();
+        const int width = std::accumulate(versions.cbegin(), versions.cend(), 0,
+            [&option](int total, const QString &version) { return total + option.fontMetrics.horizontalAdvance(version) + kVersionSpacing; });
+
+        if (index.column() == 1) size.setWidth(width + 2 * kVersionMargin);
+
+        return size;
+    }
+};
 
 QStringList candidateAssetPaths() {
     const QString appDir = QCoreApplication::applicationDirPath();
@@ -66,6 +127,7 @@ bool CarRegistry::loadFromFile(const QString &path, QString *error) {
     QHash<int, QString> parsed;
     QHash<int, QString> parsedModels;
     QHash<int, QString> parsedVersions;
+    QHash<int, QHash<QString, QString>> parsedGameModels;
     for (auto it = root.begin(); it != root.end(); ++it) {
         bool ok = false;
         const int id = it.key().toInt(&ok);
@@ -79,6 +141,11 @@ bool CarRegistry::loadFromFile(const QString &path, QString *error) {
             const QJsonObject entry = it.value().toObject();
             model = entry.value(QStringLiteral("model")).toString().trimmed();
             name = entry.value(QStringLiteral("name")).toString().trimmed();
+            const QJsonObject games = entry.value(QStringLiteral("games")).toObject();
+            for (auto game = games.begin(); game != games.end(); ++game) {
+                const QString gameModel = game.value().toObject().value(QStringLiteral("model")).toString().trimmed();
+                if (!gameModel.isEmpty()) parsedGameModels[id].insert(game.key().toUpper(), gameModel);
+            }
             const QString parsedVersion =
                 entry.value(QStringLiteral("version")).toString().trimmed();
             if (!parsedVersion.isEmpty()) {
@@ -101,6 +168,7 @@ bool CarRegistry::loadFromFile(const QString &path, QString *error) {
 
     names_ = parsed;
     models_ = parsedModels;
+    gameModels_ = parsedGameModels;
     versions_ = parsedVersions;
     sorted_.clear();
     sorted_.reserve(names_.size());
@@ -117,8 +185,12 @@ QString CarRegistry::name(int id) const {
     return names_.value(id);
 }
 
-QString CarRegistry::modelCode(int id) const {
+QString CarRegistry::modelCode(int id, const QString &game) const {
+    const QString gameCode = gameModels_.value(id).value(game.toUpper());
     const QString code = models_.value(id);
+
+    if (!gameCode.isEmpty()) return gameCode;
+
     return code.isEmpty() ? names_.value(id) : code;
 }
 
@@ -127,15 +199,49 @@ QString CarRegistry::version(int id) const {
 }
 
 bool CarRegistry::isFh6Supported(int id) const {
-    const QStringList games = versions_.value(id).split(QLatin1Char(','), Qt::SkipEmptyParts);
-
-    return std::any_of(games.cbegin(), games.cend(), [](const QString &game) {
-        return game.trimmed().compare(QStringLiteral("FH6"), Qt::CaseInsensitive) == 0;
-    });
+    return isSupported(id, QStringLiteral("FH6"));
 }
 
 bool CarRegistry::isFh6Unsupported(int id) const {
     return names_.contains(id) && !isFh6Supported(id);
+}
+
+bool CarRegistry::isSupported(int id, const QString &game) const {
+    const QStringList games = versions_.value(id).split(QLatin1Char(','), Qt::SkipEmptyParts);
+
+    return std::any_of(games.cbegin(), games.cend(), [&game](const QString &version) {
+        return version.trimmed().compare(game, Qt::CaseInsensitive) == 0;
+    });
+}
+
+CarRegistry::ModelSource CarRegistry::findModel(int id, const QMap<QString, QString> &gameFolders,
+                                              const QString &preferredGame) const {
+    for (const QString &game : fls::carModelGames(preferredGame)) {
+        if (!isSupported(id, game)) continue;
+        for (const QString &directory : fls::gameCarsDirs(gameFolders.value(game))) {
+            const QString path = fls::findCarModelPath(directory, modelCode(id, game));
+            if (!path.isEmpty()) return {path, game};
+        }
+    }
+
+    return {};
+}
+
+QHash<int, QStringList> CarRegistry::modelAvailability(const QMap<QString, QString> &gameFolders) const {
+    QHash<int, QStringList> available;
+
+    for (auto folder = gameFolders.cbegin(); folder != gameFolders.cend(); ++folder) {
+        const QSet<QString> models = fls::availableCarModelCodes(folder.value());
+        const QString game = folder.key().trimmed().toUpper();
+        if (models.isEmpty()) continue;
+        for (const Entry &entry : sorted_) {
+            if (isSupported(entry.id, game) && models.contains(modelCode(entry.id, game).toLower())) {
+                available[entry.id].push_back(game);
+            }
+        }
+    }
+
+    return available;
 }
 
 QString CarRegistry::displayName(int id) const {
@@ -157,10 +263,11 @@ const CarRegistry &sharedCarRegistry() {
 
 bool chooseCarModel(QWidget *parent, int currentId, int *outId) {
     const CarRegistry &registry = sharedCarRegistry();
+    const auto availability = registry.modelAvailability(loadBehaviorSettings().gameFolders);
 
     QDialog dialog(parent);
     dialog.setWindowTitle(QStringLiteral("Choose Target Car"));
-    dialog.resize(360, 460);
+    dialog.resize(kCarDialogWidth, kCarDialogHeight);
 
     auto *layout = new QVBoxLayout(&dialog);
     layout->addWidget(new QLabel(QStringLiteral("Select the car this livery is for:"), &dialog));
@@ -170,14 +277,36 @@ bool chooseCarModel(QWidget *parent, int currentId, int *outId) {
     filter->setClearButtonEnabled(true);
     layout->addWidget(filter);
 
-    auto *list = new QListWidget(&dialog);
+    auto *list = new QTreeWidget(&dialog);
+    list->setHeaderLabels({QStringLiteral("Car"), QStringLiteral("Supported versions")});
+    list->setRootIsDecorated(false);
+    list->setItemsExpandable(false);
+    list->setUniformRowHeights(true);
+    list->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    list->setItemDelegate(new CarVersionDelegate(list));
+    list->header()->setStretchLastSection(false);
+    list->header()->setResizeContentsPrecision(-1);
+    list->header()->setSectionResizeMode(0, QHeaderView::Stretch);
+    list->header()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
     layout->addWidget(list, 1);
     for (const CarRegistry::Entry &entry : registry.entries()) {
-        auto *item = new QListWidgetItem(entry.name, list);
-        item->setData(Qt::UserRole, entry.id);
-        if (!registry.isFh6Supported(entry.id)) {
-            item->setForeground(kUnsupportedCarColor);
+        QStringList versions;
+        QStringList versionTips;
+        const QStringList available = availability.value(entry.id);
+        for (const QString &token : entry.version.split(QLatin1Char(','), Qt::SkipEmptyParts)) {
+            const QString version = token.trimmed().toUpper();
+            if (version.isEmpty() || versions.contains(version)) continue;
+            versions.push_back(version);
+            versionTips.push_back(QStringLiteral("%1: %2").arg(version,
+                available.contains(version) ? QStringLiteral("model found") : QStringLiteral("model missing")));
         }
+        auto *item = new QTreeWidgetItem(list, {entry.name, versions.join(QStringLiteral("  "))});
+        item->setData(0, Qt::UserRole, entry.id);
+        item->setData(1, kVersionsRole, versions);
+        item->setData(1, kAvailableVersionsRole, available);
+        item->setToolTip(0, entry.name);
+        item->setToolTip(1, versionTips.join(QLatin1Char('\n')));
+        if (available.isEmpty()) item->setForeground(0, kMissingModelColor);
         if (entry.id == currentId) {
             list->setCurrentItem(item);
         }
@@ -188,31 +317,32 @@ bool chooseCarModel(QWidget *parent, int currentId, int *outId) {
     auto *okButton = buttons->button(QDialogButtonBox::Ok);
 
     const auto updateOkEnabled = [&] {
-        QListWidgetItem *current = list->currentItem();
+        QTreeWidgetItem *current = list->currentItem();
         okButton->setEnabled(current != nullptr && !current->isHidden());
     };
     updateOkEnabled();
 
     QObject::connect(filter, &QLineEdit::textChanged, list, [list, &updateOkEnabled](const QString &text) {
         const QString needle = text.trimmed();
-        for (int row = 0; row < list->count(); ++row) {
-            QListWidgetItem *item = list->item(row);
-            item->setHidden(!needle.isEmpty() && !item->text().contains(needle, Qt::CaseInsensitive));
+        for (int row = 0; row < list->topLevelItemCount(); ++row) {
+            QTreeWidgetItem *item = list->topLevelItem(row);
+            const QString rowText = item->text(0) + QLatin1Char(' ') + item->text(1);
+            item->setHidden(!needle.isEmpty() && !rowText.contains(needle, Qt::CaseInsensitive));
         }
-        QListWidgetItem *current = list->currentItem();
+        QTreeWidgetItem *current = list->currentItem();
         if (current == nullptr || current->isHidden()) {
-            for (int row = 0; row < list->count(); ++row) {
-                if (!list->item(row)->isHidden()) {
-                    list->setCurrentRow(row);
+            for (int row = 0; row < list->topLevelItemCount(); ++row) {
+                if (!list->topLevelItem(row)->isHidden()) {
+                    list->setCurrentItem(list->topLevelItem(row));
                     break;
                 }
             }
         }
         updateOkEnabled();
     });
-    QObject::connect(list, &QListWidget::currentItemChanged, list,
-                     [&updateOkEnabled](QListWidgetItem *, QListWidgetItem *) { updateOkEnabled(); });
-    QObject::connect(list, &QListWidget::itemDoubleClicked, &dialog, [&dialog](QListWidgetItem *) { dialog.accept(); });
+    QObject::connect(list, &QTreeWidget::currentItemChanged, list,
+                     [&updateOkEnabled](QTreeWidgetItem *, QTreeWidgetItem *) { updateOkEnabled(); });
+    QObject::connect(list, &QTreeWidget::itemDoubleClicked, &dialog, [&dialog](QTreeWidgetItem *, int) { dialog.accept(); });
     QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
     QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
 
@@ -220,12 +350,12 @@ bool chooseCarModel(QWidget *parent, int currentId, int *outId) {
     if (dialog.exec() != QDialog::Accepted) {
         return false;
     }
-    QListWidgetItem *current = list->currentItem();
+    QTreeWidgetItem *current = list->currentItem();
     if (current == nullptr) {
         return false;
     }
     if (outId != nullptr) {
-        *outId = current->data(Qt::UserRole).toInt();
+        *outId = current->data(0, Qt::UserRole).toInt();
     }
     return true;
 }

@@ -5,6 +5,7 @@
 #include <QColor>
 #include <QBrush>
 #include <QPalette>
+#include <QMap>
 #include <QSize>
 #include <QString>
 
@@ -70,7 +71,7 @@ struct BehaviorSettings {
     double nudgeShiftStep = 1.0;
     int liveryTextureScale = 4;
     int autosaveIntervalMinutes = 5;
-    QString gameFolder;
+    QMap<QString, QString> gameFolders;
     bool discardModelOnLiveryOpen = true;
     bool loadCarTextures = false;
     bool pasteInPlace = false;

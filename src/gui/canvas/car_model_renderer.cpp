@@ -83,7 +83,7 @@ void uploadCarMeshGeometry(BufferSet &buffers, QOpenGLShaderProgram &program,
     constexpr int kBaseVertexComponents = 8;
     constexpr int kMaterialUvComponents = 2;
     constexpr int kFinishUvComponents = 2;
-    constexpr int kTangentComponents = 8;
+    constexpr int kTangentComponents = 4;
     const int stride = (kBaseVertexComponents + (materialUv ? kMaterialUvComponents + kFinishUvComponents + kTangentComponents : 0)) * sizeof(float);
 
     buffers.vao.create();
@@ -105,10 +105,8 @@ void uploadCarMeshGeometry(BufferSet &buffers, QOpenGLShaderProgram &program,
         program.setAttributeBuffer(3, GL_FLOAT, 8 * sizeof(float), 2, stride);
         program.enableAttributeArray(4);
         program.setAttributeBuffer(4, GL_FLOAT, 10 * sizeof(float), 2, stride);
-        program.enableAttributeArray(5);
-        program.setAttributeBuffer(5, GL_FLOAT, 12 * sizeof(float), 4, stride);
         program.enableAttributeArray(6);
-        program.setAttributeBuffer(6, GL_FLOAT, 16 * sizeof(float), 4, stride);
+        program.setAttributeBuffer(6, GL_FLOAT, 12 * sizeof(float), 4, stride);
     }
     buffers.vao.release();
     buffers.vbo.release();
@@ -121,7 +119,6 @@ layout(location = 1) in vec3 in_normal;
 layout(location = 2) in vec2 in_uv;
 layout(location = 3) in vec2 in_material_uv;
 layout(location = 4) in vec2 in_finish_uv;
-layout(location = 5) in vec4 in_tangent;
 layout(location = 6) in vec4 in_finish_tangent;
 
 uniform mat4 mvp;
@@ -132,7 +129,6 @@ out vec3 v_world;
 out vec2 v_uv;
 out vec2 v_material_uv;
 out vec2 v_finish_uv;
-out vec4 v_tangent;
 out vec4 v_finish_tangent;
 
 void main()
@@ -144,7 +140,6 @@ void main()
     v_uv = in_uv;
     v_material_uv = in_material_uv;
     v_finish_uv = in_finish_uv;
-    v_tangent = vec4(mat3(model) * in_tangent.xyz, in_tangent.w);
     v_finish_tangent = vec4(mat3(model) * in_finish_tangent.xyz, in_finish_tangent.w);
 }
 )";
@@ -155,7 +150,6 @@ in vec3 v_world;
 in vec2 v_uv;
 in vec2 v_material_uv;
 in vec2 v_finish_uv;
-in vec4 v_tangent;
 in vec4 v_finish_tangent;
 
 uniform sampler2D livery_tex;
@@ -228,20 +222,6 @@ const vec3 ENVIRONMENT_LOW_COLOR = vec3(0.025, 0.028, 0.035);
 const vec3 ENVIRONMENT_HIGH_COLOR = vec3(0.58, 0.64, 0.72);
 
 const float PI = 3.14159265359;
-
-vec3 srgbToLinear(vec3 color)
-{
-    vec3 low = color / 12.92;
-    vec3 high = pow((color + 0.055) / 1.055, vec3(2.4));
-    return mix(high, low, lessThanEqual(color, vec3(0.04045)));
-}
-
-vec3 linearToSrgb(vec3 color)
-{
-    vec3 low = color * 12.92;
-    vec3 high = 1.055 * pow(max(color, vec3(0.0)), vec3(1.0 / 2.4)) - 0.055;
-    return mix(high, low, lessThanEqual(color, vec3(0.0031308)));
-}
 
 float distributionGGX(vec3 N, vec3 H, float roughness)
 {
@@ -397,7 +377,7 @@ void main()
     }
     vec2 materialUv = v_material_uv;
     if (has_native_normal == 1 && finish_own_uv == 0) {
-        n = normalize(authoredTangentFrame(n, v_world, materialUv, v_tangent) * mappedNormal(native_normal, materialUv, 1.0));
+        n = normalize(materialTangentFrame(n, v_world, materialUv) * mappedNormal(native_normal, materialUv, 1.0));
     }
     vec3 viewDir = normalize(eye_position - v_world);
     float edge = pow(1.0 - max(dot(n, viewDir), 0.0), 2.0);
@@ -478,7 +458,7 @@ void main()
             }
             if (coverage > 0.5) {
                 vec4 paint = texture(livery_tex, paintUv);
-                albedo = albedo * (1.0 - paint.a) + srgbToLinear(paint.rgb);
+                albedo = albedo * (1.0 - paint.a) + paint.rgb;
             }
         } else {
         float bestScore = -1.0;
@@ -546,7 +526,7 @@ void main()
         }
         if (bestCoverage > 0.5) {
             vec4 paint = texture(livery_tex, bestUv);
-            albedo = albedo * (1.0 - paint.a) + srgbToLinear(paint.rgb);
+            albedo = albedo * (1.0 - paint.a) + paint.rgb;
         }
         }
     }
@@ -642,7 +622,7 @@ void main()
         color += vec3(ccFresnelEdge * 0.06 * clear_coat_intensity);
     }
     color += material_emissive + nativeEmission;
-    out_color = vec4(linearToSrgb(max(color, vec3(0.0))), outputAlpha);
+    out_color = vec4(color, outputAlpha);
 }
 )";
 
@@ -832,12 +812,16 @@ const QVector3D kTailLampEmissionColor(1.0f, 0.025f, 0.012f);
 const QVector3D kIndicatorEmissionColor(1.0f, 0.30f, 0.025f);
 const QVector3D kHeadLampEmissionColor(1.0f, 0.86f, 0.68f);
 
-QVector3D srgbToLinear(const QVector3D &color) {
-    const auto channel = [](float value) {
-        return value <= 0.04045f ? value / 12.92f : std::pow((value + 0.055f) / 1.055f, 2.4f);
-    };
+float linearToDisplay(float value) {
+    const float linear = std::clamp(value, 0.0f, 1.0f);
 
-    return {channel(color.x()), channel(color.y()), channel(color.z())};
+    return linear <= 0.0031308f
+        ? linear * 12.92f
+        : 1.055f * std::pow(linear, 1.0f / 2.4f) - 0.055f;
+}
+
+QVector3D displayColor(const std::array<float, 3> &color) {
+    return {linearToDisplay(color[0]), linearToDisplay(color[1]), linearToDisplay(color[2])};
 }
 
 std::optional<MaterialFallback> exteriorMaterialFallback(const fls::CarMesh &mesh) {
@@ -2804,11 +2788,10 @@ void CarModelRenderer::uploadModel(const fls::CarModel &model, int lodIndex) {
             return mesh.tangentChannels.size() > static_cast<size_t>(channel)
                 && mesh.tangentChannels[channel].size() == mesh.positions.size() ? &mesh.tangentChannels[channel] : nullptr;
         };
-        const auto *materialTangents = tangentsFor(materialUvIndex);
         const auto *finishTangents = tangentsFor(finishUvChannel);
 
         std::vector<float> interleaved;
-        interleaved.reserve(mesh.positions.size() * 20);
+        interleaved.reserve(mesh.positions.size() * 16);
         for (size_t i = 0; i < mesh.positions.size(); ++i) {
             const fls::ModelVec3 &p = mesh.positions[i];
             const fls::ModelVec3 &n = i < mesh.normals.size() ? mesh.normals[i] : fls::ModelVec3{0.0f, 1.0f, 0.0f};
@@ -2841,10 +2824,8 @@ void CarModelRenderer::uploadModel(const fls::CarModel &model, int lodIndex) {
                 interleaved.push_back(0.0f);
                 interleaved.push_back(0.0f);
             }
-            for (const auto *tangents : {materialTangents, finishTangents}) {
-                const auto tangent = tangents != nullptr ? (*tangents)[i] : fls::ModelVec4{};
-                interleaved.insert(interleaved.end(), {tangent.x, tangent.y, tangent.z, tangent.w});
-            }
+            const auto tangent = finishTangents != nullptr ? (*finishTangents)[i] : fls::ModelVec4{};
+            interleaved.insert(interleaved.end(), {tangent.x, tangent.y, tangent.z, tangent.w});
         }
 
         auto buffers = std::make_unique<MeshBuffers>();
@@ -2865,7 +2846,9 @@ void CarModelRenderer::uploadModel(const fls::CarModel &model, int lodIndex) {
         if (mesh.material) {
             buffers->hasMaterialColor = mesh.material->hasBaseColor;
             buffers->materialColor = QVector3D(
-                mesh.material->baseColor[0], mesh.material->baseColor[1], mesh.material->baseColor[2]);
+                linearToDisplay(mesh.material->baseColor[0]),
+                linearToDisplay(mesh.material->baseColor[1]),
+                linearToDisplay(mesh.material->baseColor[2]));
             buffers->emissiveColor = QVector3D(
                 mesh.material->emissiveColor[0], mesh.material->emissiveColor[1], mesh.material->emissiveColor[2]);
             buffers->emissiveIntensity = mesh.material->emissiveIntensity;
@@ -3206,7 +3189,7 @@ void applyPaintFinish(const fls::LiveryPaintMaterial &paint, const fls::PaintFin
 
 } // namespace
 
-GLuint CarModelRenderer::uploadSwatchTexture(const fls::SwatchImage &image, const std::vector<fls::SwatchImage> &mips, bool srgb) {
+GLuint CarModelRenderer::uploadSwatchTexture(const fls::SwatchImage &image, const std::vector<fls::SwatchImage> &mips) {
     if (!image.valid()) {
         return 0;
     }
@@ -3218,12 +3201,12 @@ GLuint CarModelRenderer::uploadSwatchTexture(const fls::SwatchImage &image, cons
     GLuint texture = 0;
     functions->glGenTextures(1, &texture);
     functions->glBindTexture(GL_TEXTURE_2D, texture);
-    functions->glTexImage2D(GL_TEXTURE_2D, 0, srgb ? GL_SRGB8_ALPHA8 : GL_RGBA8, image.width, image.height, 0, GL_RGBA,
+    functions->glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, image.width, image.height, 0, GL_RGBA,
                             GL_UNSIGNED_BYTE, image.rgba.data());
     int level = 1;
     for (const auto &mip : mips) {
         if (!mip.valid()) break;
-        functions->glTexImage2D(GL_TEXTURE_2D, level++, srgb ? GL_SRGB8_ALPHA8 : GL_RGBA8, mip.width, mip.height,
+        functions->glTexImage2D(GL_TEXTURE_2D, level++, GL_RGBA8, mip.width, mip.height,
                               0, GL_RGBA, GL_UNSIGNED_BYTE, mip.rgba.data());
     }
     if (level == 1) functions->glGenerateMipmap(GL_TEXTURE_2D);
@@ -3245,10 +3228,10 @@ const CarModelRenderer::FinishTextureEntry *CarModelRenderer::ensurePaintFinishT
         return &existing.value();
     }
     FinishTextureEntry entry;
-    entry.pattern = uploadSwatchTexture(render.patternImage, render.patternMips, true);
-    entry.normal = uploadSwatchTexture(render.detailNormalImage, render.detailNormalMips, false);
-    entry.surface = uploadSwatchTexture(render.roughMetalAoImage, render.roughMetalAoMips, false);
-    entry.weaveMask = uploadSwatchTexture(render.weaveMaskImage, render.weaveMaskMips, false);
+    entry.pattern = uploadSwatchTexture(render.patternImage, render.patternMips);
+    entry.normal = uploadSwatchTexture(render.detailNormalImage, render.detailNormalMips);
+    entry.surface = uploadSwatchTexture(render.roughMetalAoImage, render.roughMetalAoMips);
+    entry.weaveMask = uploadSwatchTexture(render.weaveMaskImage, render.weaveMaskMips);
 
     return &*finishTextureCache_.insert(code, entry);
 }
@@ -3311,10 +3294,10 @@ void CarModelRenderer::render(
 
     program_.bind();
     program_.setUniformValue(wireframeOverlayLocation_, 0);
-    const QVector3D fallbackColor = srgbToLinear(QVector3D(
+    const QVector3D fallbackColor(
         static_cast<float>(basePaint.redF()),
         static_cast<float>(basePaint.greenF()),
-        static_cast<float>(basePaint.blueF())));
+        static_cast<float>(basePaint.blueF()));
 
     bool eyeValid = false;
     const QVector3D eye = view.inverted(&eyeValid).map(QVector3D(0.0f, 0.0f, 0.0f));
@@ -3374,9 +3357,9 @@ void CarModelRenderer::render(
             liveryCustomPainted = true;
             const quint32 key = (quint32(paint->primary.bgra[0]) << 16)
                 | (quint32(paint->primary.bgra[1]) << 8) | quint32(paint->primary.bgra[2]);
-            const QVector3D color = srgbToLinear(QVector3D(paint->primary.bgra[2] / 255.0f,
+            const QVector3D color(paint->primary.bgra[2] / 255.0f,
                                   paint->primary.bgra[1] / 255.0f,
-                                  paint->primary.bgra[0] / 255.0f));
+                                  paint->primary.bgra[0] / 255.0f);
             const int weight = std::max(1, m.indexCount);
             paintedPanels.push_back({m.center, color, static_cast<float>(weight)});
             primaryCounts[key] += weight;
@@ -3436,16 +3419,12 @@ void CarModelRenderer::render(
             ? paintFinishes->find(previewFinishCode)
             : nullptr;
         const auto decodedColor = [](const fls::LiveryPaintColor &color) {
-            return srgbToLinear(QVector3D(color.bgra[2] / 255.0f, color.bgra[1] / 255.0f, color.bgra[0] / 255.0f));
-        };
-        const auto decodedManufacturerColor = [](const std::array<float, 3> &color) {
-            return QVector3D(
-                color[0], color[1], color[2]);
+            return QVector3D(color.bgra[2] / 255.0f, color.bgra[1] / 255.0f, color.bgra[0] / 255.0f);
         };
         if (manufacturerColor != nullptr) {
-            primary = decodedManufacturerColor(manufacturerColor->primary);
+            primary = displayColor(manufacturerColor->primary);
             secondary = manufacturerColor->secondaryEnabled
-                ? decodedManufacturerColor(manufacturerColor->secondary)
+                ? displayColor(manufacturerColor->secondary)
                 : primary;
             if (manufacturerColor->material) {
                 gloss = manufacturerColor->material->gloss;
@@ -3525,9 +3504,9 @@ void CarModelRenderer::render(
         bindMaterialTexture(10, finishTextures != nullptr ? finishTextures->weaveMask : 0,
                             weaveMaskLocation_, hasWeaveMaskLocation_);
         program_.setUniformValue(weaveColorTintALocation_, finish != nullptr
-            ? QVector3D(finish->weaveColorTintA[0], finish->weaveColorTintA[1], finish->weaveColorTintA[2]) : QVector3D());
+            ? displayColor(finish->weaveColorTintA) : QVector3D());
         program_.setUniformValue(weaveColorTintBLocation_, finish != nullptr
-            ? QVector3D(finish->weaveColorTintB[0], finish->weaveColorTintB[1], finish->weaveColorTintB[2]) : QVector3D());
+            ? displayColor(finish->weaveColorTintB) : QVector3D());
         program_.setUniformValue(finishUvRotationLocation_, finish != nullptr ? qDegreesToRadians(finish->uvOrientationDegrees) : 0.0f);
         program_.setUniformValue(finishSelfColoredLocation_,
                                  (finish != nullptr && finish->selfColored) ? 1 : 0);

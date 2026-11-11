@@ -127,7 +127,7 @@ private:
         GLuint weaveMask = 0;
     };
 
-    GLuint uploadSwatchTexture(const fls::SwatchImage &image, const std::vector<fls::SwatchImage> &mips, bool srgb);
+    GLuint uploadSwatchTexture(const fls::SwatchImage &image, const std::vector<fls::SwatchImage> &mips);
     const FinishTextureEntry *ensurePaintFinishTextures(int code, const fls::PaintFinishRender &render);
     void clearPaintFinishTextures();
 

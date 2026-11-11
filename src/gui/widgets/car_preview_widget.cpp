@@ -288,9 +288,7 @@ QString findSharedCarAsset(const QString &sourcePath, const QString &relativePat
     return {};
 }
 
-// Stock tyre spec per car, from assets/cars/wheel_sizes.json. The wheel/tire models are
-// normalised, so this is what sizes them per car (see docs/GAMEDATA.md). Lazily loaded once.
-fls::WheelSizing wheelSizingForModelCode(const QString &modelCode) {
+fls::WheelSizing wheelSizingForModelCode(const QString &modelCode, const QString &game) {
     static const auto table = [] {
         QHash<QString, fls::WheelSizing> sizes;
         fls::WheelSizing fallback;
@@ -335,13 +333,22 @@ fls::WheelSizing wheelSizingForModelCode(const QString &modelCode) {
                 if (it.key().startsWith(QLatin1Char('_')) || !it.value().isObject()) {
                     continue;
                 }
-                sizes.insert(it.key().toLower(), parse(it.value().toObject(), fallback));
+                const QJsonObject entry = it.value().toObject();
+                const fls::WheelSizing sizing = parse(entry, fallback);
+                const QJsonObject games = entry.value(QStringLiteral("games")).toObject();
+                sizes.insert(it.key().toLower(), sizing);
+                for (auto version = games.begin(); version != games.end(); ++version) {
+                    sizes.insert(it.key().toLower() + QLatin1Char('|') + version.key().toUpper(),
+                                 parse(version.value().toObject(), sizing));
+                }
             }
             break;
         }
         return std::make_pair(sizes, fallback);
     }();
-    return table.first.value(modelCode.toLower(), table.second);
+    const fls::WheelSizing canonical = table.first.value(modelCode.toLower(), table.second);
+
+    return table.first.value(modelCode.toLower() + QLatin1Char('|') + game.toUpper(), canonical);
 }
 
 std::optional<fls::CarModel> loadArchivedModel(
@@ -966,7 +973,7 @@ struct PreparedCar {
 
 std::shared_ptr<PreparedCar> prepareCar(
     const QString &path, bool loadCarTextures, QString *error, QJsonObject *timings = nullptr,
-    const std::function<bool()> &cancelled = {}) {
+    const std::function<bool()> &cancelled = {}, const QString &game = {}) {
     static QMutex loadMutex;
     QElapsedTimer timer;
     qint64 previousTime = 0;
@@ -1005,7 +1012,7 @@ std::shared_ptr<PreparedCar> prepareCar(
     }
 
     const fls::WheelSizing wheelSizing =
-        wheelSizingForModelCode(QFileInfo(loadPath).completeBaseName());
+        wheelSizingForModelCode(QFileInfo(loadPath).completeBaseName(), game);
     fls::CarModel model = loadPath.endsWith(QStringLiteral(".carbin"), Qt::CaseInsensitive)
         ? fls::loadCarBin(loadPath, error, wheelSizing)
         : fls::loadModelBin(loadPath, error);
@@ -1233,9 +1240,10 @@ CarPreviewWidget::~CarPreviewWidget() {
     doneCurrent();
 }
 
-void CarPreviewWidget::loadCarAsync(const QString &path, CarLoadCallback callback) {
+void CarPreviewWidget::loadCarAsync(const QString &path, CarLoadCallback callback, const QString &game) {
     const bool loadCarTextures = loadCarTextures_;
-    const QString key = assetFileIdentity(path) + QLatin1Char('|') + QString::number(loadCarTextures);
+    const QString key = assetFileIdentity(path) + QLatin1Char('|') + QString::number(loadCarTextures)
+        + QLatin1Char('|') + game;
     if (modelLoadPending_ && pendingCarKey_ == key) {
         if (callback) {
             carLoadCallbacks_.push_back(std::move(callback));
@@ -1263,20 +1271,20 @@ void CarPreviewWidget::loadCarAsync(const QString &path, CarLoadCallback callbac
     updateModelStatus();
     QPointer<CarPreviewWidget> guard(this);
     QThreadPool::globalInstance()->start(
-        [guard, path, key, loadCarTextures, generation, cancellation, started = carLoadTimer_]() mutable {
+        [guard, path, key, game, loadCarTextures, generation, cancellation, started = carLoadTimer_]() mutable {
             QString error;
             QJsonObject timings;
             const auto cancelled = [cancellation]() { return cancellation->load(std::memory_order_relaxed); };
             timings.insert(QStringLiteral("worker_start_ms"), started.nsecsElapsed() / 1000000.0);
             std::shared_ptr<PreparedCar> prepared =
-                prepareCar(path, loadCarTextures, &error, &timings, cancelled);
+                prepareCar(path, loadCarTextures, &error, &timings, cancelled, game);
             timings.insert(QStringLiteral("cpu_ready_ms"), started.nsecsElapsed() / 1000000.0);
             if (!guard || cancelled()) {
                 return;
             }
             QMetaObject::invokeMethod(
                 guard,
-                [guard, key, prepared = std::move(prepared), error = std::move(error),
+                [guard, key, game, prepared = std::move(prepared), error = std::move(error),
                  generation, timings = std::move(timings)]() mutable {
                     if (!guard || guard->carLoadGeneration_ != generation) {
                         return;
@@ -1302,6 +1310,7 @@ void CarPreviewWidget::loadCarAsync(const QString &path, CarLoadCallback callbac
                     guard->manufacturerColors_ = std::move(prepared->manufacturerColors);
                     guard->extractedCarDir_ = std::move(prepared->extractedCarDir);
                     guard->loadedCarPath_ = std::move(prepared->loadedCarPath);
+                    guard->loadedCarGame_ = game;
                     guard->loadedCarKey_ = key;
                     guard->liveryMasks_ = std::move(prepared->liveryMasks);
                     guard->carUnwrapOverlaySets_ = std::move(
@@ -1381,6 +1390,7 @@ QImage CarPreviewWidget::renderThumbnail(const QSize &size) {
 void CarPreviewWidget::clearModel() {
     cancelCarLoad();
     loadedCarPath_.clear();
+    loadedCarGame_.clear();
     loadedCarKey_.clear();
     manufacturerColors_ = {};
     selectedLodIndex_ = 0;
@@ -2097,11 +2107,12 @@ void CarPreviewWidget::setLoadCarTextures(bool enabled) {
         return;
     }
     const QString path = loadedCarPath_;
+    const QString game = loadedCarGame_;
     loadCarAsync(path, [](bool loaded, const QString &error) {
         if (!loaded) {
             qWarning().noquote() << error;
         }
-    });
+    }, game);
 }
 
 QMatrix4x4 CarPreviewWidget::cameraView() const {

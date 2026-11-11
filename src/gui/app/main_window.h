@@ -253,9 +253,8 @@ private:
     void applyToolbarStyle(bool vertical);
     void setupWindowMenu();
     void importCarModel();
-    void loadCarModel(const QString &path, bool automatic);
+    void loadCarModel(const QString &path, bool automatic, const QString &game = {});
     void maybeAutoLoadCarForProject(bool replaceLoadedModel = false);
-    QString findCarModelPath(const QString &folder, const QString &modelName) const;
 
     EditorState *state_ = nullptr;
     KeyBindingRouter *keyBindings_ = nullptr;
@@ -296,7 +295,7 @@ private:
     QVector<QPersistentModelIndex> autoExpandedTreeIndexes_;
     QStringList autoExpandedGroupIds_;
     bool dockResizeCursorOverrideActive_ = false;
-    bool promptedForGameFolder_ = false;
+    QSet<QString> promptedGameFolders_;
     bool restartRequested_ = false;
     struct DockAreaCollapseState {
         Qt::DockWidgetArea area = Qt::NoDockWidgetArea;

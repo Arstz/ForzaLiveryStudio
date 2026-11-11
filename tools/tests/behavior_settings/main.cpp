@@ -20,6 +20,24 @@ int main(int argc, char **argv) {
     try {
         QSettings settings;
         const auto require = [](bool condition) { if (!condition) { throw std::runtime_error("Contour fill settings mismatch"); } };
+        settings.setValue(QStringLiteral("ui/behavior/gameFolder"), QStringLiteral("legacy/FH6"));
+        settings.sync();
+        auto gameSettings = gui::loadBehaviorSettings();
+        require(gameSettings.gameFolders.value(QStringLiteral("FH6")) == QStringLiteral("legacy/FH6"));
+        gameSettings.gameFolders.insert(QStringLiteral("FM7"), QStringLiteral("games/FM7"));
+        gameSettings.gameFolders.insert(QStringLiteral("FM2023"), QStringLiteral("games/FM2023"));
+        gui::saveBehaviorSettings(gameSettings);
+        require(gui::loadBehaviorSettings().gameFolders == gameSettings.gameFolders);
+        settings.sync();
+        require(!settings.contains(QStringLiteral("ui/behavior/gameFolder")));
+        gameSettings.gameFolders.insert(QStringLiteral("FH6"), QString());
+        gui::saveBehaviorSettings(gameSettings);
+        settings.setValue(QStringLiteral("ui/behavior/gameFolder"), QStringLiteral("stale/FH6"));
+        settings.sync();
+        require(gui::loadBehaviorSettings().gameFolders.value(QStringLiteral("FH6")).isEmpty());
+        require(gui::loadBehaviorSettings().gameFolders.value(QStringLiteral("FM7")) == QStringLiteral("games/FM7"));
+        settings.clear();
+        settings.sync();
         require(gui::loadBehaviorSettings().contourFillMode == gui::ContourFillMode::Analytic);
         require(!gui::loadBehaviorSettings().autoSavePenPaths);
         require(!gui::loadBehaviorSettings().autoSaveLiningPaths);
@@ -82,6 +100,6 @@ int main(int argc, char **argv) {
         QTextStream(stderr) << error.what() << '\n';
         return 1;
     }
-    QTextStream(stdout) << "Removed-mode migration and contour fill round trips passed\n";
+    QTextStream(stdout) << "Behavior settings migration and round trips passed\n";
     return 0;
 }

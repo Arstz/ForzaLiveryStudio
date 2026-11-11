@@ -1,6 +1,7 @@
 #include "settings_dialog.h"
 
 #include "gui_assets.h"
+#include "game_paths.h"
 #include "gui/key_bindings.h"
 
 #include <QtCore>
@@ -269,27 +270,28 @@ SettingsDialog::SettingsDialog(UiTheme theme,
     layout->addLayout(contentLayout, 1);
 
     SettingsPage general = createSettingsPage(pages);
-    auto *gameFolderRow = new QWidget(general.widget);
-    auto *gameFolderLayout = new QHBoxLayout(gameFolderRow);
-    gameFolderLayout->setContentsMargins(0, 0, 0, 0);
-    gameFolderLayout->setSpacing(8);
-    gameFolder_ = new QLineEdit(gameFolderRow);
-    gameFolder_->setText(behaviorSettings_.gameFolder);
-    gameFolder_->setPlaceholderText(QStringLiteral("Forza game install folder"));
-    gameFolder_->setClearButtonEnabled(true);
-    auto *browse = new QPushButton(QStringLiteral("Browse"), gameFolderRow);
-    QObject::connect(browse, &QPushButton::clicked, this, [this]() {
-        const QString start = gameFolder_->text().isEmpty() ? QString() : gameFolder_->text();
-        const QString picked = QFileDialog::getExistingDirectory(
-            this, QStringLiteral("Forza Game Folder"), start);
-        if (!picked.isEmpty()) {
-            gameFolder_->setText(picked);
-        }
-    });
-    gameFolderLayout->addWidget(gameFolder_, 1);
-    gameFolderLayout->addWidget(browse);
-    addSettingRow(general, QStringLiteral("general.game_folder"),
-                  QStringLiteral("Game folder"), gameFolderRow, tips);
+    for (const QString &game : fls::carModelGames()) {
+        auto *gameFolderRow = new QWidget(general.widget);
+        auto *gameFolderLayout = new QHBoxLayout(gameFolderRow);
+        auto *edit = new QLineEdit(gameFolderRow);
+        auto *browse = new QPushButton(QStringLiteral("Browse"), gameFolderRow);
+        gameFolderLayout->setContentsMargins(0, 0, 0, 0);
+        gameFolderLayout->setSpacing(8);
+        edit->setObjectName(QStringLiteral("gameFolder.") + game);
+        edit->setText(behaviorSettings_.gameFolders.value(game));
+        edit->setPlaceholderText(QStringLiteral("Game install or media folder"));
+        edit->setClearButtonEnabled(true);
+        gameFolders_.insert(game, edit);
+        QObject::connect(browse, &QPushButton::clicked, this, [this, edit, game]() {
+            const QString picked = QFileDialog::getExistingDirectory(
+                this, QStringLiteral("%1 Game Folder").arg(game), edit->text());
+            if (!picked.isEmpty()) edit->setText(picked);
+        });
+        gameFolderLayout->addWidget(edit, 1);
+        gameFolderLayout->addWidget(browse);
+        addSettingRow(general, QStringLiteral("general.game_folder"),
+                      QStringLiteral("%1 game folder").arg(game), gameFolderRow, tips);
+    }
 
     autosaveIntervalMinutes_ = new QSpinBox(general.widget);
     autosaveIntervalMinutes_->setRange(0, 1440);
@@ -609,7 +611,9 @@ BehaviorSettings SettingsDialog::selectedBehaviorSettings() const {
     result.verticalToolbar = toolbarViewCombo_->currentData().toBool();
     result.separateSelectAndMarqueeTools = separateSelectAndMarqueeToolsCheck_->isChecked();
     result.separateOpacityAndSkewTools = separateOpacityAndSkewToolsCheck_->isChecked();
-    result.gameFolder = gameFolder_->text().trimmed();
+    for (auto folder = gameFolders_.cbegin(); folder != gameFolders_.cend(); ++folder) {
+        result.gameFolders.insert(folder.key(), folder.value()->text().trimmed());
+    }
     result.discardModelOnLiveryOpen = discardModelOnLiveryOpen_->isChecked();
     result.loadCarTextures = loadCarTextures_->isChecked();
 

@@ -68,6 +68,11 @@ if(FLS_CUDA_AVAILABLE)
     set_target_properties(fls_profile_compute PROPERTIES CUDA_ARCHITECTURES all-major CUDA_RUNTIME_LIBRARY Shared)
 endif()
 
+add_library(fls_lzx STATIC third_party/libmspack/lzxd.c)
+target_include_directories(fls_lzx PUBLIC third_party/libmspack)
+target_compile_definitions(fls_lzx PRIVATE HAVE_INTTYPES_H=1)
+set_target_properties(fls_lzx PROPERTIES AUTOMOC OFF AUTOUIC OFF AUTORCC OFF)
+
 add_library(fls_core STATIC
     src/core/binary_io.cpp
     src/core/binary_io.h
@@ -142,6 +147,8 @@ add_library(fls_core STATIC
     src/core/wgs_save_writer.h
     src/core/zip_extract.cpp
     src/core/zip_extract.h
+    src/core/xmem_lzx.cpp
+    src/core/xmem_lzx.h
 )
 
 target_link_libraries(fls_core
@@ -149,6 +156,8 @@ target_link_libraries(fls_core
         Qt6::Core
         Qt6::Gui
         ZLIB::ZLIB
+    PRIVATE
+        fls_lzx
 )
 
 if(WIN32)
@@ -633,7 +642,11 @@ if(FLS_BUILD_TESTS)
     add_test(NAME positional_paint COMMAND fls_positional_paint_tests)
     add_executable(fls_zip_extract_tests tools/tests/zip_extract/main.cpp)
     target_link_libraries(fls_zip_extract_tests PRIVATE fls_core Qt6::Core ZLIB::ZLIB)
+    target_compile_definitions(fls_zip_extract_tests PRIVATE FLS_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
     add_test(NAME zip_extract COMMAND fls_zip_extract_tests)
+    add_executable(fls_livery_mask_tests tools/tests/livery_masks/main.cpp)
+    target_link_libraries(fls_livery_mask_tests PRIVATE fls_core Qt6::Core)
+    add_test(NAME livery_masks COMMAND fls_livery_mask_tests)
     add_executable(fls_car_unwrap_cache_tests tools/tests/car_unwrap_cache/main.cpp)
     target_link_libraries(fls_car_unwrap_cache_tests PRIVATE fls_editor_ui)
     add_test(NAME car_unwrap_cache COMMAND fls_car_unwrap_cache_tests)
@@ -840,6 +853,7 @@ else()
             "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/fls_game_export_tests${CMAKE_EXECUTABLE_SUFFIX}"
             "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/fls_positional_paint_tests${CMAKE_EXECUTABLE_SUFFIX}"
             "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/fls_zip_extract_tests${CMAKE_EXECUTABLE_SUFFIX}"
+            "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/fls_livery_mask_tests${CMAKE_EXECUTABLE_SUFFIX}"
             "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/fls_car_unwrap_cache_tests${CMAKE_EXECUTABLE_SUFFIX}"
             "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/fls_paint_controls_tests${CMAKE_EXECUTABLE_SUFFIX}"
             "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/fls_paint_finish_tests${CMAKE_EXECUTABLE_SUFFIX}"

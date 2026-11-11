@@ -70,10 +70,24 @@ void MainWindow::setProject(fls::Project project) {
     updateCarUnwrapOverlay();
 }
 
-void MainWindow::loadCarModel(const QString &path, bool automatic) {
+void MainWindow::loadCarModel(const QString &path, bool automatic, const QString &game) {
     constexpr int kAutomaticLoadMessageDuration = 4000;
+    QString modelGame = game;
     const int duration = automatic ? kAutomaticLoadMessageDuration : 0;
 
+    if (modelGame.isEmpty()) {
+        const BehaviorSettings settings = loadBehaviorSettings();
+        const QString absolutePath = QFileInfo(path).absoluteFilePath();
+        for (const QString &candidateGame : fls::carModelGames()) {
+            for (const QString &directory : fls::gameCarsDirs(settings.gameFolders.value(candidateGame))) {
+                if (absolutePath.startsWith(QDir(directory).absolutePath() + QLatin1Char('/'), Qt::CaseInsensitive)) {
+                    modelGame = candidateGame;
+                    break;
+                }
+            }
+            if (!modelGame.isEmpty()) break;
+        }
+    }
     statusBar()->showMessage(QStringLiteral("Loading car model: %1").arg(QFileInfo(path).fileName()));
     carPreview_->loadCarAsync(path, [this, path, automatic, duration](bool loaded, const QString &error) {
         if (!loaded) {
@@ -90,7 +104,7 @@ void MainWindow::loadCarModel(const QString &path, bool automatic) {
         statusBar()->showMessage(
             (automatic ? QStringLiteral("Auto-loaded car model: %1") : QStringLiteral("Loaded car model: %1"))
                 .arg(QFileInfo(path).fileName()), duration);
-    });
+    }, modelGame);
 }
 
 void MainWindow::maybeAutoLoadCarForProject(bool replaceLoadedModel) {
@@ -103,6 +117,7 @@ void MainWindow::maybeAutoLoadCarForProject(bool replaceLoadedModel) {
     }
 
     BehaviorSettings settings = loadBehaviorSettings();
+    if (replaceLoadedModel) carPreview_->cancelCarLoad();
     if (carPreview_->hasModel()) {
         if (!replaceLoadedModel && !settings.discardModelOnLiveryOpen) {
             return;
@@ -118,100 +133,39 @@ void MainWindow::maybeAutoLoadCarForProject(bool replaceLoadedModel) {
         return;
     }
 
-    QString folder = fls::gameCarsDir(settings.gameFolder);
-    if (folder.isEmpty() || !QDir(folder).exists()) {
-        if (!promptedForGameFolder_) {
-            promptedForGameFolder_ = true;
+    CarRegistry::ModelSource source = sharedCarRegistry().findModel(project.carId, settings.gameFolders, project.liveryPaint.game);
+    if (source.path.isEmpty()) {
+        for (const QString &game : fls::carModelGames(project.liveryPaint.game)) {
+            if (!sharedCarRegistry().isSupported(project.carId, game)
+                || !fls::gameCarsDirs(settings.gameFolders.value(game)).isEmpty()
+                || promptedGameFolders_.contains(game)) continue;
+            promptedGameFolders_.insert(game);
             const QMessageBox::StandardButton choice = QMessageBox::question(
-                this, QStringLiteral("Game folder"),
-                QStringLiteral("This livery targets \"%1\".\n\nChoose your Forza game install folder so the "
+                this, QStringLiteral("%1 Game Folder").arg(game),
+                QStringLiteral("This livery targets \"%1\".\n\nChoose your %2 install folder so the "
                                "matching car and its paint materials can be loaded automatically? "
-                               "(You can also set it later under Settings.)")
-                    .arg(modelName.isEmpty() ? modelCode : modelName),
+                               "(You can also set it later under Settings > General.)")
+                    .arg(modelName.isEmpty() ? modelCode : modelName, game),
                 QMessageBox::Yes | QMessageBox::No);
             if (choice == QMessageBox::Yes) {
-                const QString picked = QFileDialog::getExistingDirectory(this, QStringLiteral("Forza Game Folder"));
+                const QString picked = QFileDialog::getExistingDirectory(this, QStringLiteral("%1 Game Folder").arg(game));
                 if (!picked.isEmpty()) {
-                    settings.gameFolder = picked;
+                    settings.gameFolders.insert(game, picked);
                     saveBehaviorSettings(settings);
-                    carPreview_->setGameFolder(picked);
-                    folder = fls::gameCarsDir(picked);
+                    carPreview_->setGameFolder(settings.gameFolders.value(QStringLiteral("FH6")));
+                    source = sharedCarRegistry().findModel(project.carId, settings.gameFolders, project.liveryPaint.game);
                 }
             }
-        }
-        if (folder.isEmpty() || !QDir(folder).exists()) {
-            return;
+            break;
         }
     }
 
-    const QString path = findCarModelPath(folder, modelCode);
-    if (path.isEmpty()) {
+    if (source.path.isEmpty()) {
         statusBar()->showMessage(
-            QStringLiteral("No car model matching \"%1\" found in the car models folder").arg(modelCode), 4000);
+            QStringLiteral("No car model matching \"%1\" found in the configured game folders").arg(modelCode), 4000);
         return;
     }
-    loadCarModel(path, true);
-}
-
-QString MainWindow::findCarModelPath(const QString &folder, const QString &modelName) const {
-    QDir dir(folder);
-    if (modelName.isEmpty() || !dir.exists()) {
-        return QString();
-    }
-    const QStringList exts = {QStringLiteral("carbin"), QStringLiteral("zip"), QStringLiteral("modelbin")};
-
-    for (const QString &ext : exts) {
-        const QString candidate = dir.filePath(QStringLiteral("%1.%2").arg(modelName, ext));
-        if (QFileInfo(candidate).isFile()) {
-            return candidate;
-        }
-    }
-
-    const auto modelInDir = [](const QString &dirPath) -> QString {
-        QDir sub(dirPath);
-        for (const QString &pattern : {QStringLiteral("*.carbin"), QStringLiteral("*.zip")}) {
-            const QStringList matches = sub.entryList(QStringList{pattern}, QDir::Files);
-            if (!matches.isEmpty()) {
-                return sub.filePath(matches.first());
-            }
-        }
-        return QString();
-    };
-
-    const QFileInfoList entries = dir.entryInfoList(QDir::Dirs | QDir::Files | QDir::NoDotAndDotDot);
-    for (const QFileInfo &info : entries) {
-        if (info.isFile()) {
-            if (info.completeBaseName().compare(modelName, Qt::CaseInsensitive) == 0
-                && exts.contains(info.suffix().toLower())) {
-                return info.filePath();
-            }
-        } else if (info.isDir() && info.fileName().compare(modelName, Qt::CaseInsensitive) == 0) {
-            const QString found = modelInDir(info.filePath());
-            if (!found.isEmpty()) {
-                return found;
-            }
-        }
-    }
-
-    QDirIterator it(folder, QDir::Dirs | QDir::Files | QDir::NoDotAndDotDot, QDirIterator::Subdirectories);
-    while (it.hasNext()) {
-        const QString entryPath = it.next();
-        const QFileInfo info = it.fileInfo();
-        if (info.isDir()) {
-            if (info.fileName().compare(modelName, Qt::CaseInsensitive) == 0) {
-                const QString found = modelInDir(entryPath);
-                if (!found.isEmpty()) {
-                    return found;
-                }
-            }
-        } else if (info.isFile()
-                   && info.completeBaseName().compare(modelName, Qt::CaseInsensitive) == 0
-                   && (info.suffix().compare(QStringLiteral("carbin"), Qt::CaseInsensitive) == 0
-                       || info.suffix().compare(QStringLiteral("zip"), Qt::CaseInsensitive) == 0)) {
-            return entryPath;
-        }
-    }
-    return QString();
+    loadCarModel(source.path, true, source.game);
 }
 
 void MainWindow::rebuildSectionBar() {

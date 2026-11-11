@@ -208,7 +208,13 @@ BehaviorSettings loadBehaviorSettings() {
         && !settings.value(QStringLiteral("ui/behavior/autosaveEnabled")).toBool()) {
         result.autosaveIntervalMinutes = 0;
     }
-    result.gameFolder = settings.value(QStringLiteral("ui/behavior/gameFolder")).toString();
+    const QVariantMap gameFolders = settings.value(QStringLiteral("ui/behavior/gameFolders")).toMap();
+    for (auto folder = gameFolders.cbegin(); folder != gameFolders.cend(); ++folder) {
+        result.gameFolders.insert(folder.key(), folder.value().toString());
+    }
+    if (!result.gameFolders.contains(QStringLiteral("FH6"))) {
+        result.gameFolders.insert(QStringLiteral("FH6"), settings.value(QStringLiteral("ui/behavior/gameFolder")).toString());
+    }
     result.discardModelOnLiveryOpen = settings.value(QStringLiteral("ui/behavior/discardModelOnLiveryOpen"), result.discardModelOnLiveryOpen).toBool();
     result.loadCarTextures = settings.value(QStringLiteral("ui/behavior/loadCarTextures"), result.loadCarTextures).toBool();
     result.pasteInPlace = settings.value(
@@ -237,6 +243,7 @@ BehaviorSettings loadBehaviorSettings() {
 
 void saveBehaviorSettings(const BehaviorSettings &settings) {
     QSettings qsettings;
+    QVariantMap gameFolders;
     const BehaviorSettings defaults;
     qsettings.setValue(QStringLiteral("ui/behavior/insertShapeWithLastSelectedColor"), settings.insertShapeWithLastSelectedColor);
     qsettings.setValue(QStringLiteral("ui/behavior/insertShapeWithLastSelectedScale"), settings.insertShapeWithLastSelectedScale);
@@ -278,7 +285,11 @@ void saveBehaviorSettings(const BehaviorSettings &settings) {
     qsettings.setValue(QStringLiteral("ui/behavior/liveryTextureScale"), std::clamp(settings.liveryTextureScale, 1, 8));
     qsettings.setValue(QStringLiteral("ui/behavior/autosaveIntervalMinutes"), std::clamp(settings.autosaveIntervalMinutes, 0, 1440));
     qsettings.remove(QStringLiteral("ui/behavior/autosaveEnabled"));
-    qsettings.setValue(QStringLiteral("ui/behavior/gameFolder"), settings.gameFolder);
+    for (auto folder = settings.gameFolders.cbegin(); folder != settings.gameFolders.cend(); ++folder) {
+        gameFolders.insert(folder.key(), folder.value());
+    }
+    qsettings.setValue(QStringLiteral("ui/behavior/gameFolders"), gameFolders);
+    qsettings.remove(QStringLiteral("ui/behavior/gameFolder"));
     qsettings.setValue(QStringLiteral("ui/behavior/discardModelOnLiveryOpen"), settings.discardModelOnLiveryOpen);
     qsettings.setValue(QStringLiteral("ui/behavior/loadCarTextures"), settings.loadCarTextures);
     qsettings.setValue(QStringLiteral("ui/behavior/pasteInPlace"), settings.pasteInPlace);

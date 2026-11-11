@@ -44,7 +44,7 @@ public:
     explicit CarPreviewWidget(QWidget *parent = nullptr);
     ~CarPreviewWidget() override;
 
-    void loadCarAsync(const QString &path, CarLoadCallback callback = {});
+    void loadCarAsync(const QString &path, CarLoadCallback callback = {}, const QString &game = {});
     void cancelCarLoad();
     bool hasModel() const;
     void clearModel();
@@ -138,6 +138,7 @@ private:
     bool modelFitPending_ = false;
     std::shared_ptr<QTemporaryDir> extractedCarDir_;
     QString loadedCarPath_;
+    QString loadedCarGame_;
     QString loadedCarKey_;
     QString pendingCarKey_;
     std::vector<CarLoadCallback> carLoadCallbacks_;

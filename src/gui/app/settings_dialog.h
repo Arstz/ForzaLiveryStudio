@@ -5,6 +5,7 @@
 
 #include <QDialog>
 #include <QKeySequence>
+#include <QMap>
 #include <QVector>
 
 #include <functional>
@@ -79,7 +80,7 @@ private:
     QDoubleSpinBox *nudgeShiftStep_ = nullptr;
     QSpinBox *liveryTextureScale_ = nullptr;
     QSpinBox *autosaveIntervalMinutes_ = nullptr;
-    QLineEdit *gameFolder_ = nullptr;
+    QMap<QString, QLineEdit *> gameFolders_;
     QCheckBox *discardModelOnLiveryOpen_ = nullptr;
     QCheckBox *loadCarTextures_ = nullptr;
     QCheckBox *pasteInPlace_ = nullptr;

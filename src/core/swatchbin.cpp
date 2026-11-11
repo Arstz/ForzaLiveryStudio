@@ -2,11 +2,13 @@
 
 #include "binary_io.h"
 
+#include <QByteArrayView>
 #include <QFile>
 
 #include <algorithm>
 #include <array>
 #include <cstring>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -529,9 +531,121 @@ SwatchImage decodeBc7Surface(const QByteArray &, int, int, QString *error) {
 }
 #endif
 
+constexpr int kDurangoBlobVersion = 2;
+constexpr int kDurangoHeaderSize = 35;
+constexpr int kDurangoThin1D = 13;
+constexpr int kDurangoThin2D = 14;
+constexpr int kBc4BlockBytes = 8;
+
+constexpr std::array kThin1DColumnAddressBits = {1, 4, 16};
+constexpr std::array kThin1DRowAddressBits = {2, 8, 32};
+constexpr std::array kThin2DColumnAddressBits = {1, 4, 16, 32, 96, 128};
+constexpr std::array kThin2DRowAddressBits = {2, 8, 1024, 544, 320};
+constexpr std::array kThin2DColumnBankBits = {256, 512};
+constexpr std::array kThin2DRowBankBits = {384};
+
+template<size_t N>
+int addressBits(int coordinate, const std::array<int, N> &masks) {
+    int result = 0;
+    for (int mask : masks) {
+        if ((coordinate & 1) != 0) {
+            result ^= mask;
+        }
+        coordinate >>= 1;
+    }
+
+    return result;
+}
+
+int durangoBc4TileOffset(int column, int row, bool macroTiled) {
+    if (!macroTiled) {
+        return addressBits(column, kThin1DColumnAddressBits)
+            ^ addressBits(row, kThin1DRowAddressBits);
+    }
+
+    return addressBits(column, kThin2DColumnAddressBits)
+        ^ addressBits(row, kThin2DRowAddressBits)
+        ^ addressBits(column >> kThin2DColumnAddressBits.size(), kThin2DColumnBankBits)
+        ^ addressBits(row >> kThin2DRowAddressBits.size(), kThin2DRowBankBits);
+}
+
+QByteArray detileDurangoBc4(QByteArrayView data, int width, int height, bool macroTiled) {
+    const int blocksWide = (width + kBcTileExtent - 1) / kBcTileExtent;
+    const int blocksHigh = (height + kBcTileExtent - 1) / kBcTileExtent;
+    const int tileWidth = 1 << (macroTiled ? kThin2DColumnAddressBits.size() : kThin1DColumnAddressBits.size());
+    const int tileHeight = 1 << (macroTiled ? kThin2DRowAddressBits.size() : kThin1DRowAddressBits.size());
+    const int tilesWide = (blocksWide + tileWidth - 1) / tileWidth;
+    const int tilesHigh = (blocksHigh + tileHeight - 1) / tileHeight;
+    const int blocksPerTile = tileWidth * tileHeight;
+    const qint64 tiledSize = static_cast<qint64>(tilesWide) * tilesHigh * blocksPerTile * kBc4BlockBytes;
+
+    if (data.size() < tiledSize) {
+        return {};
+    }
+    QByteArray linear(static_cast<qsizetype>(blocksWide) * blocksHigh * kBc4BlockBytes, Qt::Uninitialized);
+    char *destination = linear.data();
+    for (int row = 0; row < blocksHigh; ++row) {
+        const int tileRow = (row / tileHeight) * tilesWide;
+        for (int column = 0; column < blocksWide; ++column) {
+            const int tile = tileRow + column / tileWidth;
+            const qsizetype block = static_cast<qsizetype>(tile) * blocksPerTile
+                + durangoBc4TileOffset(column, row, macroTiled);
+            std::memcpy(destination, data.data() + block * kBc4BlockBytes, kBc4BlockBytes);
+            destination += kBc4BlockBytes;
+        }
+    }
+
+    return linear;
+}
+
+std::optional<TextureSurface> readDurangoMaskSurface(const QByteArray &bytes, int header,
+                                                     QByteArrayView payload, QString *error) {
+    TextureSurface surface;
+    const int width = readLeU16(bytes, header + 16);
+    const int height = readLeU16(bytes, header + 18);
+    const int depth = readLeU16(bytes, header + 20);
+    const int tiledWidth = readLeU16(bytes, header + 22);
+    const int tiledHeight = readLeU16(bytes, header + 24);
+    const int tiledDepth = readLeU16(bytes, header + 26);
+    const int mipCount = static_cast<quint8>(bytes[header + 28]);
+    const int tiledMipCount = static_cast<quint8>(bytes[header + 29]);
+    const int tiledMipOffset = static_cast<quint8>(bytes[header + 30]);
+    const quint32 flags = readLeU32(bytes, header + 31);
+    const int tileMode = flags & 0x1f;
+    const int encoding = (flags >> 5) & 0x3f;
+    const int transcoding = (flags >> 11) & 0x3f;
+    const int format = transcoding > 1 ? transcoding - 2 : encoding;
+    constexpr quint32 kCubeOrVolume = (1u << 25) | (1u << 26);
+
+    if (width <= 0 || height <= 0 || depth != 1 || (flags & kCubeOrVolume) != 0
+        || tiledWidth != width || tiledHeight != height || tiledDepth != 1
+        || mipCount != 1 || tiledMipCount != 1 || tiledMipOffset != 0) {
+        setError(error, QStringLiteral("unsupported Xbox swatchbin dimensions or mip layout"));
+        return std::nullopt;
+    }
+    if (format != static_cast<int>(Encoding::UnsignedBc4) || (tileMode != kDurangoThin1D && tileMode != kDurangoThin2D)) {
+        setError(error, QStringLiteral("unsupported Xbox swatchbin encoding %1 or tile mode %2").arg(format).arg(tileMode));
+        return std::nullopt;
+    }
+    surface.pixels = detileDurangoBc4(payload, width, height, tileMode == kDurangoThin2D);
+    if (surface.pixels.isEmpty()) {
+        setError(error, QStringLiteral("Xbox swatchbin tiled data truncated"));
+        return std::nullopt;
+    }
+    surface.width = width;
+    surface.height = height;
+    surface.formatEncoded = format;
+
+    return surface;
+}
+
 std::optional<TextureSurface> readTextureSurface(const QByteArray &bytes, QString *error, int mipIndex = 0) {
     if (bytes.size() < 8 || readLeU32(bytes, 0) != kBundleMagic) {
         setError(error, QStringLiteral("not a Grub bundle (bad magic)"));
+        return std::nullopt;
+    }
+    if (bytes.size() > (std::numeric_limits<int>::max)()) {
+        setError(error, QStringLiteral("swatchbin bundle exceeds supported size"));
         return std::nullopt;
     }
 
@@ -541,6 +655,10 @@ std::optional<TextureSurface> readTextureSurface(const QByteArray &bytes, QStrin
     int pos = 6;
     quint32 blobCount = 0;
     if (verMajor > 1 || (verMajor == 1 && verMinor >= 1)) {
+        if (bytes.size() < 20) {
+            setError(error, QStringLiteral("swatchbin bundle header truncated"));
+            return std::nullopt;
+        }
         pos += 2 + 4 + 4; // int16 padding, u32 headerSize, u32 totalSize
         blobCount = readLeU32(bytes, pos);
         pos += 4;
@@ -551,7 +669,7 @@ std::optional<TextureSurface> readTextureSurface(const QByteArray &bytes, QStrin
 
     const int blobHeadersStart = pos;
     for (quint32 i = 0; i < blobCount; ++i) {
-        const int header = blobHeadersStart + static_cast<int>(i) * kBlobInfoSize;
+        const qint64 header = blobHeadersStart + static_cast<qint64>(i) * kBlobInfoSize;
         if (header + kBlobInfoSize > bytes.size()) {
             break;
         }
@@ -566,16 +684,34 @@ std::optional<TextureSurface> readTextureSurface(const QByteArray &bytes, QStrin
         const quint32 uncompressedSize = readLeU32(bytes, header + 20);
         const quint32 sizeToRead = uncompressedSize > 0 ? uncompressedSize : compressedSize;
 
-        int txchData = -1;
+        qint64 txchData = -1;
+        int txchSize = 0;
         for (quint32 m = 0; m < metadataCount; ++m) {
-            const int recordBase = static_cast<int>(metadataOffset) + static_cast<int>(m) * kMetadataInfoSize;
+            const qint64 recordBase = metadataOffset + static_cast<qint64>(m) * kMetadataInfoSize;
             if (recordBase + kMetadataInfoSize > bytes.size()) {
                 break;
             }
             if (readLeU32(bytes, recordBase) == kTagTXCH) {
                 txchData = recordBase + readLeU16(bytes, recordBase + 6);
+                txchSize = readLeU16(bytes, recordBase + 4) >> 4;
                 break;
             }
+        }
+        if (static_cast<qint64>(dataOffset) + sizeToRead > bytes.size()) {
+            setError(error, QStringLiteral("swatchbin pixel data out of range"));
+            return std::nullopt;
+        }
+        if (bytes[header + 4] == kDurangoBlobVersion) {
+            if (txchData < 0 || txchSize < kDurangoHeaderSize || txchData + txchSize > dataOffset) {
+                setError(error, QStringLiteral("swatchbin missing Xbox TXCH header"));
+                return std::nullopt;
+            }
+            if (mipIndex != 0) {
+                setError(error, QStringLiteral("swatchbin mip level unavailable"));
+                return std::nullopt;
+            }
+
+            return readDurangoMaskSurface(bytes, txchData, QByteArrayView(bytes).sliced(dataOffset, sizeToRead), error);
         }
         if (txchData < 0 || txchData + 64 > bytes.size()) {
             setError(error, QStringLiteral("swatchbin missing TXCH header"));
@@ -608,11 +744,6 @@ std::optional<TextureSurface> readTextureSurface(const QByteArray &bytes, QStrin
         int formatEncoded = sliceEnc;
         if (transcoding > 1) {
             formatEncoded = transcoding - 2;
-        }
-
-        if (static_cast<int>(dataOffset) < 0 || static_cast<qint64>(dataOffset) + sizeToRead > bytes.size()) {
-            setError(error, QStringLiteral("swatchbin pixel data out of range"));
-            return std::nullopt;
         }
 
         TextureSurface surface;

@@ -1,6 +1,7 @@
 #include "zip_extract.h"
 
 #include "binary_io.h"
+#include "xmem_lzx.h"
 
 #include <QDir>
 #include <QDateTime>
@@ -26,7 +27,8 @@ constexpr quint32 kCentralDirectoryHeader = 0x02014b50;
 constexpr quint32 kLocalFileHeader = 0x04034b50;
 constexpr quint16 kMethodStored = 0;
 constexpr quint16 kMethodDeflated = 8;
-constexpr quint16 kFlagEncrypted = 1 << 0;
+constexpr quint16 kMethodLzx = 21;
+constexpr quint16 kFlagEncrypted = (1 << 0) | (1 << 6);
 constexpr quint16 kFlagUtf8Name = 1 << 11;
 
 bool hasBytes(const QByteArray &bytes, qsizetype offset, qsizetype count) {
@@ -95,6 +97,29 @@ bool inflateRaw(const QByteArray &input, quint32 uncompressedSize, QByteArray &o
         }
         return false;
     }
+    return true;
+}
+
+bool supportedCompression(quint16 method) {
+    return method == kMethodStored || method == kMethodDeflated || method == kMethodLzx;
+}
+
+bool decodeZipEntry(quint16 method, const QByteArray &compressed, quint32 uncompressedSize,
+                    quint32 expectedCrc, QByteArray &data, QString *error) {
+    if (method == kMethodLzx) {
+        return detail::decompressXmemLzx(compressed, uncompressedSize, expectedCrc, data, error);
+    }
+    if (method == kMethodStored) {
+        data = compressed;
+    } else if (!inflateRaw(compressed, uncompressedSize, data, error)) {
+        return false;
+    }
+    if (data.size() != uncompressedSize
+        || crc32(0, reinterpret_cast<const Bytef *>(data.constData()), static_cast<uInt>(data.size())) != expectedCrc) {
+        if (error != nullptr) *error = QStringLiteral("zip: entry integrity check failed");
+        return false;
+    }
+
     return true;
 }
 
@@ -308,13 +333,15 @@ bool extractZipArchive(const QString &zipPath, const QString &destinationDir, QS
             }
             return false;
         }
-        if (method != kMethodStored && method != kMethodDeflated) {
+        if (!supportedCompression(method)) {
             if (error != nullptr) {
                 *error = QStringLiteral("zip: unsupported compression method %1 for %2").arg(method).arg(entryName);
             }
             return false;
         }
-        if (!hasBytes(bytes, localOffset, 30) || readLeU32(bytes, localOffset) != kLocalFileHeader) {
+        if (!hasBytes(bytes, localOffset, 30) || readLeU32(bytes, localOffset) != kLocalFileHeader
+            || readLeU16(bytes, localOffset + 8) != method
+            || (readLeU16(bytes, localOffset + 6) & kFlagEncrypted) != 0) {
             if (error != nullptr) {
                 *error = QStringLiteral("zip: malformed local header for %1").arg(entryName);
             }
@@ -332,28 +359,13 @@ bool extractZipArchive(const QString &zipPath, const QString &destinationDir, QS
 
         QByteArray data;
         const QByteArray compressed = bytes.mid(dataOffset, compressedSize);
-        if (method == kMethodStored) {
-            data = compressed;
-            if (data.size() != static_cast<int>(uncompressedSize)) {
-                if (error != nullptr) {
-                    *error = QStringLiteral("zip: stored size mismatch for %1").arg(entryName);
-                }
-                return false;
-            }
-        } else if (!inflateRaw(compressed, uncompressedSize, data, error)) {
+        if (!decodeZipEntry(method, compressed, uncompressedSize, expectedCrc, data, error)) {
             if (error != nullptr && !error->contains(entryName)) {
                 *error = QStringLiteral("%1: %2").arg(entryName, *error);
             }
             return false;
         }
 
-        const quint32 actualCrc = crc32(0L, reinterpret_cast<const Bytef *>(data.constData()), static_cast<uInt>(data.size()));
-        if (actualCrc != expectedCrc) {
-            if (error != nullptr) {
-                *error = QStringLiteral("zip: CRC mismatch for %1").arg(entryName);
-            }
-            return false;
-        }
         if (!writeEntry(outputPath, data, error)) {
             return false;
         }
@@ -443,7 +455,7 @@ QHash<QString, QByteArray> readZipEntries(
             continue;
         }
         if ((flags & kFlagEncrypted) != 0
-            || (method != kMethodStored && method != kMethodDeflated)
+            || !supportedCompression(method)
             || compressedSize == 0xffffffffu || uncompressedSize == 0xffffffffu
             || localOffset == 0xffffffffu) {
             if (error != nullptr) {
@@ -452,7 +464,9 @@ QHash<QString, QByteArray> readZipEntries(
             return {};
         }
         const QByteArray localHeader = readRange(file, localOffset, 30);
-        if (localHeader.size() != 30 || readLeU32(localHeader, 0) != kLocalFileHeader) {
+        if (localHeader.size() != 30 || readLeU32(localHeader, 0) != kLocalFileHeader
+            || readLeU16(localHeader, 8) != method
+            || (readLeU16(localHeader, 6) & kFlagEncrypted) != 0) {
             if (error != nullptr) {
                 *error = QStringLiteral("zip: malformed local header for %1").arg(name);
             }
@@ -469,17 +483,8 @@ QHash<QString, QByteArray> readZipEntries(
             return {};
         }
         QByteArray data;
-        if (method == kMethodStored) {
-            data = compressed;
-        } else if (!inflateRaw(compressed, uncompressedSize, data, error)) {
-            return {};
-        }
-        if (data.size() != static_cast<int>(uncompressedSize)
-            || crc32(0L, reinterpret_cast<const Bytef *>(data.constData()),
-                     static_cast<uInt>(data.size())) != expectedCrc) {
-            if (error != nullptr) {
-                *error = QStringLiteral("zip: entry integrity check failed for %1").arg(name);
-            }
+        if (!decodeZipEntry(method, compressed, uncompressedSize, expectedCrc, data, error)) {
+            if (error != nullptr) *error = QStringLiteral("%1: %2").arg(name, *error);
             return {};
         }
         result.insert(key, data);

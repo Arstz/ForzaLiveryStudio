@@ -1,11 +1,19 @@
 #include "header_metadata_widget.h"
 
 #include <QtCore>
+#include <QtMath>
 #include <QtWidgets>
 
 #include <utility>
 
 namespace gui {
+namespace {
+
+constexpr int kFirstMonth = 1;
+constexpr int kLastMonth = 12;
+constexpr int kDescriptionMinimumRows = 3;
+
+} // namespace
 
 HeaderMetadataWidget::HeaderMetadataWidget(QWidget *parent)
     : QWidget(parent) {
@@ -22,14 +30,24 @@ HeaderMetadataWidget::HeaderMetadataWidget(QWidget *parent)
     yearSpin_->setRange(2000, 2100);
     yearSpin_->setValue(QDate::currentDate().year());
     form->addRow(QStringLiteral("Year"), yearSpin_);
+    monthSpin_ = new QSpinBox(this);
+    monthSpin_->setRange(kFirstMonth, kLastMonth);
+    form->addRow(QStringLiteral("Month"), monthSpin_);
     publishedCheck_ = new QCheckBox(QStringLiteral("Published"), this);
     publishedCheck_->setChecked(false);
     publishedCheck_->setEnabled(false);
     publishedCheck_->setStyleSheet(QStringLiteral("QCheckBox:disabled { color: palette(mid); }"));
     form->addRow(QString(), publishedCheck_);
-    descriptionEdit_ = new QPlainTextEdit(this);
+    descriptionEdit_ = new QTextEdit(this);
     descriptionEdit_->setPlaceholderText(QStringLiteral("Description (published only)"));
     descriptionEdit_->setReadOnly(true);
+    descriptionEdit_->setAcceptRichText(false);
+    descriptionEdit_->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    descriptionEdit_->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    descriptionEdit_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    connect(descriptionEdit_->document()->documentLayout(), &QAbstractTextDocumentLayout::documentSizeChanged,
+            this, [this]() { updateDescriptionHeight(); });
+    updateDescriptionHeight();
     form->addRow(QStringLiteral("Description"), descriptionEdit_);
 
     auto *targetCarRow = new QWidget(this);
@@ -50,6 +68,7 @@ HeaderMetadataWidget::HeaderMetadataWidget(QWidget *parent)
     connect(nameEdit_, &QLineEdit::editingFinished, this, commit);
     connect(creatorEdit_, &QLineEdit::editingFinished, this, commit);
     connect(yearSpin_, &QSpinBox::editingFinished, this, commit);
+    connect(monthSpin_, &QSpinBox::editingFinished, this, commit);
     connect(changeTargetCar_, &QPushButton::clicked, this, [this]() {
         if (changeTargetCarCallback_) {
             changeTargetCarCallback_();
@@ -73,6 +92,7 @@ void HeaderMetadataWidget::setMetadata(
     nameEdit_->setText(seed.name);
     creatorEdit_->setText(seed.creatorName);
     yearSpin_->setValue(seed.year == 0 ? QDate::currentDate().year() : seed.year);
+    monthSpin_->setValue(seed.month == 0 ? QDate::currentDate().month() : seed.month);
     publishedCheck_->setChecked(seed.published);
     descriptionEdit_->setPlainText(seed.description);
     targetCar_->setText(targetCar.isEmpty() ? QStringLiteral("Not set") : targetCar);
@@ -84,6 +104,7 @@ void HeaderMetadataWidget::setMetadata(
     nameEdit_->setEnabled(hasProject);
     creatorEdit_->setEnabled(hasProject);
     yearSpin_->setEnabled(hasProject);
+    monthSpin_->setEnabled(hasProject);
     changeTargetCar_->setEnabled(hasProject && canChangeTargetCar);
     hint_->setVisible(!hasProject);
 }
@@ -93,6 +114,8 @@ fls::HeaderMetadata HeaderMetadataWidget::metadata() const {
     meta.name = nameEdit_->text();
     meta.creatorName = creatorEdit_->text();
     meta.year = static_cast<quint16>(yearSpin_->value());
+    meta.month = static_cast<quint8>(monthSpin_->value());
+
     return meta;
 }
 
@@ -102,6 +125,16 @@ void HeaderMetadataWidget::setMetadataChangedCallback(std::function<void()> call
 
 void HeaderMetadataWidget::setChangeTargetCarCallback(std::function<void()> callback) {
     changeTargetCarCallback_ = std::move(callback);
+}
+
+void HeaderMetadataWidget::updateDescriptionHeight() {
+    const int minimumHeight = kDescriptionMinimumRows * descriptionEdit_->fontMetrics().lineSpacing()
+        + qCeil(2 * descriptionEdit_->document()->documentMargin());
+    const int height = qMax(minimumHeight, qCeil(descriptionEdit_->document()->size().height()))
+        + 2 * descriptionEdit_->frameWidth();
+
+    if (descriptionEdit_->height() == height) return;
+    descriptionEdit_->setFixedHeight(height);
 }
 
 } // namespace gui

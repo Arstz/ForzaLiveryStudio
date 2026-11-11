@@ -24,6 +24,8 @@ Use `File->Export project to SVG` to save the project's vector shapes as separat
 
 Metadata is located in `Header` widget, it will be loaded from the imported assets or created by default on new project with the creator name last used. The file would be exported as a local instance, to publish you would need to re-save it ingame and publish with Forza itself. All fields are reactive, car is changed via the button.
 
+The target-car chooser lists supported game versions beside each car. A white version label means its model was found in the configured game folder; orange means it is missing. The car name is orange when no supported model is available. Filter by car name or game version.
+
 ### Shapes
 
 To place shapes interact with `Shapes` widget. Left click would create a new shape and right would change the selected shape to the clicked one. Add and remove shapes to favourites via clicking on the star icon, shapes can be renamed by editing `assets/vector/shape_names.json` located in your install location.
@@ -42,7 +44,7 @@ To place guidelines left click with `Alt` held on the rulers, the guidelines can
 
 ### 3D preview
 
-3D preview is disabled by default, enable it with `Window->3D Preview`. With a Livery project open or car model loaded in a Group project, you can see the car with the decals applied. Opening a livery loads its matching car from the game folder configured in `Window->Settings`. You can also load a model with `File->Import Car Model`. Native textures can be enabled with `Load car textures` in Settings. The preview is a reference approximation of how the car looks ingame.
+3D preview is disabled by default, enable it with `Window->3D Preview`. With a Livery project open or car model loaded in a Group project, you can see the car with the decals applied. Configure each game's install or media folder in `Window->Settings->General`. Opening a livery searches its game's folder first, then the other configured games from newest to oldest. Both `media/Cars` and `media/pcfamily/Cars` are searched. You can also load a model with `File->Import Car Model`. Native textures can be enabled with `Load car textures` in Settings. The preview is a reference approximation of how the car looks ingame.
 
 Rotate model with left mouse button, zoom with scrollwheel and pan with middle mouse. With model loaded you can enable UV unwrap and/or wireframe with `Options->Show Car UV Unwrap` and `Options->Show Section Wireframe`.
 

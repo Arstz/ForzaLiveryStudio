@@ -106,6 +106,17 @@ struct Cursor {
 
 enum class Series { Horizon, Motorsport };
 
+constexpr quint16 kSharedLegacySceneVersion = 5;
+constexpr quint16 kLegacyMotorsportRenderVersion = 17;
+
+Series renderModelSeries(quint16 sceneVersion, quint16 renderVersion) {
+    const bool legacyMotorsport = sceneVersion == kSharedLegacySceneVersion
+        && renderVersion == kLegacyMotorsportRenderVersion;
+
+    return legacyMotorsport || sceneVersion == 10 || sceneVersion == 11
+        ? Series::Motorsport : Series::Horizon;
+}
+
 struct PartInstance {
     struct MaterialBinding {
         QString name;
@@ -133,8 +144,9 @@ int canonicalPartType(quint32 type) {
     return type >= 42 ? static_cast<int>(type + 1) : static_cast<int>(type);
 }
 
-PartInstance readRenderModel(Cursor &c, Series series, quint16 sceneVersion) {
+PartInstance readRenderModel(Cursor &c, quint16 sceneVersion) {
     const quint16 version = c.u16();
+    const Series series = renderModelSeries(sceneVersion, version);
 
     PartInstance part;
     part.path = c.str();
@@ -252,16 +264,16 @@ PartInstance readRenderModel(Cursor &c, Series series, quint16 sceneVersion) {
             c.str();  // HorizonUnkV21Path
         }
     }
-    (void)sceneVersion;
+
     return part;
 }
 
-void readPart(Cursor &c, Series series, quint16 sceneVersion, SceneParts &out) {
+void readPart(Cursor &c, quint16 sceneVersion, SceneParts &out) {
     const quint16 version = c.u16();
     const int partType = canonicalPartType(c.u32());
     const quint32 modelCount = c.u32();
     for (quint32 i = 0; i < modelCount; ++i) {
-        PartInstance part = readRenderModel(c, series, sceneVersion);
+        PartInstance part = readRenderModel(c, sceneVersion);
         part.partType = partType;
         out.stock.push_back(part);
         out.projection.push_back(std::move(part));
@@ -274,10 +286,6 @@ void readPart(Cursor &c, Series series, quint16 sceneVersion, SceneParts &out) {
 SceneParts readScene(const QByteArray &bytes, QString &mediaName, QString &skeletonPath) {
     Cursor c(bytes);
     const quint16 version = c.u16();
-    Series series = Series::Horizon;
-    if (version == 10 || version == 11) {
-        series = Series::Motorsport;
-    }
 
     if (version >= 3) {
         c.skip(16); // BuildGuid
@@ -299,7 +307,7 @@ SceneParts readScene(const QByteArray &bytes, QString &mediaName, QString &skele
         if (version >= 4) {
             c.u8(); // PartEntry.Type
         }
-        readPart(c, series, version, parts);
+        readPart(c, version, parts);
     }
 
     const quint32 upgradableCount = c.u32();
@@ -332,7 +340,7 @@ SceneParts readScene(const QByteArray &bytes, QString &mediaName, QString &skele
             if (upgradeVersion < 3) {
                 const quint32 modelCount = c.u32();
                 for (quint32 m = 0; m < modelCount; ++m) {
-                    PartInstance inst = readRenderModel(c, series, version);
+                    PartInstance inst = readRenderModel(c, version);
                     inst.partType = partType;
                     inst.stock = isStock;
                     inst.optionIds.push_back(id);
@@ -356,7 +364,7 @@ SceneParts readScene(const QByteArray &bytes, QString &mediaName, QString &skele
                 for (quint32 k = 0; k < idCount; ++k) {
                     upgradeIds[k] = c.i32();
                 }
-                PartInstance inst = readRenderModel(c, series, version);
+                PartInstance inst = readRenderModel(c, version);
                 inst.partType = partType;
                 inst.optionIds = upgradeIds;
                 const bool stock = idCount == 0

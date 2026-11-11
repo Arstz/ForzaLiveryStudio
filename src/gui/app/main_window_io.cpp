@@ -1374,7 +1374,8 @@ void MainWindow::applyHeaderMetadata() {
         effectiveHeaderMetadata(state_->project_, creatorName_);
     if (meta.name == current.name
         && meta.creatorName == current.creatorName
-        && meta.year == current.year) {
+        && meta.year == current.year
+        && meta.month == current.month) {
         return;
     }
 

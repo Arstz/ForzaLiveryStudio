@@ -1,7 +1,9 @@
 #pragma once
 
 #include <QHash>
+#include <QMap>
 #include <QString>
+#include <QStringList>
 #include <QVector>
 
 class QWidget;
@@ -16,21 +18,31 @@ public:
         QString version;
     };
 
+    struct ModelSource {
+        QString path;
+        QString game;
+    };
+
     bool loadDefault(QString *error = nullptr);
     bool loadFromFile(const QString &path, QString *error = nullptr);
 
     QString name(int id) const;
-    QString modelCode(int id) const;
+    QString modelCode(int id, const QString &game = {}) const;
     QString version(int id) const;
-    QString displayName(int id) const;
     bool isFh6Supported(int id) const;
     bool isFh6Unsupported(int id) const;
+    bool isSupported(int id, const QString &game) const;
+    ModelSource findModel(int id, const QMap<QString, QString> &gameFolders,
+                          const QString &preferredGame = {}) const;
+    QHash<int, QStringList> modelAvailability(const QMap<QString, QString> &gameFolders) const;
+    QString displayName(int id) const;
     const QVector<Entry> &entries() const { return sorted_; }
     bool isEmpty() const { return names_.isEmpty(); }
 
 private:
     QHash<int, QString> names_;
     QHash<int, QString> models_;
+    QHash<int, QHash<QString, QString>> gameModels_;
     QHash<int, QString> versions_;
     QVector<Entry> sorted_;
 };

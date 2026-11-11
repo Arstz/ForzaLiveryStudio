@@ -177,13 +177,27 @@ pipeline in [WGS.md](WGS.md).
 
 ### Game resources and preview
 
-The configured game folder accepts either an installation root or its `media`
-directory. `game_paths.*` derives `media/Cars`, shared material archives under
+Each supported game has an installation-folder setting that accepts an installation
+root or its `media` directory. `game_paths.*` probes both `media/Cars` and
+`media/pcfamily/Cars`, with shared material archives under
 `Cars/_library/Materials.zip`, and textures under `Cars/_library/Textures.zip`.
 Painttype materials use the `_fmnext/usercustomizable/` archive prefix.
+Automatic model loading prefers the imported livery's game, then searches the
+other configured games in descending release order. It uses the car registry's
+availability and per-game model names. Model preparation applies the selected
+game's wheel-sizing overrides.
+The previous single-folder setting migrates to the FH6 setting. The preview's
+finish library continues to use the configured FH6 resources.
+The target-car chooser shows the catalog's supported versions beside each name.
+It scans configured car folders once per opening and matches per-game model
+names. Available versions are white; missing versions are orange. Names are
+orange when all supported model versions are missing.
 
 Core decoders read `.modelbin` geometry and materials, assemble `.carbin` parts,
 extract zipped car folders, and decode `.swatchbin` textures and `LiveryMasks/`.
+The ZIP reader supports stored, Deflate, and XMem-framed LZX entries (method 21).
+LZX decoding uses the vendored libmspack decoder, retaining history between
+frames and validating decoded sizes and ZIP CRCs.
 Model preparation, material resolution, and enabled texture decoding run outside
 the UI thread. Shared material tuning is applied when resolved; native texture
 loading is an opt-in setting. Bounded caches retain decoded resources. BC7
@@ -214,11 +228,11 @@ retain separate mask textures and linear thread tints. Finish sampling
 retains the material's UV source and tiling independently of livery coverage.
 Woven finishes use transformed UV coordinates, mask-directed anisotropic
 reflections, and separate surface and clear-coat roughness.
-Normal mapping uses the tangent channel matching the UV coordinates, with
-handedness decoded as a unit sign. Authored
-mip levels and anisotropic texture filtering retain texture detail across viewing
-angles. Lighting runs in linear color space and converts to display color at
-the shader output.
+Native normal mapping derives its tangent frame from transformed texture
+coordinates. Woven finishes use authored tangents with handedness decoded as a
+unit sign. Authored mip levels and anisotropic texture filtering retain texture detail across viewing
+angles. Native material, manufacturer, and thread colors convert to display color
+before preview lighting.
 
 The canvas keeps one rasterized unwrap and wireframe overlay in memory. Layer
 edits reuse that image; changes to the view, display density, overlay geometry,
@@ -249,7 +263,9 @@ dispatch delay, GUI adoption, mesh and mask upload, and livery texture creation.
 The scene renderer rasterizes livery sections into isolated paint regions. The
 car shader maps transformed UV3 through the mask atlas into those regions;
 registered planar projection supplies coverage for geometry without usable UV3.
-Preview coordinate normalization operates on rendering data. Paint bindings,
+Preview coordinate normalization operates on rendering data. Mask atlases retain
+their native pixel spacing when padded to the preview canvas; their region
+coordinates and origins translate with the canvas center. Paint bindings,
 manufacturer colors, and finish materials drive paint shading. The preview
 remains a reference approximation of the game renderer.
 

@@ -4,6 +4,9 @@
 #include <QFile>
 #include <QXmlStreamReader>
 
+#include <algorithm>
+#include <utility>
+
 namespace fls {
 namespace {
 
@@ -57,6 +60,31 @@ void applyAttributes(const QXmlStreamAttributes &attrs, LiverySide &side) {
     parseAxis(attrs.value(QLatin1String("yAxis")).toString(), side.yAxis, side.ySign);
 }
 
+void normalizeMaskCanvas(LiverySide &side) {
+    const SwatchMask &mask = side.mask;
+    SwatchMask canvas;
+    const int width = std::max(mask.width, static_cast<int>(2 * kLiveryCanvasHalfWidth));
+    const int height = std::max(mask.height, static_cast<int>(2 * kLiveryCanvasHalfHeight));
+    const float offsetX = (mask.width - width) * 0.5f;
+    const float offsetY = (height - mask.height) * 0.5f;
+
+    if (!mask.valid() || (width == mask.width && height == mask.height)) return;
+    canvas.width = width;
+    canvas.height = height;
+    canvas.coverage.assign(static_cast<size_t>(width) * height, 0);
+    for (int row = 0; row < mask.height; ++row) {
+        std::copy_n(mask.coverage.begin() + static_cast<size_t>(row) * mask.width, mask.width,
+                    canvas.coverage.begin() + static_cast<size_t>(row) * width);
+    }
+    side.left += offsetX;
+    side.right += offsetX;
+    side.top += offsetY;
+    side.bottom += offsetY;
+    side.xOrigin += offsetX;
+    side.yOrigin += offsetY;
+    side.mask = std::move(canvas);
+}
+
 } // namespace
 
 LiveryMaskSet loadLiveryMasks(const QString &dir, QString *error) {
@@ -96,18 +124,22 @@ LiveryMaskSet loadLiveryMasks(const QString &dir, QString *error) {
     }
     set.loaded = true;
 
+    const QStringList files = folder.entryList(QDir::Files);
     for (int i = 0; i < kLiverySideCount; ++i) {
         if (kSideDefs[i].swatchStem == nullptr) {
             continue;
         }
-        const QString path = folder.filePath(
-            QStringLiteral("%1.swatchbin").arg(QString::fromLatin1(kSideDefs[i].swatchStem)));
-        if (!QFile::exists(path)) {
+        const QString name = QStringLiteral("%1.swatchbin").arg(QString::fromLatin1(kSideDefs[i].swatchStem));
+        const auto filename = std::find_if(files.cbegin(), files.cend(), [&name](const QString &file) {
+            return file.compare(name, Qt::CaseInsensitive) == 0;
+        });
+        if (filename == files.cend()) {
             continue;
         }
-        SwatchMask mask = loadSwatchMask(path);
+        SwatchMask mask = loadSwatchMask(folder.filePath(*filename));
         if (mask.valid()) {
             set.sides[i].mask = std::move(mask);
+            normalizeMaskCanvas(set.sides[i]);
             ++set.loadedMasks;
         }
     }

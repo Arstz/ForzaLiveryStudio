@@ -9,9 +9,9 @@
 class QCheckBox;
 class QLabel;
 class QLineEdit;
-class QPlainTextEdit;
 class QPushButton;
 class QSpinBox;
+class QTextEdit;
 
 namespace gui {
 
@@ -29,12 +29,15 @@ public:
     void setChangeTargetCarCallback(std::function<void()> callback);
 
 private:
+    void updateDescriptionHeight();
+
     fls::HeaderMetadata seed_;
     QLineEdit *nameEdit_ = nullptr;
     QLineEdit *creatorEdit_ = nullptr;
     QSpinBox *yearSpin_ = nullptr;
+    QSpinBox *monthSpin_ = nullptr;
     QCheckBox *publishedCheck_ = nullptr;
-    QPlainTextEdit *descriptionEdit_ = nullptr;
+    QTextEdit *descriptionEdit_ = nullptr;
     QLabel *targetCar_ = nullptr;
     QPushButton *changeTargetCar_ = nullptr;
     QLabel *hint_ = nullptr;

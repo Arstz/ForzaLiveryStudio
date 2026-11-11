@@ -3,6 +3,7 @@
 #include <QCoreApplication>
 #include <QtEndian>
 
+#include <algorithm>
 #include <future>
 #include <stdexcept>
 
@@ -90,6 +91,64 @@ void checkBc4Image() {
     require(!fls::decodeSwatchImage(bytes.left(bytes.size() - 1)).valid(), "truncated BC4 color data accepted");
 }
 
+void checkDurangoBc4Mask(int tileMode, int payloadSize) {
+    constexpr int width = 301;
+    constexpr int height = 141;
+    constexpr int header = 52;
+    constexpr int headerSize = 35;
+    constexpr int payload = header + headerSize;
+    struct Sample {
+        int column;
+        int row;
+        int block1D;
+        int block2D;
+    };
+    constexpr Sample samples[] = {
+        {0, 0, 0, 0}, {2, 4, 36, 1028}, {8, 8, 704, 512},
+        {31, 31, 2175, 1855}, {33, 32, 2817, 4353}, {64, 31, 2474, 3690},
+        {75, 35, 3151, 6319},
+    };
+    QByteArray bytes = swatch(4, 4, QByteArray(8, '\0'), 3).left(header);
+    bytes.append(QByteArray(headerSize + payloadSize, '\0'));
+    const auto u16 = [&](int offset, quint16 value) { qToLittleEndian(value, bytes.data() + offset); };
+    const auto u32 = [&](int offset, quint32 value) { qToLittleEndian(value, bytes.data() + offset); };
+    bytes[24] = 2;
+    u32(32, payload);
+    u32(36, payloadSize);
+    u32(40, payloadSize);
+    u16(48, headerSize << 4);
+    for (int offset : {16, 22}) {
+        u16(header + offset, width);
+        u16(header + offset + 2, height);
+        u16(header + offset + 4, 1);
+    }
+    bytes[header + 28] = bytes[header + 29] = 1;
+    u32(header + 31, static_cast<quint32>(tileMode) | (3u << 5));
+
+    std::vector<uint8_t> expected(width * height);
+    int coverage = 32;
+    for (const Sample &sample : samples) {
+        const int block = tileMode == 13 ? sample.block1D : sample.block2D;
+        bytes[payload + block * 8] = static_cast<char>(coverage);
+        const int x = sample.column * 4;
+        const int y = sample.row * 4;
+        for (int row = y; row < std::min(y + 4, height); ++row) {
+            std::fill_n(expected.begin() + row * width + x, std::min(4, width - x), coverage);
+        }
+        coverage += 32;
+    }
+    QString error;
+    const auto mask = fls::decodeSwatchMask(bytes, &error);
+    require(mask.valid(), qPrintable(error));
+    require(mask.width == width && mask.height == height && mask.coverage == expected,
+            "Durango BC4 coverage differs from the reference tile layout");
+
+    bytes.chop(8);
+    u32(36, payloadSize - 8);
+    u32(40, payloadSize - 8);
+    require(!fls::decodeSwatchMask(bytes).valid(), "truncated Durango tiled surface accepted");
+}
+
 void checkAuthoredMips() {
     constexpr int header = 52;
     constexpr int payload = header + 100;
@@ -132,6 +191,8 @@ int main(int argc, char **argv) {
         checkImage(4, 4, true);
         checkImage(8, 4, false);
         checkBc4Image();
+        checkDurangoBc4Mask(13, 25600);
+        checkDurangoBc4Mask(14, 65536);
         checkAuthoredMips();
         std::vector<std::future<void>> requests;
         for (int index = 0; index < 8; ++index) {
