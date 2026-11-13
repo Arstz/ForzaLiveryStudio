@@ -2,6 +2,7 @@
 #include "shape_geometry_store.h"
 
 #include <QCoreApplication>
+#include <QTemporaryFile>
 #include <QTextStream>
 #include <stdexcept>
 
@@ -16,6 +17,19 @@ void require(bool condition, const char *message) {
 void appendRectangle(gui::ShapeGeometry &geometry, const QRectF &rect) {
     geometry.triangles.push_back({rect.topLeft(), rect.topRight(), rect.bottomRight()});
     geometry.triangles.push_back({rect.topLeft(), rect.bottomLeft(), rect.bottomRight()});
+}
+
+void testStoredGeometryBasis() {
+    QTemporaryFile file;
+    require(file.open(), "geometry fixture must open");
+    file.write(R"({"shapes":{"3801":{"size":[126.25,90.75],"vertices":[[-63.5,-37.5,1],[62.75,-37.5,1],[-63.5,53.25,1]],"triangles":[[0,1,2]]}}})");
+    file.flush();
+    gui::ShapeGeometryStore geometry;
+    QString error;
+    require(geometry.loadFromFile(file.fileName(), &error), "stored geometry must load");
+    require(geometry.shapeSize(3801) == QSizeF(126.25, 90.75), "native dimensions must retain fractional units");
+    require(geometry.shapeInkBounds(3801) == QRectF(-63.5, -37.5, 126.25, 90.75),
+            "native vertices must retain their pivot and basis");
 }
 
 void testVectorBody() {
@@ -104,6 +118,7 @@ void testSoftAlpha() {
 int main(int argc, char **argv) {
     QCoreApplication application(argc, argv);
     try {
+        testStoredGeometryBasis();
         testVectorBody();
         testCompoundBody();
         testRasterBody();

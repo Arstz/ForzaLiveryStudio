@@ -599,8 +599,8 @@ QImage renderShapePreviewImage(const ShapeGeometryStore &geometry, int shapeId, 
 
     QImage image(size, QImage::Format_ARGB32);
     image.fill(Qt::transparent);
-    const double scale = std::min(static_cast<double>(size.width()) / static_cast<double>(std::max(shape->width, 1)),
-                                  static_cast<double>(size.height()) / static_cast<double>(std::max(shape->height, 1))) * 0.86;
+    const double scale = std::min(static_cast<double>(size.width()) / std::max(shape->width, 1.0),
+                                  static_cast<double>(size.height()) / std::max(shape->height, 1.0)) * 0.86;
     const QPointF center(size.width() * 0.5, size.height() * 0.5);
     const auto mapPoint = [&](const QPointF &point) {
         return QPointF(center.x() + point.x() * scale,

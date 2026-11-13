@@ -15,8 +15,8 @@ struct ShapeTriangle {
 };
 
 struct ShapeGeometry {
-    int width = 128;
-    int height = 128;
+    double width = 128.0;
+    double height = 128.0;
     QString source;
     QVector<ShapeTriangle> triangles;
 };
