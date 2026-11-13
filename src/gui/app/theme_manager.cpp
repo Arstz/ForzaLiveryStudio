@@ -1,8 +1,12 @@
 #include "theme_manager.h"
 
 #include <QApplication>
+#include <QIconEngine>
+#include <QLinearGradient>
+#include <QMenu>
 #include <QPainter>
 #include <QPixmap>
+#include <QPixmapCache>
 #include <QProxyStyle>
 #include <QSettings>
 #include <QStyleFactory>
@@ -10,21 +14,237 @@
 
 #include <algorithm>
 #include <cmath>
+#include <optional>
 
 namespace gui {
 namespace {
 
 UiTheme currentTheme = UiTheme::Dark;
 
-constexpr int kDarkLineEditOutlineLightness = 240;
+constexpr double kGlyphStrokeWidth = 1.5;
+constexpr double kCheckStrokeWidth = 2.0;
+constexpr int kMenuIconExtent = 16;
+constexpr int kResizeGripSpacing = 4;
+constexpr int kResizeGripInset = 1;
+constexpr int kLightResizeHandleFactor = 105;
+constexpr int kSliderGrooveExtent = 6;
+constexpr int kSliderHandleExtent = 14;
+constexpr int kSliderHandleThickness = 20;
+constexpr int kSliderInset = 1;
+constexpr int kHueGrooveExtent = 14;
+constexpr double kOutlineWidth = 1.0;
 
-QPalette darkLineEditFramePalette(const QPalette &palette) {
-    QPalette adjustedPalette = palette;
-    const QColor window = palette.color(QPalette::Window);
-    adjustedPalette.setColor(
-        QPalette::Window, window.lighter(kDarkLineEditOutlineLightness));
+int checkBoxExtent(const QWidget *widget) {
+    return widget != nullptr && widget->property("uiCompactCheck").toBool()
+        ? kUiCompactControlExtent : kUiControlHeight;
+}
 
-    return adjustedPalette;
+void drawResizeHandle(QPainter &painter, const QStyleOption &option) {
+    const UiColors colors = uiColors(currentUiTheme());
+    const QColor background = currentUiTheme() == UiTheme::Light
+        ? colors.main.lighter(kLightResizeHandleFactor) : colors.contrast;
+    const QRect area = option.rect;
+    const QPoint center = area.center();
+    const bool vertical = area.height() > area.width();
+    const bool hovered = option.state.testFlag(QStyle::State_MouseOver);
+    const bool pressed = option.state.testFlag(QStyle::State_Sunken);
+
+    painter.save();
+    painter.fillRect(area, hovered || pressed ? colors.accent : background);
+    painter.setRenderHint(QPainter::Antialiasing, false);
+    painter.setPen(pressed ? colors.focus : colors.text);
+    for (const int offset : {-kResizeGripSpacing, 0, kResizeGripSpacing}) {
+        if (vertical) {
+            painter.drawLine(area.left() + kResizeGripInset, center.y() + offset,
+                             area.right() - kResizeGripInset, center.y() + offset);
+        } else {
+            painter.drawLine(center.x() + offset, area.top() + kResizeGripInset,
+                             center.x() + offset, area.bottom() - kResizeGripInset);
+        }
+    }
+    painter.restore();
+}
+
+bool isHueSlider(const QWidget *widget) {
+    return widget != nullptr && widget->objectName() == QStringLiteral("paintColorHueSlider");
+}
+
+QRect sliderControlRect(const QStyleOptionSlider &option, QStyle::SubControl control,
+                        const QWidget *widget) {
+    const QRect area = option.rect.adjusted(kSliderInset, kSliderInset, -kSliderInset, -kSliderInset);
+    QRect result;
+    const bool horizontal = option.orientation == Qt::Horizontal;
+    const int span = horizontal ? area.width() : area.height();
+    const int length = std::min(kSliderHandleExtent, span);
+    const int grooveExtent = isHueSlider(widget) ? kHueGrooveExtent : kSliderGrooveExtent;
+    const int position = QStyle::sliderPositionFromValue(option.minimum, option.maximum,
+        option.sliderPosition, std::max(0, span - length), option.upsideDown);
+
+    if (area.isEmpty()) {
+        return result;
+    }
+    if (control == QStyle::SC_SliderGroove) {
+        result.setSize(horizontal ? QSize(area.width(), grooveExtent) : QSize(grooveExtent, area.height()));
+        result.moveCenter(area.center());
+    } else if (control == QStyle::SC_SliderHandle) {
+        result.setSize(horizontal ? QSize(length, kSliderHandleThickness) : QSize(kSliderHandleThickness, length));
+        result.moveCenter(area.center());
+        if (horizontal) {
+            result.moveLeft(area.left() + position);
+        } else {
+            result.moveTop(area.top() + position);
+        }
+    }
+
+    return result;
+}
+
+void drawSlider(QPainter &painter, const QStyleOptionSlider &option, const QWidget *widget) {
+    const UiColors colors = uiColors(currentUiTheme());
+    QRect groove = sliderControlRect(option, QStyle::SC_SliderGroove, widget);
+    const QRect handle = sliderControlRect(option, QStyle::SC_SliderHandle, widget);
+    QBrush track(colors.contrast);
+    const bool enabled = option.state.testFlag(QStyle::State_Enabled);
+    const bool active = enabled && (option.state.testFlag(QStyle::State_HasFocus)
+        || (option.activeSubControls.testFlag(QStyle::SC_SliderHandle)
+            && (option.state.testFlag(QStyle::State_MouseOver) || option.state.testFlag(QStyle::State_Sunken))));
+    const double inset = kOutlineWidth / 2;
+
+    if (groove.isEmpty() || handle.isEmpty()) {
+        return;
+    }
+    if (option.orientation == Qt::Horizontal) {
+        groove.adjust(handle.width() / 2, 0, -handle.width() / 2, 0);
+    } else {
+        groove.adjust(0, handle.height() / 2, 0, -handle.height() / 2);
+    }
+    if (isHueSlider(widget)) {
+        QLinearGradient gradient(groove.topLeft(), groove.topRight());
+        gradient.setStops({{0.0, Qt::red}, {1.0 / 6, Qt::yellow}, {2.0 / 6, Qt::green},
+                          {0.5, Qt::cyan}, {4.0 / 6, Qt::blue}, {5.0 / 6, Qt::magenta}, {1.0, Qt::red}});
+        track = QBrush(gradient);
+    }
+    painter.save();
+    painter.setRenderHint(QPainter::Antialiasing);
+    if (option.subControls.testFlag(QStyle::SC_SliderGroove)) {
+        painter.setPen(QPen(colors.border, kOutlineWidth));
+        painter.setBrush(track);
+        painter.drawRoundedRect(QRectF(groove).adjusted(inset, inset, -inset, -inset),
+                                kUiCornerRadius, kUiCornerRadius);
+    }
+    if (option.subControls.testFlag(QStyle::SC_SliderHandle)) {
+        painter.setPen(QPen(active ? colors.focus : enabled ? colors.border : colors.disabledText, kOutlineWidth));
+        painter.setBrush(!enabled ? colors.main : active ? colors.secondary : colors.accent);
+        painter.drawRoundedRect(QRectF(handle).adjusted(inset, inset, -inset, -inset),
+                                kUiCornerRadius, kUiCornerRadius);
+    }
+    painter.restore();
+}
+
+void drawArrow(QPainter &painter, const QRect &area, Qt::ArrowType direction, const QColor &color) {
+    QTransform transform;
+    const QPolygonF chevron{QPointF(-0.2, -0.3), QPointF(0.2, 0.0), QPointF(-0.2, 0.3)};
+    const double extent = std::min(area.width(), area.height());
+    const double rotation = direction == Qt::DownArrow ? 90.0
+        : direction == Qt::LeftArrow ? 180.0 : direction == Qt::UpArrow ? 270.0 : 0.0;
+
+    transform.translate(QRectF(area).center().x(), QRectF(area).center().y());
+    transform.rotate(rotation);
+    transform.scale(extent, extent);
+    painter.save();
+    painter.setRenderHint(QPainter::Antialiasing);
+    painter.setPen(QPen(color, kGlyphStrokeWidth, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+    painter.setBrush(Qt::NoBrush);
+    painter.drawPolyline(transform.map(chevron));
+    painter.restore();
+}
+
+void drawClose(QPainter &painter, const QRect &area, const QColor &color) {
+    const double inset = std::min(area.width(), area.height()) * 0.3;
+    const QRectF glyph = QRectF(area).adjusted(inset, inset, -inset, -inset);
+
+    painter.save();
+    painter.setRenderHint(QPainter::Antialiasing);
+    painter.setPen(QPen(color, kGlyphStrokeWidth, Qt::SolidLine, Qt::RoundCap));
+    painter.drawLine(glyph.topLeft(), glyph.bottomRight());
+    painter.drawLine(glyph.bottomLeft(), glyph.topRight());
+    painter.restore();
+}
+
+std::optional<Qt::ArrowType> standardArrow(QStyle::StandardPixmap icon, Qt::LayoutDirection direction) {
+    switch (icon) {
+    case QStyle::SP_ArrowUp: return Qt::UpArrow;
+    case QStyle::SP_ArrowDown:
+    case QStyle::SP_ToolBarVerticalExtensionButton: return Qt::DownArrow;
+    case QStyle::SP_ArrowLeft: return Qt::LeftArrow;
+    case QStyle::SP_ArrowRight: return Qt::RightArrow;
+    case QStyle::SP_ArrowBack:
+        return direction == Qt::RightToLeft ? Qt::RightArrow : Qt::LeftArrow;
+    case QStyle::SP_ArrowForward:
+    case QStyle::SP_ToolBarHorizontalExtensionButton:
+        return direction == Qt::RightToLeft ? Qt::LeftArrow : Qt::RightArrow;
+    default: return std::nullopt;
+    }
+}
+
+class ChromeIconEngine final : public QIconEngine {
+public:
+    explicit ChromeIconEngine(std::optional<Qt::ArrowType> direction) : direction_(direction) {}
+
+    QIconEngine *clone() const override {
+        return new ChromeIconEngine(direction_);
+    }
+
+    void paint(QPainter *painter, const QRect &rect, QIcon::Mode mode, QIcon::State) override {
+        const UiColors colors = uiColors(currentUiTheme());
+        const QColor foreground = mode == QIcon::Disabled ? colors.disabledText : colors.text;
+
+        if (direction_.has_value()) {
+            drawArrow(*painter, rect, *direction_, foreground);
+        } else {
+            drawClose(*painter, rect, foreground);
+        }
+    }
+
+    QPixmap pixmap(const QSize &size, QIcon::Mode mode, QIcon::State state) override {
+        QPixmap result(size);
+        result.fill(Qt::transparent);
+        QPainter painter(&result);
+        paint(&painter, QRect(QPoint(), size), mode, state);
+
+        return result;
+    }
+
+private:
+    std::optional<Qt::ArrowType> direction_;
+};
+
+void drawCheckBox(QPainter &painter, const QStyleOption &option) {
+    const UiColors colors = uiColors(currentUiTheme());
+    const QRectF box = QRectF(option.rect).adjusted(0.5, 0.5, -0.5, -0.5);
+    const bool enabled = option.state.testFlag(QStyle::State_Enabled);
+    const bool checked = option.state.testFlag(QStyle::State_On);
+    const bool mixed = option.state.testFlag(QStyle::State_NoChange);
+    const bool active = enabled && (option.state.testFlag(QStyle::State_HasFocus)
+        || option.state.testFlag(QStyle::State_MouseOver));
+
+    painter.save();
+    painter.setRenderHint(QPainter::Antialiasing);
+    painter.setPen(QPen(active ? colors.focus : colors.border, 1.0));
+    painter.setBrush(!enabled ? colors.main : checked || mixed ? colors.accent : colors.secondary);
+    painter.drawRoundedRect(box, kUiCornerRadius, kUiCornerRadius);
+    painter.setPen(QPen(enabled ? colors.text : colors.disabledText,
+                        kCheckStrokeWidth, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+    if (mixed) {
+        painter.drawLine(QPointF(box.left() + box.width() * 0.25, box.center().y()),
+                         QPointF(box.right() - box.width() * 0.25, box.center().y()));
+    } else if (checked) {
+        painter.drawPolyline(QPolygonF{
+            QPointF(box.left() + box.width() * 0.22, box.top() + box.height() * 0.52),
+            QPointF(box.left() + box.width() * 0.43, box.top() + box.height() * 0.73),
+            QPointF(box.left() + box.width() * 0.79, box.top() + box.height() * 0.28)});
+    }
+    painter.restore();
 }
 
 class ThemeStyle final : public QProxyStyle {
@@ -32,36 +252,343 @@ public:
     explicit ThemeStyle(QStyle *style)
         : QProxyStyle(style) {}
 
-    void drawPrimitive(PrimitiveElement element,
-                       const QStyleOption *option,
-                       QPainter *painter,
-                       const QWidget *widget = nullptr) const override {
-        if (element != PE_FrameLineEdit || currentTheme != UiTheme::Dark) {
-            QProxyStyle::drawPrimitive(element, option, painter, widget);
+    void drawPrimitive(PrimitiveElement element, const QStyleOption *option,
+                       QPainter *painter, const QWidget *widget = nullptr) const override {
+        const UiColors colors = uiColors(currentUiTheme());
+        std::optional<Qt::ArrowType> direction;
+
+        switch (element) {
+        case PE_IndicatorDockWidgetResizeHandle:
+            drawResizeHandle(*painter, *option);
+            return;
+        case PE_IndicatorCheckBox:
+        case PE_IndicatorItemViewItemCheck:
+            drawCheckBox(*painter, *option);
+            return;
+        case PE_IndicatorTabClose:
+            drawClose(*painter, option->rect,
+                      option->state.testFlag(State_Enabled) ? colors.text : colors.disabledText);
+            return;
+        case PE_IndicatorArrowUp:
+        case PE_IndicatorSpinUp: direction = Qt::UpArrow; break;
+        case PE_IndicatorArrowDown:
+        case PE_IndicatorSpinDown: direction = Qt::DownArrow; break;
+        case PE_IndicatorArrowLeft: direction = Qt::LeftArrow; break;
+        case PE_IndicatorArrowRight: direction = Qt::RightArrow; break;
+        default: break;
+        }
+        if (direction.has_value()) {
+            drawArrow(*painter, option->rect, *direction,
+                      option->state.testFlag(State_Enabled) ? colors.text : colors.disabledText);
             return;
         }
 
-        QStyleOption adjustedOption = *option;
-        adjustedOption.palette = darkLineEditFramePalette(option->palette);
-        QProxyStyle::drawPrimitive(element, &adjustedOption, painter, widget);
+        QProxyStyle::drawPrimitive(element, option, painter, widget);
     }
 
-    void drawComplexControl(ComplexControl control,
-                            const QStyleOptionComplex *option,
-                            QPainter *painter,
-                            const QWidget *widget = nullptr) const override {
-        if (control == CC_SpinBox && currentTheme == UiTheme::Dark) {
-            if (const auto *spinBox = qstyleoption_cast<const QStyleOptionSpinBox *>(option)) {
-                QStyleOptionSpinBox adjustedOption = *spinBox;
-                adjustedOption.palette = darkLineEditFramePalette(option->palette);
-                QProxyStyle::drawComplexControl(control, &adjustedOption, painter, widget);
+    void drawControl(ControlElement element, const QStyleOption *option,
+                     QPainter *painter, const QWidget *widget = nullptr) const override {
+        if (element == CE_Splitter) {
+            drawResizeHandle(*painter, *option);
+            return;
+        }
+
+        QProxyStyle::drawControl(element, option, painter, widget);
+    }
+
+    QRect subControlRect(ComplexControl control, const QStyleOptionComplex *option,
+                         SubControl subControl, const QWidget *widget = nullptr) const override {
+        if (control == CC_Slider && (subControl == SC_SliderHandle || subControl == SC_SliderGroove)) {
+            if (const auto *slider = qstyleoption_cast<const QStyleOptionSlider *>(option)) {
+                return sliderControlRect(*slider, subControl, widget);
+            }
+        }
+
+        return QProxyStyle::subControlRect(control, option, subControl, widget);
+    }
+
+    void drawComplexControl(ComplexControl control, const QStyleOptionComplex *option,
+                            QPainter *painter, const QWidget *widget = nullptr) const override {
+        if (control == CC_Slider) {
+            if (const auto *slider = qstyleoption_cast<const QStyleOptionSlider *>(option)) {
+                drawSlider(*painter, *slider, widget);
+                if (slider->subControls.testFlag(SC_SliderTickmarks)) {
+                    QStyleOptionSlider ticks = *slider;
+                    ticks.subControls = SC_SliderTickmarks;
+                    QProxyStyle::drawComplexControl(control, &ticks, painter, widget);
+                }
                 return;
             }
         }
 
         QProxyStyle::drawComplexControl(control, option, painter, widget);
     }
+
+    QIcon standardIcon(StandardPixmap icon, const QStyleOption *option,
+                       const QWidget *widget) const override {
+        const Qt::LayoutDirection direction = widget != nullptr ? widget->layoutDirection()
+            : option != nullptr ? option->direction : QApplication::layoutDirection();
+        const std::optional<Qt::ArrowType> arrow = standardArrow(icon, direction);
+
+        if (arrow.has_value() || icon == SP_LineEditClearButton
+            || icon == SP_DockWidgetCloseButton || icon == SP_TitleBarCloseButton) {
+            return QIcon(new ChromeIconEngine(arrow));
+        }
+
+        return QProxyStyle::standardIcon(icon, option, widget);
+    }
+
+    int pixelMetric(PixelMetric metric, const QStyleOption *option,
+                    const QWidget *widget) const override {
+        switch (metric) {
+        case PM_IndicatorWidth:
+        case PM_IndicatorHeight:
+            return qobject_cast<const QMenu *>(widget) != nullptr ? kMenuIconExtent : checkBoxExtent(widget);
+        case PM_TabBarScrollButtonWidth:
+            return kUiCompactControlExtent;
+        case PM_SliderLength:
+            return kSliderHandleExtent;
+        case PM_SliderControlThickness:
+            return kSliderHandleThickness;
+        case PM_SliderThickness:
+            return kUiControlHeight;
+        case PM_SplitterWidth:
+        case PM_DockWidgetSeparatorExtent:
+            return kUiSplitterWidth;
+        case PM_LayoutLeftMargin:
+        case PM_LayoutTopMargin:
+        case PM_LayoutRightMargin:
+        case PM_LayoutBottomMargin:
+            return kUiMargin;
+        case PM_LayoutHorizontalSpacing:
+        case PM_LayoutVerticalSpacing:
+            return kUiSpacing;
+        default:
+            return QProxyStyle::pixelMetric(metric, option, widget);
+        }
+    }
 };
+
+QString themeStyleSheet(UiTheme theme) {
+    const UiColors colors = uiColors(theme);
+    QString sheet = QStringLiteral(R"(
+        QWidget { color: @text; }
+        QWidget:disabled { color: @disabled; }
+        QMainWindow, QDialog { background: @main; color: @text; }
+        QDockWidget { color: @text; border: none; }
+        QWidget#dockHeader {
+            background: @secondary; border: 1px solid @border;
+            border-top-left-radius: @radiuspx; border-top-right-radius: @radiuspx;
+            border-bottom-left-radius: 0; border-bottom-right-radius: 0;
+        }
+        QWidget#dockHeader[panelFocused="true"] { border-color: @focus; background: @accent; }
+        QWidget#dockHeader QLabel { background: transparent; border: none; margin: 0; padding: 0; }
+        QFrame#dockBody {
+            background: @secondary; border: 1px solid @border; border-top: none;
+            border-top-left-radius: 0; border-top-right-radius: 0;
+            border-bottom-left-radius: @radiuspx; border-bottom-right-radius: @radiuspx;
+        }
+        QLabel#dockTitle { font-weight: 600; background: transparent; border: none; }
+        QLabel { color: @text; background: transparent; }
+        QLabel:disabled { color: @disabled; }
+        QLabel[secondary="true"], QLabel[uiState="mixed"] { color: @muted; }
+        QLabel[uiState="warning"] { color: @warning; }
+        QLabel[uiState="error"] { color: @error; }
+        QPushButton, QToolButton {
+            color: @text; background: @secondary;
+            border: 1px solid @border; border-radius: @radiuspx;
+            min-height: @fieldHeightpx; padding: 3px 8px;
+        }
+        QToolButton { padding: 3px 6px; }
+        QPushButton:hover, QToolButton:hover { background: @hover; border-color: @focus; }
+        QPushButton:pressed, QToolButton:pressed,
+        QPushButton:checked, QToolButton:checked { background: @selection; border-color: @focus; }
+        QPushButton:checked:hover, QToolButton:checked:hover { background: @accent; }
+        QPushButton:focus, QPushButton:default, QToolButton:focus { border-color: @focus; }
+        QPushButton:disabled, QToolButton:disabled {
+            color: @disabled; background: @main; border-color: @border;
+        }
+        QToolButton[uiCompact="true"] { min-height: 0; min-width: 0; padding: 0; }
+        QToolButton[uiFlat="true"] { background: transparent; border-color: transparent; }
+        QToolButton[uiFlat="true"]:hover { background: @hover; border-color: @border; }
+        QToolButton[uiDockButton="true"] {
+            background: @secondary; border: 1px solid @border; border-radius: @radiuspx;
+            min-height: @dockExtentpx; max-height: @dockExtentpx;
+            min-width: @dockExtentpx; max-width: @dockExtentpx; margin: 0; padding: 0;
+        }
+        QToolButton[uiDockButton="true"]:hover { background: @hover; border-color: @focus; }
+        QToolButton[uiDockButton="true"]:pressed { background: @selection; border-color: @focus; }
+        QToolButton[uiDockButton="true"]:disabled { background: @main; border-color: @border; }
+        QPushButton[uiSquareButton="true"], QToolButton[uiSquareButton="true"] {
+            min-height: @squareExtentpx; max-height: @squareExtentpx;
+            min-width: @squareExtentpx; max-width: @squareExtentpx; margin: 0; padding: 0;
+        }
+        QCheckBox {
+            color: @text; background: transparent; spacing: @spacingpx;
+            min-height: @controlHeightpx; margin: 0; padding: 0;
+        }
+        QCheckBox:disabled { color: @disabled; }
+        QCheckBox::indicator { width: @controlHeightpx; height: @controlHeightpx; }
+        QCheckBox[uiCompactCheck="true"] { min-height: @compactControlpx; }
+        QCheckBox[uiCompactCheck="true"]::indicator { width: @compactControlpx; height: @compactControlpx; }
+        QLineEdit, QComboBox, QTextEdit, QPlainTextEdit, QAbstractSpinBox {
+            color: @text; background: @main; border: 1px solid @border;
+            border-radius: @radiuspx; padding: 3px 7px;
+            selection-background-color: @selection; selection-color: @text;
+        }
+        QLineEdit, QComboBox, QAbstractSpinBox { min-height: @fieldHeightpx; }
+        QComboBox, QAbstractSpinBox { padding-right: 22px; }
+        QLineEdit:hover, QComboBox:hover, QAbstractSpinBox:hover { border-color: @focus; }
+        QLineEdit:focus, QComboBox:focus, QTextEdit:focus,
+        QPlainTextEdit:focus, QAbstractSpinBox:focus { border-color: @focus; }
+        QLineEdit:disabled, QComboBox:disabled, QTextEdit:disabled,
+        QPlainTextEdit:disabled, QAbstractSpinBox:disabled {
+            color: @disabled;
+        }
+        QLineEdit[uiState="mixed"], QAbstractSpinBox[uiState="mixed"],
+        QAbstractSpinBox[uiState="mixed"] QLineEdit { color: @muted; }
+        QPushButton[uiState="mixed"] { background: @contrast; color: @text; }
+        QLineEdit[uiState="error"] { border-color: @error; }
+        QAbstractSpinBox QLineEdit {
+            background: @main; border: none; border-radius: 0; padding: 0; min-height: 0;
+        }
+        QComboBox::drop-down { subcontrol-origin: border; width: 20px; border: none; }
+        QAbstractSpinBox::up-button, QAbstractSpinBox::down-button {
+            subcontrol-origin: padding; width: 18px; border: none; background: transparent;
+        }
+        QAbstractSpinBox::up-button {
+            subcontrol-position: top right; border-top-right-radius: @radiuspx;
+        }
+        QAbstractSpinBox::down-button {
+            subcontrol-position: bottom right; border-bottom-right-radius: @radiuspx;
+        }
+        QAbstractItemView {
+            color: @text; background: @secondary; alternate-background-color: @main;
+            border: none; selection-background-color: @selection; selection-color: @text;
+            outline: 0;
+        }
+        QAbstractItemView[uiMainSurface="true"] { background: @main; alternate-background-color: @main; }
+        QAbstractItemView::item {
+            min-height: @fieldHeightpx; padding: 0 4px; border: 1px solid transparent; border-radius: 0;
+        }
+        QAbstractItemView::item:hover { background: @hover; }
+        QAbstractItemView::item:selected { background: @selection; color: @text; }
+        QAbstractItemView::item:focus { border: 1px solid @focus; }
+        QHeaderView::section {
+            color: @text; background: @main; border: none;
+            border-bottom: 1px solid @border; padding: 5px 6px; font-weight: 600;
+        }
+        QScrollArea { border: none; background: @secondary; }
+        QScrollArea > QWidget > QWidget { background: @secondary; }
+        QWidget#shapeGrid { background: @main; }
+        QScrollBar:vertical { background: @main; width: 12px; margin: 0; }
+        QScrollBar:horizontal { background: @main; height: 12px; margin: 0; }
+        QScrollBar::handle { background: @border; border-radius: @radiuspx; }
+        QScrollBar::handle:vertical { min-height: 28px; margin: 2px; }
+        QScrollBar::handle:horizontal { min-width: 28px; margin: 2px; }
+        QScrollBar::handle:hover { background: @focus; }
+        QScrollBar::add-line, QScrollBar::sub-line { width: 0; height: 0; }
+        QScrollBar::add-page, QScrollBar::sub-page { background: transparent; }
+        QSlider:horizontal { min-height: @controlHeightpx; }
+        QSlider:vertical { min-width: @controlHeightpx; }
+        QToolBar { background: @main; border: none; spacing: @spacingpx; padding: 3px; }
+        QToolBar#ToolSettingsBar { margin: 0; padding: 0; spacing: 0; }
+        QScrollArea#ToolSettingsPanel, QWidget#ToolSettings { background: @main; margin: 0; padding: 0; }
+        QStatusBar { background: @main; color: @muted; }
+        QStatusBar::item { border: none; }
+        QMenuBar { background: @main; color: @text; }
+        QMenuBar::item { padding: 5px 8px; border-radius: @radiuspx; background: transparent; }
+        QMenuBar::item:selected { background: @accent; }
+        QMenu {
+            color: @text; background: @secondary; border: 1px solid @border;
+            border-radius: @radiuspx; padding: 2px;
+        }
+        QMenu::item { padding: 3px 6px; margin: 0; border-radius: @radiuspx; }
+        QMenu::indicator { width: @menuIconpx; height: @menuIconpx; }
+        QMenu::item:selected { background: @selection; }
+        QMenu::item:disabled { color: @disabled; }
+        QMenu::separator { height: 1px; background: @border; margin: 2px 4px; }
+        QToolTip {
+            color: @text; background: @secondary; border: 1px solid @border;
+            border-radius: @radiuspx; padding: 5px 8px;
+        }
+        QGroupBox {
+            border: 1px solid @border; border-radius: @radiuspx; margin-top: 12px; padding-top: 8px;
+        }
+        QGroupBox::title { color: @text; subcontrol-origin: margin; left: 8px; padding: 0 4px; }
+        QTabWidget::pane { border: 1px solid @border; border-radius: 0; }
+        QTabBar::tab {
+            color: @text; background: @secondary; border: 1px solid @border;
+            border-radius: 0; padding: 6px 10px;
+        }
+        QTabBar::tab:top {
+            border-top-left-radius: @radiuspx; border-top-right-radius: @radiuspx;
+        }
+        QTabBar::tab:bottom {
+            border-bottom-left-radius: @radiuspx; border-bottom-right-radius: @radiuspx;
+        }
+        QTabBar::tab:left {
+            border-top-left-radius: @radiuspx; border-bottom-left-radius: @radiuspx;
+        }
+        QTabBar::tab:right {
+            border-top-right-radius: @radiuspx; border-bottom-right-radius: @radiuspx;
+        }
+        QTabBar::tab:selected { background: @accent; border-color: @focus; }
+        QTabBar::tab:hover { background: @hover; }
+        QTabBar QToolButton { min-height: 0; min-width: 0; margin: 0; padding: 0; }
+        QFrame[frameShape="4"] { border: none; background: @border; min-height: 1px; max-height: 1px; }
+        QFrame[frameShape="5"] { border: none; background: @border; min-width: 1px; max-width: 1px; }
+        QProgressBar {
+            background: @secondary; color: @text; border: 1px solid @border;
+            border-radius: @radiuspx; text-align: center; min-height: @fieldHeightpx;
+        }
+        QProgressBar::chunk { background: @accent; border-radius: @radiuspx; }
+        QFrame#previewSidePanel {
+            background: @main; border: 1px solid @border; border-radius: @radiuspx;
+        }
+        QFrame#previewSidePanel QScrollArea, QFrame#previewSidePanel QScrollArea > QWidget > QWidget {
+            background: transparent;
+        }
+        QToolButton#previewSidePanelToggle { background: @main; min-height: 0; padding: 0; font-size: 16px; }
+        QToolButton#previewSidePanelToggle:hover { background: @hover; }
+        QLabel#previewReference, QLabel#previewStatus {
+            color: @text; background: @secondary; border: 1px solid @border;
+            border-radius: @radiuspx; padding: 3px 6px;
+        }
+        QLabel#previewReference { font-size: 10px; }
+        QLabel#previewStatus { padding: 6px 10px; }
+        QFrame#paintColorPopup { background: @main; border: 1px solid @border; border-radius: @radiuspx; }
+    )");
+    const QMap<QString, QColor> colorTokens = {
+        {QStringLiteral("@main"), colors.main},
+        {QStringLiteral("@secondary"), colors.secondary},
+        {QStringLiteral("@contrast"), colors.contrast},
+        {QStringLiteral("@accent"), colors.accent},
+        {QStringLiteral("@focus"), colors.focus},
+        {QStringLiteral("@border"), colors.border},
+        {QStringLiteral("@text"), colors.text},
+        {QStringLiteral("@muted"), colors.mutedText},
+        {QStringLiteral("@disabled"), colors.disabledText},
+        {QStringLiteral("@hover"), colors.hover},
+        {QStringLiteral("@selection"), colors.selection},
+        {QStringLiteral("@warning"), colors.warning},
+        {QStringLiteral("@error"), colors.error},
+    };
+
+    for (auto token = colorTokens.cbegin(); token != colorTokens.cend(); ++token) {
+        sheet.replace(token.key(), token.value().name());
+    }
+    sheet.replace(QStringLiteral("@radius"), QString::number(kUiCornerRadius));
+    sheet.replace(QStringLiteral("@fieldHeight"), QString::number(kUiControlHeight - 8));
+    sheet.replace(QStringLiteral("@controlHeight"), QString::number(kUiControlHeight));
+    sheet.replace(QStringLiteral("@compactControl"), QString::number(kUiCompactControlExtent));
+    sheet.replace(QStringLiteral("@dockExtent"), QString::number(kUiCompactControlExtent - 2));
+    sheet.replace(QStringLiteral("@squareExtent"), QString::number(kUiControlHeight - 2));
+    sheet.replace(QStringLiteral("@menuIcon"), QString::number(kMenuIconExtent));
+    sheet.replace(QStringLiteral("@spacing"), QString::number(kUiSpacing));
+
+    return sheet;
+}
 
 QColor validColor(const QColor &color, const QColor &fallback) {
     return color.isValid() ? color : fallback;
@@ -91,6 +618,77 @@ QString previewBackgroundModeValue(PreviewBackgroundMode mode) {
 
 } // namespace
 
+UiColors uiColors(UiTheme theme) {
+    if (theme == UiTheme::Light) {
+        return {
+            .main = QColor(QStringLiteral("#f6dcb9")),
+            .secondary = QColor(QStringLiteral("#fef1eb")),
+            .contrast = QColor(QStringLiteral("#cfbfbf")),
+            .accent = QColor(QStringLiteral("#cfdad4")),
+            .focus = QColor(QStringLiteral("#526b5b")),
+            .border = QColor(QStringLiteral("#947e78")),
+            .text = QColor(QStringLiteral("#352e2c")),
+            .mutedText = QColor(QStringLiteral("#6e5b54")),
+            .disabledText = QColor(QStringLiteral("#8b7770")),
+            .hover = QColor(QStringLiteral("#e9dfd5")),
+            .selection = QColor(QStringLiteral("#cfdad4")),
+            .warning = QColor(QStringLiteral("#885d25")),
+            .error = QColor(QStringLiteral("#a34950")),
+            .guide = QColor(QStringLiteral("#ead5b4")),
+        };
+    }
+
+    return {
+        .main = QColor(QStringLiteral("#252426")),
+        .secondary = QColor(QStringLiteral("#302d30")),
+        .contrast = QColor(QStringLiteral("#40383b")),
+        .accent = QColor(QStringLiteral("#54655c")),
+        .focus = QColor(QStringLiteral("#adc4b5")),
+        .border = QColor(QStringLiteral("#67585e")),
+        .text = QColor(QStringLiteral("#f3e7df")),
+        .mutedText = QColor(QStringLiteral("#c3afa9")),
+        .disabledText = QColor(QStringLiteral("#8e8080")),
+        .hover = QColor(QStringLiteral("#443e40")),
+        .selection = QColor(QStringLiteral("#46574e")),
+        .warning = QColor(QStringLiteral("#edc797")),
+        .error = QColor(QStringLiteral("#e4a3aa")),
+        .guide = QColor(QStringLiteral("#514637")),
+    };
+}
+
+QString colorSwatchStyle(const QColor &color) {
+    constexpr double kTextLuminanceThreshold = 0.179;
+    const auto linearChannel = [](int channel) {
+        const double value = channel / 255.0;
+
+        return value <= 0.04045 ? value / 12.92 : std::pow((value + 0.055) / 1.055, 2.4);
+    };
+    const double luminance = 0.2126 * linearChannel(color.red())
+        + 0.7152 * linearChannel(color.green()) + 0.0722 * linearChannel(color.blue());
+    const QString foreground = luminance > kTextLuminanceThreshold
+        ? QStringLiteral("#202020") : QStringLiteral("#ffffff");
+
+    return QStringLiteral(
+        "QPushButton, QToolButton { background-color: rgba(%1,%2,%3,%4); color: %5; }"
+        "QPushButton:hover, QToolButton:hover, QPushButton:focus, QToolButton:focus { border-color: palette(text); }")
+        .arg(color.red()).arg(color.green()).arg(color.blue()).arg(color.alpha()).arg(foreground);
+}
+
+void setUiState(QWidget *widget, const QString &state) {
+    if (widget->property("uiState").toString() == state) {
+        return;
+    }
+    widget->setProperty("uiState", state);
+    widget->style()->unpolish(widget);
+    widget->style()->polish(widget);
+    for (QWidget *child : widget->findChildren<QWidget *>()) {
+        child->style()->unpolish(child);
+        child->style()->polish(child);
+        child->update();
+    }
+    widget->update();
+}
+
 QString themeSettingsValue(UiTheme theme) {
     return theme == UiTheme::Light ? QStringLiteral("light") : QStringLiteral("dark");
 }
@@ -108,7 +706,7 @@ void saveUiTheme(UiTheme theme) {
 }
 
 QColor defaultCanvasColor(UiTheme theme) {
-    return theme == UiTheme::Light ? QColor(244, 245, 247) : QColor(24, 25, 28);
+    return uiColors(theme).secondary;
 }
 
 CanvasColorSettings loadCanvasColorSettings() {
@@ -371,50 +969,50 @@ bool isDarkTheme(UiTheme theme) {
 }
 
 QColor iconColorForTheme(UiTheme theme) {
-    return isDarkTheme(theme) ? QColor(238, 241, 245) : QColor(32, 34, 37);
+    return uiColors(theme).text;
 }
 
 QPalette paletteForTheme(UiTheme theme) {
+    const UiColors colors = uiColors(theme);
     QPalette palette;
-    if (theme == UiTheme::Light) {
-        palette.setColor(QPalette::Window, QColor(244, 245, 247));
-        palette.setColor(QPalette::WindowText, QColor(28, 30, 33));
-        palette.setColor(QPalette::Base, QColor(255, 255, 255));
-        palette.setColor(QPalette::AlternateBase, QColor(235, 237, 240));
-        palette.setColor(QPalette::ToolTipBase, QColor(255, 255, 255));
-        palette.setColor(QPalette::ToolTipText, QColor(28, 30, 33));
-        palette.setColor(QPalette::Text, QColor(28, 30, 33));
-        palette.setColor(QPalette::Button, QColor(238, 240, 243));
-        palette.setColor(QPalette::ButtonText, QColor(28, 30, 33));
-        palette.setColor(QPalette::Highlight, QColor(42, 130, 218));
-        palette.setColor(QPalette::Link, QColor(0, 102, 204));
-    } else {
-        palette.setColor(QPalette::Window, QColor(32, 33, 36));
-        palette.setColor(QPalette::WindowText, QColor(238, 241, 245));
-        palette.setColor(QPalette::Base, QColor(24, 25, 28));
-        palette.setColor(QPalette::AlternateBase, QColor(38, 40, 44));
-        palette.setColor(QPalette::ToolTipBase, QColor(46, 48, 54));
-        palette.setColor(QPalette::ToolTipText, QColor(238, 241, 245));
-        palette.setColor(QPalette::Text, QColor(238, 241, 245));
-        palette.setColor(QPalette::Button, QColor(43, 45, 50));
-        palette.setColor(QPalette::ButtonText, QColor(238, 241, 245));
-        palette.setColor(QPalette::Highlight, QColor(72, 126, 176));
-        palette.setColor(QPalette::Link, QColor(126, 180, 255));
-    }
-    palette.setColor(QPalette::BrightText, QColor(255, 255, 255));
-    palette.setColor(QPalette::HighlightedText, QColor(255, 255, 255));
-    palette.setColor(QPalette::Disabled, QPalette::Text, QColor(128, 132, 138));
-    palette.setColor(QPalette::Disabled, QPalette::ButtonText, QColor(128, 132, 138));
+    palette.setColor(QPalette::Window, colors.main);
+    palette.setColor(QPalette::WindowText, colors.text);
+    palette.setColor(QPalette::Base, colors.secondary);
+    palette.setColor(QPalette::AlternateBase, colors.main);
+    palette.setColor(QPalette::ToolTipBase, colors.secondary);
+    palette.setColor(QPalette::ToolTipText, colors.text);
+    palette.setColor(QPalette::Text, colors.text);
+    palette.setColor(QPalette::Button, colors.secondary);
+    palette.setColor(QPalette::ButtonText, colors.text);
+    palette.setColor(QPalette::Highlight, colors.selection);
+    palette.setColor(QPalette::HighlightedText, colors.text);
+    palette.setColor(QPalette::PlaceholderText, colors.mutedText);
+    palette.setColor(QPalette::Link, colors.focus);
+    palette.setColor(QPalette::Mid, colors.border);
+    palette.setColor(QPalette::Midlight, colors.border);
+    palette.setColor(QPalette::Dark, colors.border);
+    palette.setColor(QPalette::Light, colors.border);
+    palette.setColor(QPalette::Shadow, colors.text);
+    palette.setColor(QPalette::BrightText, colors.text);
+    palette.setColor(QPalette::LinkVisited, colors.focus);
+#if QT_VERSION >= QT_VERSION_CHECK(6, 6, 0)
+    palette.setColor(QPalette::Accent, colors.focus);
+#endif
+    palette.setColor(QPalette::Disabled, QPalette::WindowText, colors.disabledText);
+    palette.setColor(QPalette::Disabled, QPalette::Text, colors.disabledText);
+    palette.setColor(QPalette::Disabled, QPalette::ButtonText, colors.disabledText);
 
     return palette;
 }
 
 void applyUiTheme(QApplication &app, UiTheme theme) {
     currentTheme = theme;
+    QPixmapCache::clear();
     if (QStyleFactory::keys().contains(QStringLiteral("Fusion"))) {
         app.setStyle(new ThemeStyle(QStyleFactory::create(QStringLiteral("Fusion"))));
     }
     app.setPalette(paletteForTheme(theme));
+    app.setStyleSheet(themeStyleSheet(theme));
 }
 
 UiTheme currentUiTheme() {

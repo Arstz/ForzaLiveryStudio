@@ -19,8 +19,8 @@ namespace gui::mw_detail {
 constexpr double kInitialWindowScreenFraction = 0.8;
 constexpr int kTreeIconExtent = 64;
 constexpr int kToolbarIconExtent = 18;
-constexpr int kDockSplitterHandleWidth = 6;
-constexpr int kDetailsLabelMargin = 10;
+constexpr int kDockSplitterHandleWidth = kUiSplitterWidth;
+constexpr int kDetailsLabelMargin = kUiMargin;
 
 template<typename Callback>
 void queueMainWindowCallback(const QPointer<MainWindow> &guard, Callback callback) {
@@ -36,15 +36,24 @@ void queueMainWindowCallback(const QPointer<MainWindow> &guard, Callback callbac
         Qt::QueuedConnection);
 }
 
+inline QString shortcutButtonText(const QString &label, const QKeySequence &shortcut) {
+    if (shortcut.isEmpty()) {
+        return label;
+    }
+
+    return QStringLiteral("%1 (%2)").arg(label, shortcut.toString(QKeySequence::NativeText));
+}
+
 inline QString shortcutActionText(const QString &id, const QString &label, const QKeySequence &shortcut) {
+    if (id.startsWith(QStringLiteral("tool_"))) {
+        return shortcutButtonText(label, shortcut);
+    }
     if (shortcut.isEmpty()) {
         return label;
     }
     const QString sequence = shortcut.toString(QKeySequence::NativeText);
 
-    return id.startsWith(QStringLiteral("tool_"))
-        ? QStringLiteral("%1 (%2)").arg(label, sequence)
-        : QStringLiteral("%1\t%2").arg(label, sequence);
+    return QStringLiteral("%1\t%2").arg(label, sequence);
 }
 
 inline QString safeGroupName(QString name) {

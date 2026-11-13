@@ -111,6 +111,23 @@ CMake builds `fls_core` for codecs and scene data, `fls_profile_compute` for
 numeric fitting, and `fls_editor_ui` for the editor. `ForzaLiveryStudio` supplies
 the application entry point and links the UI library.
 
+### GUI appearance
+
+`theme_manager.*` owns semantic UI colors, control metrics, the Qt palette,
+and the shared stylesheet. Light mode uses cream and blush surfaces with sage
+accents and rose-gray preview contrast. Dark mode pairs charcoal surfaces with
+muted versions of those colors. Custom widget painting uses the same color roles.
+Panels, tabs, controls, and painted UI surfaces use square corners.
+Dock actions share a square button frame with one outline.
+Theme changes refresh cached icons across dock titles and tab bars. Square action
+controls share explicit size constraints, and input editors share surface colors.
+Native control glyphs use theme foregrounds. Checkbox and button dimensions follow
+shared size roles. Resize dividers expose centered grips, and sliders use square,
+outlined handles. Dock headers indicate keyboard focus, and semantic widget states
+share theme-aware text and border colors. Swatch styling derives readable text from
+the displayed color. Canvas and preview background preferences remain persisted
+through the theme settings.
+
 ### Scene and project state
 
 `Project::root` is the canonical `fls::scene::Group`. Groups own child layers;
@@ -190,8 +207,7 @@ The previous single-folder setting migrates to the FH6 setting. The preview's
 finish library continues to use the configured FH6 resources.
 The target-car chooser shows the catalog's supported versions beside each name.
 It scans configured car folders once per opening and matches per-game model
-names. Available versions are white; missing versions are orange. Names are
-orange when all supported model versions are missing.
+names. The chooser uses themed text and warning colors to indicate model availability.
 
 Core decoders read `.modelbin` geometry and materials, assemble `.carbin` parts,
 extract zipped car folders, and decode `.swatchbin` textures and `LiveryMasks/`.

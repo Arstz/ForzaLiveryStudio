@@ -16,13 +16,14 @@ public:
         setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
         setWidget(controls);
         controls->installEventFilter(this);
+        horizontalScrollBar()->installEventFilter(this);
         connect(horizontalScrollBar(), &QScrollBar::rangeChanged, this, [this]() { updateGeometry(); });
     }
 
     QSize sizeHint() const override {
         if (widget() == nullptr) return QSize(0, 0);
         const auto *bar = horizontalScrollBar();
-        const int scrollHeight = bar->maximum() > bar->minimum() ? bar->sizeHint().height() : 0;
+        const int scrollHeight = bar->isVisible() ? bar->sizeHint().height() : 0;
 
         return QSize(0, widget()->sizeHint().height() + scrollHeight);
     }
@@ -32,6 +33,11 @@ protected:
     bool eventFilter(QObject *watched, QEvent *event) override {
         const bool handled = QScrollArea::eventFilter(watched, event);
         if (watched == widget() && event->type() == QEvent::LayoutRequest) updateGeometry();
+        if (watched == horizontalScrollBar()
+            && (event->type() == QEvent::Show || event->type() == QEvent::Hide
+                || event->type() == QEvent::StyleChange)) {
+            updateGeometry();
+        }
 
         return handled;
     }

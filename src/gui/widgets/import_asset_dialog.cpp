@@ -432,12 +432,11 @@ private:
 
         painter->save();
         painter->setRenderHint(QPainter::Antialiasing, true);
-        painter->fillRect(
-            tileRect,
-            hovered || selected ? colors.hover : colors.base);
         painter->setPen(QPen(
             hovered || selected ? colors.activeStroke : colors.stroke, 1));
-        painter->drawRect(tileRect.adjusted(0, 0, -1, -1));
+        painter->setBrush(selected ? uiColors(currentUiTheme()).selection
+                                  : hovered ? colors.hover : colors.base);
+        painter->drawRoundedRect(tileRect.adjusted(0, 0, -1, -1), kUiCornerRadius, kUiCornerRadius);
 
         if (!thumbnail.isNull()) {
             painter->fillRect(previewRect, colors.previewBase);
@@ -573,8 +572,8 @@ public:
         resize(760, 520);
 
         auto *layout = new QVBoxLayout(this);
-        layout->setContentsMargins(12, 12, 12, 12);
-        layout->setSpacing(8);
+        layout->setContentsMargins(kUiMargin, kUiMargin, kUiMargin, kUiMargin);
+        layout->setSpacing(kUiSpacing);
 
         auto *navigation = new QHBoxLayout();
         backButton_ = new QToolButton(this);
@@ -594,9 +593,6 @@ public:
         recentFolders_->setToolTip(QStringLiteral("Recently visited folders"));
         recentFolders_->setMaxVisibleItems(kMaximumRecentFolders);
         recentFolders_->ensurePolished();
-        QPalette recentFoldersPalette = recentFolders_->palette();
-        recentFoldersPalette.setColor(QPalette::PlaceholderText, Qt::white);
-        recentFolders_->setPalette(recentFoldersPalette);
         QStyleOptionComboBox recentFoldersStyle;
         recentFoldersStyle.initFrom(recentFolders_);
         recentFoldersStyle.currentText = recentFolders_->placeholderText();

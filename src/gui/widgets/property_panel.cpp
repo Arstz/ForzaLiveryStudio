@@ -5,6 +5,7 @@
 #include "gui_constants.h"
 #include "perf_utils.h"
 #include "scene_view.h"
+#include "theme_manager.h"
 
 #include <algorithm>
 #include <cmath>
@@ -38,15 +39,7 @@ bool isColorableShape(const fls::scene::Shape *layer) {
 }
 
 constexpr int kPropertyIconExtent = 14;
-constexpr int kPropertyLabelSpacing = 5;
-
-QString mixedValueStyle() {
-    return QStringLiteral("color: #888;");
-}
-
-QString mixedColorButtonStyle() {
-    return QStringLiteral("background-color: #888;");
-}
+constexpr int kPropertyLabelSpacing = kUiSpacing;
 
 class ArithmeticExpressionParser final {
 public:
@@ -251,7 +244,7 @@ void setMixedDouble(QDoubleSpinBox *box,
     const double average = sum / layers.size();
     baselines.insert(box, average);
     box->setValue(average);
-    box->setStyleSheet(minimum == maximum ? QString() : mixedValueStyle());
+    setUiState(box, minimum == maximum ? QString() : QStringLiteral("mixed"));
 }
 
 template <typename LayerType, typename Getter>
@@ -424,11 +417,8 @@ struct TransformAverage {
 };
 
 QString colorStyle(const std::array<quint8, 4> &color) {
-    return QStringLiteral("background-color: rgba(%1,%2,%3,%4);")
-        .arg(color[ColorByteRed])
-        .arg(color[ColorByteGreen])
-        .arg(color[ColorByteBlue])
-        .arg(color[ColorByteAlpha]);
+    return colorSwatchStyle(QColor(color[ColorByteRed], color[ColorByteGreen],
+                                  color[ColorByteBlue], color[ColorByteAlpha]));
 }
 
 class DraggablePropertyLabel final : public QWidget {
@@ -1000,7 +990,7 @@ void PropertyPanel::setSelection(const QVector<fls::scene::Shape *> &layers,
             return state_->sceneNode(id)->name == firstName;
         });
         name_->setText(sameName ? firstName : QString());
-        name_->setStyleSheet(sameName ? QString() : mixedValueStyle());
+        setUiState(name_, sameName ? QString() : QStringLiteral("mixed"));
 
         const QVector<std::array<quint8, 4>> colors = selectionColors(false);
         if (!colors.isEmpty()) {
@@ -1013,7 +1003,7 @@ void PropertyPanel::setSelection(const QVector<fls::scene::Shape *> &layers,
                 maxAlpha = std::max(maxAlpha, color[ColorByteAlpha]);
             }
             opacity_->setValue(sum / colors.size());
-            opacity_->setStyleSheet(minAlpha == maxAlpha ? QString() : mixedValueStyle());
+            setUiState(opacity_, minAlpha == maxAlpha ? QString() : QStringLiteral("mixed"));
         }
         updateColorButton();
         if (canTransform) {
@@ -1178,6 +1168,7 @@ void PropertyPanel::setSingleGuide(const fls::scene::GuideLayer *guide) {
     locked_->setChecked(guide->locked);
     mask_->setChecked(false);
     colorButton_->setText(QStringLiteral("N/A"));
+    setUiState(colorButton_, QString());
     colorButton_->setStyleSheet(QString());
     const int width = guide->image ? guide->image->width : 0;
     const int height = guide->image ? guide->image->height : 0;
@@ -1209,7 +1200,7 @@ void PropertyPanel::setContourFields() {
     mask_->setTristate(false);
     mask_->setChecked(false);
     name_->setText(sameName ? firstName : QString());
-    name_->setStyleSheet(sameName ? QString() : mixedValueStyle());
+    setUiState(name_, sameName ? QString() : QStringLiteral("mixed"));
     updateColorButton();
     debug_->setText(QStringLiteral("%1 saved path(s) selected").arg(contours_.size()));
 }
@@ -1238,14 +1229,14 @@ void PropertyPanel::setMultipleLayers(const QVector<fls::scene::Shape *> &layers
         return l->name == firstName;
     });
     name_->setText(sameName ? firstName : QString());
-    name_->setStyleSheet(sameName ? QString() : mixedValueStyle());
+    setUiState(name_, sameName ? QString() : QStringLiteral("mixed"));
 
     const quint16 firstShapeId = layers.front()->shapeId;
     const bool sameShapeId = std::all_of(layers.begin(), layers.end(), [&](const fls::scene::Shape *l) {
         return l->shapeId == firstShapeId;
     });
     shapeId_->setValue(firstShapeId);
-    shapeId_->setStyleSheet(sameShapeId ? QString() : mixedValueStyle());
+    setUiState(shapeId_, sameShapeId ? QString() : QStringLiteral("mixed"));
 
     updateColorButton();
     debug_->setText(QStringLiteral("%1 layers selected").arg(layers.size()));
@@ -1267,8 +1258,9 @@ void PropertyPanel::setMultipleGuides(const QVector<fls::scene::GuideLayer *> &g
     mask_->setTristate(false);
     mask_->setChecked(false);
     name_->setText(QString());
-    name_->setStyleSheet(mixedValueStyle());
+    setUiState(name_, QStringLiteral("mixed"));
     colorButton_->setText(QStringLiteral("N/A"));
+    setUiState(colorButton_, QString());
     colorButton_->setStyleSheet(QString());
     debug_->setText(QStringLiteral("%1 guide layers selected").arg(guides.size()));
 }
@@ -1287,7 +1279,7 @@ void PropertyPanel::setBoxProxyValues(const QPointF &center, double scaleXValue,
                                        double skewValue) {
     const auto setProxy = [this](QDoubleSpinBox *box, double value) {
         box->setValue(value);
-        box->setStyleSheet(QString());
+        setUiState(box, QString());
         baselines_.insert(box, value);
     };
     setProxy(x_, center.x());
@@ -1352,10 +1344,10 @@ void PropertyPanel::setBoxProxyFields(bool neutralTransformValues) {
 }
 
 void PropertyPanel::clearMixedStyles() {
-    name_->setStyleSheet(QString());
-    shapeId_->setStyleSheet(QString());
+    setUiState(name_, QString());
+    setUiState(shapeId_, QString());
     for (QDoubleSpinBox *box : {x_, y_, scaleX_, scaleY_, rotation_, skew_, opacity_}) {
-        box->setStyleSheet(QString());
+        setUiState(box, QString());
     }
 }
 
@@ -1661,6 +1653,7 @@ void PropertyPanel::pickColor() {
         setSelectionColor(color);
         state_->noteCanvasRepaint();
         colorButton_->setText(QStringLiteral("Color"));
+        setUiState(colorButton_, QString());
         colorButton_->setStyleSheet(colorStyle(color));
     });
 
@@ -1678,6 +1671,7 @@ void PropertyPanel::updateColorButton() {
     if (colors.isEmpty()) {
         colorButton_->setEnabled(false);
         colorButton_->setText(QStringLiteral("N/A"));
+        setUiState(colorButton_, QString());
         colorButton_->setStyleSheet(QString());
         return;
     }
@@ -1688,9 +1682,11 @@ void PropertyPanel::updateColorButton() {
     });
     if (mixed) {
         colorButton_->setText(QStringLiteral("Mixed"));
-        colorButton_->setStyleSheet(mixedColorButtonStyle());
+        colorButton_->setStyleSheet(QString());
+        setUiState(colorButton_, QStringLiteral("mixed"));
     } else {
         colorButton_->setText(QStringLiteral("Color"));
+        setUiState(colorButton_, QString());
         colorButton_->setStyleSheet(colorStyle(color));
     }
 }

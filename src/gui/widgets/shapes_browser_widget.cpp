@@ -22,7 +22,7 @@ constexpr const char *kFavouritesSettingsKey = "shapes/favourites";
 constexpr const char *kCustomGroupsSettingsKey = "shapes/customGroups";
 const QSize kTileSize(132, 132);
 const QSize kPreviewSize(86, 86);
-constexpr int kTileSpacing = 8;
+constexpr int kTileSpacing = kUiSpacing;
 constexpr double kDefaultCategoryWidthFraction = 0.07;
 
 class BrowserTileLayout final : public QLayout {
@@ -107,7 +107,6 @@ private:
 struct TilePaintLayout {
     QRect previewRect;
     QColor labelColor;
-    bool dark = false;
 };
 
 TilePaintLayout paintTileFrame(QPainter &painter, const QWidget &tile, bool hovered) {
@@ -118,12 +117,14 @@ TilePaintLayout paintTileFrame(QPainter &painter, const QWidget &tile, bool hove
                             kPreviewSize.width(), kPreviewSize.height());
 
     painter.setRenderHint(QPainter::Antialiasing, true);
-    painter.fillRect(tileRect, hovered ? colors.hover : colors.base);
     painter.setPen(QPen(hovered ? colors.activeStroke : colors.stroke, 1));
-    painter.drawRect(tileRect.adjusted(0, 0, -1, -1));
-    painter.fillRect(previewRect, colors.previewBase);
+    painter.setBrush(hovered ? colors.hover : colors.base);
+    painter.drawRoundedRect(tileRect.adjusted(0, 0, -1, -1), kUiCornerRadius, kUiCornerRadius);
+    painter.setPen(Qt::NoPen);
+    painter.setBrush(colors.previewBase);
+    painter.drawRoundedRect(previewRect, kUiCornerRadius, kUiCornerRadius);
 
-    return {previewRect, colors.label, dark};
+    return {previewRect, colors.label};
 }
 
 QSettings settings() {
@@ -497,12 +498,14 @@ ShapeTile::ShapeTile(int shapeId, const QString &label, const ShapeGeometryStore
 
     favourite_ = new QToolButton(this);
     favourite_->setToolTip(QStringLiteral("Favourite"));
-    favourite_->setGeometry(width() - 28, height() - 28, 22, 22);
+    favourite_->setGeometry(width() - kUiControlHeight, height() - kUiControlHeight,
+                            kUiCompactControlExtent, kUiCompactControlExtent);
     favourite_->setCursor(Qt::PointingHandCursor);
     favourite_->setCheckable(true);
     favourite_->setAutoRaise(true);
     favourite_->setIconSize(QSize(18, 18));
-    favourite_->setStyleSheet(QStringLiteral("QToolButton { border: none; padding: 2px; background: transparent; }"));
+    favourite_->setProperty("uiCompact", true);
+    favourite_->setProperty("uiFlat", true);
     updateFavouriteIcon();
     connect(favourite_, &QToolButton::toggled, this, [this](bool checked) {
         updateFavouriteIcon();
@@ -582,7 +585,7 @@ void ShapeTile::drawPreview(QPainter &painter, const QRect &rect) {
         if (geometry_ == nullptr) {
             return QImage();
         }
-        const QColor ink = isDarkTheme(currentUiTheme()) ? QColor(245, 245, 245) : QColor(24, 26, 30);
+        const QColor ink = uiColors(currentUiTheme()).text;
 
         return renderShapePreviewImage(*geometry_, shapeId_, rect.size(), ink);
     });
@@ -811,11 +814,13 @@ CustomGroupTile::CustomGroupTile(const CustomShapeGroup &group, const ShapeGeome
 
     delete_ = new QToolButton(this);
     delete_->setToolTip(QStringLiteral("Delete custom group"));
-    delete_->setGeometry(width() - 28, height() - 28, 22, 22);
+    delete_->setGeometry(width() - kUiControlHeight, height() - kUiControlHeight,
+                         kUiCompactControlExtent, kUiCompactControlExtent);
     delete_->setCursor(Qt::PointingHandCursor);
     delete_->setAutoRaise(true);
     delete_->setIconSize(QSize(18, 18));
-    delete_->setStyleSheet(QStringLiteral("QToolButton { border: none; padding: 2px; background: transparent; }"));
+    delete_->setProperty("uiCompact", true);
+    delete_->setProperty("uiFlat", true);
     updateDeleteIcon();
     connect(delete_, &QToolButton::clicked, this, [this]() {
         if (deleteCallback_) {
@@ -855,11 +860,14 @@ void CustomGroupTile::paintEvent(QPaintEvent *event) {
     QPainter painter(this);
     const TilePaintLayout layout = paintTileFrame(painter, *this, hovered());
     drawPreview(painter, layout.previewRect);
-    painter.setPen(QPen(layout.dark ? QColor(78, 78, 78) : QColor(180, 186, 196), 1));
-    painter.drawRect(layout.previewRect.adjusted(0, 0, -1, -1));
+    painter.setPen(QPen(uiColors(currentUiTheme()).border, 1));
+    painter.setBrush(Qt::NoBrush);
+    painter.drawRoundedRect(layout.previewRect.adjusted(0, 0, -1, -1), kUiCornerRadius, kUiCornerRadius);
 
     const QRect countRect(width() - 42, 8, 30, 18);
-    painter.fillRect(countRect, layout.dark ? QColor(58, 58, 58) : QColor(210, 216, 226));
+    painter.setPen(Qt::NoPen);
+    painter.setBrush(uiColors(currentUiTheme()).accent);
+    painter.drawRoundedRect(countRect, kUiCornerRadius, kUiCornerRadius);
     painter.setPen(layout.labelColor);
     painter.drawText(countRect, Qt::AlignCenter, QString::number(layerCount()));
 
@@ -996,7 +1004,7 @@ ShapesBrowserWidget::ShapesBrowserWidget(QWidget *parent)
     layout->addWidget(search_);
 
     splitter_ = new QSplitter(Qt::Horizontal, this);
-    splitter_->setHandleWidth(6);
+    splitter_->setHandleWidth(kUiSplitterWidth);
     layout->addWidget(splitter_, 1);
 
     auto *categoryPane = new QWidget(splitter_);
@@ -1004,6 +1012,7 @@ ShapesBrowserWidget::ShapesBrowserWidget(QWidget *parent)
     categoryLayout->setContentsMargins(0, 0, 0, 0);
     categoryLayout->setSpacing(6);
     categoriesList_ = new QListWidget(categoryPane);
+    categoriesList_->setProperty("uiMainSurface", true);
     categoriesList_->setMinimumWidth(150);
     categoryLayout->addWidget(categoriesList_, 1);
     addSelection_ = new QToolButton(categoryPane);
@@ -1017,6 +1026,7 @@ ShapesBrowserWidget::ShapesBrowserWidget(QWidget *parent)
     scroll_ = new QScrollArea(splitter_);
     scroll_->setWidgetResizable(true);
     gridHost_ = new QWidget(scroll_);
+    gridHost_->setObjectName(QStringLiteral("shapeGrid"));
     auto *gridLayout = new QVBoxLayout(gridHost_);
     gridLayout->setContentsMargins(kTileSpacing, kTileSpacing, kTileSpacing, kTileSpacing);
     gridLayout->setSpacing(0);
@@ -1107,12 +1117,6 @@ void ShapesBrowserWidget::setLiveryContext(bool isLivery) {
 }
 
 void ShapesBrowserWidget::refreshTheme() {
-    const QPalette pal = paletteForTheme(currentUiTheme());
-    const QString base = pal.color(QPalette::Base).name();
-    const QString text = pal.color(QPalette::Text).name();
-    categoriesList_->setStyleSheet(QStringLiteral("QListWidget { background: %1; color: %2; }").arg(base, text));
-    scroll_->setStyleSheet(QStringLiteral("QScrollArea { background: %1; border: none; }").arg(base));
-    gridHost_->setStyleSheet(QStringLiteral("QWidget { background: %1; }").arg(base));
     if (search_ != nullptr) {
         const QList<QAction *> actions = search_->actions();
         if (!actions.isEmpty()) {
@@ -1347,13 +1351,7 @@ void ShapesBrowserWidget::showGridMessage(const QString &text) {
         searchHint_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
         gridHost_->layout()->addWidget(searchHint_);
     }
-    const QPalette pal = paletteForTheme(currentUiTheme());
-    const QColor textColor = pal.color(QPalette::Text);
-    const QColor baseColor = pal.color(QPalette::Base);
-    const QColor muted((textColor.red() + baseColor.red()) / 2,
-                       (textColor.green() + baseColor.green()) / 2,
-                       (textColor.blue() + baseColor.blue()) / 2);
-    searchHint_->setStyleSheet(QStringLiteral("QLabel { color: %1; font-size: 13px; }").arg(muted.name()));
+    searchHint_->setProperty("secondary", true);
     searchHint_->setText(text);
     searchHint_->show();
 }

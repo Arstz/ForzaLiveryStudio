@@ -43,7 +43,7 @@ public:
         QColor textColor = selected ? option.palette.color(QPalette::HighlightedText)
                                     : option.palette.color(QPalette::Text);
         if (count == 0 && !selected) {
-            textColor = QColor(140, 140, 140);
+            textColor = uiColors(currentUiTheme()).mutedText;
         }
 
         painter->save();
@@ -52,7 +52,7 @@ public:
         painter->setPen(textColor);
         painter->drawText(textRect, Qt::AlignLeft | Qt::AlignVCenter, name);
         const int suffixX = textRect.x() + QFontMetrics(itemOption.font).horizontalAdvance(name);
-        painter->setPen(overLimit ? QColor(220, 45, 45) : textColor);
+        painter->setPen(overLimit ? uiColors(currentUiTheme()).error : textColor);
         painter->drawText(QRect(suffixX, textRect.y(), textRect.right() - suffixX + 1, textRect.height()),
                           Qt::AlignLeft | Qt::AlignVCenter, suffix);
         painter->restore();
@@ -64,6 +64,7 @@ public:
 LiverySectionBar::LiverySectionBar(QWidget *parent)
     : QListWidget(parent) {
     setObjectName(QStringLiteral("LiverySectionBar"));
+    setProperty("uiMainSurface", true);
     setItemDelegate(new SectionCountDelegate(this));
     setVisible(false);
     refreshTheme();
@@ -77,9 +78,7 @@ LiverySectionBar::LiverySectionBar(QWidget *parent)
 }
 
 void LiverySectionBar::refreshTheme() {
-    const QPalette pal = paletteForTheme(currentUiTheme());
-    setStyleSheet(QStringLiteral("QListWidget { background: %1; color: %2; }")
-                      .arg(pal.color(QPalette::Base).name(), pal.color(QPalette::Text).name()));
+    viewport()->update();
 }
 
 void LiverySectionBar::setSections(const QVector<SectionInfo> &sections) {
@@ -100,9 +99,7 @@ void LiverySectionBar::setSections(const QVector<SectionInfo> &sections) {
         item->setData(kSectionNameRole, section.name);
         item->setData(kSectionCountRole, section.decalCount);
         item->setData(kOverLimitRole, section.overShapeLimit);
-        if (section.decalCount == 0) {
-            item->setForeground(QBrush(QColor(140, 140, 140)));
-        } else if (firstPopulatedRow < 0) {
+        if (section.decalCount > 0 && firstPopulatedRow < 0) {
             firstPopulatedRow = row;
         }
         if (!previousSectionId.isEmpty() && section.id == previousSectionId) {

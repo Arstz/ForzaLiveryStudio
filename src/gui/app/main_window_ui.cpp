@@ -112,8 +112,9 @@ void MainWindow::setupTreeView() {
     treeModel_ = new LayerTreeModel(this);
     treeModel_->setEditorState(state_);
     tree_ = new LayerTreeView(this);
+    tree_->setProperty("uiMainSurface", true);
     tree_->setModel(treeModel_);
-    tree_->setHeaderHidden(false);
+    tree_->setHeaderHidden(true);
     tree_->setIconSize(QSize(kTreeIconExtent, kTreeIconExtent));
     tree_->setUniformRowHeights(false);
     tree_->setSelectionMode(QAbstractItemView::ExtendedSelection);
@@ -152,15 +153,22 @@ QDockWidget *MainWindow::addPanelDock(const QString &title, const QString &objec
     dock->setObjectName(objectName);
     setDockTitleIcon(dock, iconName);
     installDockAreaCollapseButton(dock, area);
+    auto *body = new QFrame(dock);
+    auto *bodyLayout = new QVBoxLayout(body);
+    body->setObjectName(QStringLiteral("dockBody"));
+    body->setAttribute(Qt::WA_StyledBackground, true);
+    bodyLayout->setContentsMargins(0, 0, 0, 0);
+    bodyLayout->setSpacing(0);
     if (scrollable) {
-        auto *scroll = new QScrollArea(dock);
+        auto *scroll = new QScrollArea(body);
         scroll->setWidgetResizable(true);
         scroll->setFrameShape(QFrame::NoFrame);
         scroll->setWidget(content);
-        dock->setWidget(scroll);
+        bodyLayout->addWidget(scroll);
     } else {
-        dock->setWidget(content);
+        bodyLayout->addWidget(content);
     }
+    dock->setWidget(body);
     addDockWidget(area, dock);
     dockWidgets_.push_back(dock);
     return dock;
@@ -660,9 +668,8 @@ void MainWindow::setupToolbar() {
     toolGroup->addAction(addTool(QStringLiteral("Lining"), QStringLiteral("lining"), QStringLiteral("ToolLining.xpm")));
     toolGroup->addAction(addTool(QStringLiteral("Bucket"), QStringLiteral("bucket"), QStringLiteral("ToolBucket.xpm")));
     selectTool->setChecked(true);
-    toolBar_->addSeparator();
-    QAction *placeTextAction = toolBar_->addAction(assetIcon(QStringLiteral("PropertyName.xpm")), QStringLiteral("Place Text"));
-    registerShortcutAction(placeTextAction, QStringLiteral("place_text"), QStringLiteral("Place Text"),
+    QAction *placeTextAction = toolBar_->addAction(assetIcon(QStringLiteral("PropertyName.xpm")), QStringLiteral("Text"));
+    registerShortcutAction(placeTextAction, QStringLiteral("place_text"), QStringLiteral("Text"),
                            QStringLiteral("PropertyName.xpm"));
     addAction(placeTextAction);
     connect(placeTextAction, &QAction::triggered, this, [this]() { placeTextDialog(); });
@@ -677,13 +684,22 @@ void MainWindow::applyToolbarStyle(bool vertical) {
     if (toolBar_ == nullptr) {
         return;
     }
+    auto *textAction = findChild<QAction *>(QStringLiteral("place_text"));
+    auto *textButton = textAction != nullptr
+        ? qobject_cast<QToolButton *>(toolBar_->widgetForAction(textAction)) : nullptr;
     const Qt::ToolBarArea targetArea = vertical ? Qt::LeftToolBarArea : Qt::TopToolBarArea;
+
     toolBar_->setAllowedAreas(targetArea);
     if (toolBarArea(toolBar_) != targetArea) {
         addToolBar(targetArea, toolBar_);
         positionToolSettings();
     }
     toolBar_->setToolButtonStyle(vertical ? Qt::ToolButtonIconOnly : Qt::ToolButtonTextBesideIcon);
+    if (textButton != nullptr) {
+        textButton->ensurePolished();
+        textButton->setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Fixed);
+        textButton->setMinimumWidth(textButton->sizeHint().width());
+    }
 }
 
 void MainWindow::importCarModel() {
@@ -837,6 +853,7 @@ void MainWindow::applyShortcutSettings(const QVector<ShortcutSettingsItem> &item
             layout->activate();
         }
         toolBar_->updateGeometry();
+        applyToolbarStyle(loadBehaviorSettings().verticalToolbar);
     }
 }
 
@@ -849,6 +866,7 @@ void MainWindow::applyTheme(UiTheme theme, bool save) {
         saveUiTheme(theme);
     }
     refreshThemedIcons();
+    applyToolbarStyle(loadBehaviorSettings().verticalToolbar);
     if (shapesBrowser_ != nullptr) {
         shapesBrowser_->refreshTheme();
     }
@@ -980,6 +998,7 @@ void MainWindow::refreshShortcutActionText(QAction *action,
         return;
     }
     action->setText(shortcutActionText(id, label, shortcut));
+    action->setIconText(shortcutButtonText(label, shortcut));
 }
 
 void MainWindow::showSettingsDialog() {

@@ -1,4 +1,5 @@
 #include "image_preprocess_dialog.h"
+#include "theme_manager.h"
 
 #include <QtCore>
 #include <QtWidgets>
@@ -715,10 +716,7 @@ void ImagePreprocessDialog::updateLineColorButton() {
         return;
     }
     lineColorButton_->setText(lineColor_.name(QColor::HexRgb).toUpper());
-    const QColor foreground = lineColor_.lightness() < 128 ? Qt::white : Qt::black;
-    lineColorButton_->setStyleSheet(
-        QStringLiteral("background-color: %1; color: %2;")
-            .arg(lineColor_.name(QColor::HexRgb), foreground.name(QColor::HexRgb)));
+    lineColorButton_->setStyleSheet(colorSwatchStyle(lineColor_));
 }
 
 void ImagePreprocessDialog::rebuildPaletteList() {

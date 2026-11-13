@@ -1,4 +1,5 @@
 #include "header_metadata_widget.h"
+#include "theme_manager.h"
 
 #include <QtCore>
 #include <QtMath>
@@ -36,7 +37,6 @@ HeaderMetadataWidget::HeaderMetadataWidget(QWidget *parent)
     publishedCheck_ = new QCheckBox(QStringLiteral("Published"), this);
     publishedCheck_->setChecked(false);
     publishedCheck_->setEnabled(false);
-    publishedCheck_->setStyleSheet(QStringLiteral("QCheckBox:disabled { color: palette(mid); }"));
     form->addRow(QString(), publishedCheck_);
     descriptionEdit_ = new QTextEdit(this);
     descriptionEdit_->setPlaceholderText(QStringLiteral("Description (published only)"));
@@ -96,9 +96,9 @@ void HeaderMetadataWidget::setMetadata(
     publishedCheck_->setChecked(seed.published);
     descriptionEdit_->setPlainText(seed.description);
     targetCar_->setText(targetCar.isEmpty() ? QStringLiteral("Not set") : targetCar);
-    targetCar_->setStyleSheet(
+    setUiState(targetCar_,
         !targetCar.isEmpty() && !targetCarSupported
-            ? QStringLiteral("color: rgb(255, 213, 79);")
+            ? QStringLiteral("warning")
             : QString());
 
     nameEdit_->setEnabled(hasProject);

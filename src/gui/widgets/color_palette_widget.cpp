@@ -1,6 +1,7 @@
 #include "color_palette_widget.h"
 
 #include "gui_constants.h"
+#include "theme_manager.h"
 
 #include <QtGui>
 #include <QtWidgets>
@@ -10,18 +11,8 @@
 namespace gui {
 namespace {
 
-constexpr int kSwatchSize = 28;
+constexpr int kSwatchSize = kUiControlHeight;
 constexpr int kSwatchesPerRow = 6;
-
-QString swatchStyle(const QColor &color) {
-    const QColor text = color.lightness() < 128 ? QColor(255, 255, 255) : QColor(32, 34, 37);
-    return QStringLiteral("QPushButton { background-color: rgba(%1,%2,%3,%4); color: %5; border: 1px solid palette(mid); }")
-        .arg(color.red())
-        .arg(color.green())
-        .arg(color.blue())
-        .arg(color.alpha())
-        .arg(text.name(QColor::HexRgb));
-}
 
 class SwatchButton final : public QPushButton {
 public:
@@ -48,8 +39,11 @@ ColorPaletteWidget::ColorPaletteWidget(QWidget *parent)
     grid_->setSpacing(6);
 
     addButton_ = new QPushButton(QStringLiteral("+"), this);
+    addButton_->setObjectName(QStringLiteral("saveSwatchButton"));
+    addButton_->setProperty("uiSquareButton", true);
     addButton_->setFixedSize(kSwatchSize, kSwatchSize);
     addButton_->setToolTip(QStringLiteral("Save selected color"));
+    addButton_->setAccessibleName(addButton_->toolTip());
     connect(addButton_, &QPushButton::clicked, this, [this]() { addCurrentColor(); });
 
     rebuild();
@@ -105,9 +99,10 @@ void ColorPaletteWidget::rebuild() {
     for (int i = 0; i < swatchCount; ++i) {
         const Color color = swatches_->at(i);
         auto *button = new SwatchButton(this);
+        button->setProperty("uiSquareButton", true);
         button->setFixedSize(kSwatchSize, kSwatchSize);
         button->setToolTip(toQColor(color).name(QColor::HexArgb).toUpper());
-        button->setStyleSheet(swatchStyle(toQColor(color)));
+        button->setStyleSheet(colorSwatchStyle(toQColor(color)));
         button->middleClickCallback = [this, i]() { removeSwatch(i); };
         connect(button, &QPushButton::clicked, this, [this, color]() {
             if (applyColorCallback_ != nullptr) {

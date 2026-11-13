@@ -1,6 +1,7 @@
 #include "dock_chrome.h"
 
 #include "gui_assets.h"
+#include "theme_manager.h"
 
 #include <QtCore>
 #include <QtGui>
@@ -12,16 +13,78 @@ namespace {
 constexpr const char *kDockIconNameProperty = "flsDockIconName";
 constexpr const char *kDockIconLabelProperty = "flsDockIconLabel";
 constexpr const char *kDockTitleLayoutProperty = "flsDockTitleLayout";
+constexpr int kDockIconExtent = 16;
+constexpr int kDockTitleVerticalMargin = 3;
+constexpr int kDockGlyphInset = 6;
+constexpr double kDockGlyphStrokeWidth = 1.5;
 
-QToolButton *dockTitleButton(QWidget *parent, QStyle::StandardPixmap icon, const QString &toolTip) {
-    auto *button = new QToolButton(parent);
-    button->setAutoRaise(true);
-    button->setFixedSize(18, 18);
-    button->setIcon(parent->style()->standardIcon(icon));
-    button->setToolTip(toolTip);
+enum class DockGlyph { Close, PopOut, Left, Right, Up, Down };
 
-    return button;
-}
+class DockTitleButton final : public QToolButton {
+public:
+    DockTitleButton(QWidget *parent, DockGlyph glyph, const QString &toolTip)
+        : QToolButton(parent), glyph_(glyph) {
+        setAutoRaise(false);
+        setProperty("uiDockButton", true);
+        setFixedSize(kUiCompactControlExtent, kUiCompactControlExtent);
+        setFocusPolicy(Qt::NoFocus);
+        setToolTip(toolTip);
+        setAccessibleName(toolTip);
+    }
+
+    QSize sizeHint() const override {
+        return QSize(kUiCompactControlExtent, kUiCompactControlExtent);
+    }
+
+    QSize minimumSizeHint() const override {
+        return sizeHint();
+    }
+
+    void setGlyph(DockGlyph glyph) {
+        if (glyph_ == glyph) {
+            return;
+        }
+        glyph_ = glyph;
+        update();
+    }
+
+protected:
+    void paintEvent(QPaintEvent *) override {
+        QStyleOptionToolButton option;
+        QPainter painter(this);
+        const UiColors colors = uiColors(currentUiTheme());
+        const QRectF glyphArea = QRectF(rect()).adjusted(
+            kDockGlyphInset, kDockGlyphInset, -kDockGlyphInset, -kDockGlyphInset);
+
+        initStyleOption(&option);
+        option.icon = QIcon();
+        option.text.clear();
+        style()->drawComplexControl(QStyle::CC_ToolButton, &option, &painter, this);
+        painter.setRenderHint(QPainter::Antialiasing);
+        painter.setPen(QPen(isEnabled() ? colors.text : colors.disabledText,
+                            kDockGlyphStrokeWidth, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        painter.setBrush(Qt::NoBrush);
+        if (glyph_ == DockGlyph::Close) {
+            painter.drawLine(glyphArea.topLeft(), glyphArea.bottomRight());
+            painter.drawLine(glyphArea.bottomLeft(), glyphArea.topRight());
+        } else if (glyph_ == DockGlyph::PopOut) {
+            painter.drawLine(glyphArea.bottomLeft(), glyphArea.topRight());
+            painter.drawPolyline(QPolygonF{glyphArea.topLeft(), glyphArea.topRight(), glyphArea.bottomRight()});
+        } else {
+            QTransform transform;
+            const QPolygonF chevron{QPointF(-0.25, -0.4), QPointF(0.25, 0.0), QPointF(-0.25, 0.4)};
+            const double rotation = glyph_ == DockGlyph::Down ? 90.0
+                : glyph_ == DockGlyph::Left ? 180.0 : glyph_ == DockGlyph::Up ? 270.0 : 0.0;
+            transform.translate(glyphArea.center().x(), glyphArea.center().y());
+            transform.rotate(rotation);
+            transform.scale(glyphArea.width(), glyphArea.height());
+            painter.drawPolyline(transform.map(chevron));
+        }
+    }
+
+private:
+    DockGlyph glyph_;
+};
 
 } // namespace
 
@@ -34,30 +97,51 @@ void setDockTitleIcon(QDockWidget *dock, const QString &iconName) {
     dock->setProperty(kDockIconNameProperty, iconName);
 
     auto *titleBar = new QWidget(dock);
+    titleBar->setObjectName(QStringLiteral("dockHeader"));
+    titleBar->setAttribute(Qt::WA_StyledBackground, true);
+    titleBar->setProperty("panelFocused", false);
+    titleBar->setMinimumHeight(kUiHeaderHeight);
+    titleBar->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
     auto *layout = new QHBoxLayout(titleBar);
-    layout->setContentsMargins(6, 2, 4, 2);
-    layout->setSpacing(5);
+    layout->setContentsMargins(kUiSpacing, kDockTitleVerticalMargin,
+                               kUiSpacing, kDockTitleVerticalMargin);
+    layout->setSpacing(kUiSpacing);
     titleBar->setProperty(kDockTitleLayoutProperty, QVariant::fromValue<QObject *>(layout));
 
     auto *iconLabel = new QLabel(titleBar);
-    iconLabel->setFixedSize(18, 18);
-    iconLabel->setPixmap(icon.pixmap(16, 16));
+    iconLabel->setFixedSize(kUiCompactControlExtent, kUiCompactControlExtent);
+    iconLabel->setAlignment(Qt::AlignCenter);
+    iconLabel->setPixmap(icon.pixmap(kDockIconExtent, kDockIconExtent));
     iconLabel->setObjectName(QStringLiteral("DockTitleIconLabel"));
     iconLabel->setAttribute(Qt::WA_TransparentForMouseEvents);
     layout->addWidget(iconLabel);
     dock->setProperty(kDockIconLabelProperty, QVariant::fromValue<QObject *>(iconLabel));
 
     auto *titleLabel = new QLabel(dock->windowTitle(), titleBar);
+    titleLabel->setObjectName(QStringLiteral("dockTitle"));
+    titleLabel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     titleLabel->setAttribute(Qt::WA_TransparentForMouseEvents);
+    QObject::connect(dock, &QDockWidget::windowTitleChanged, titleLabel, &QLabel::setText);
     layout->addWidget(titleLabel, 1);
+    QObject::connect(qApp, &QApplication::focusChanged, titleBar,
+                     [dock, titleBar](QWidget *, QWidget *focused) {
+        const bool active = focused != nullptr && (focused == dock || dock->isAncestorOf(focused));
+        if (titleBar->property("panelFocused").toBool() == active) {
+            return;
+        }
+        titleBar->setProperty("panelFocused", active);
+        titleBar->style()->unpolish(titleBar);
+        titleBar->style()->polish(titleBar);
+        titleBar->update();
+    });
 
-    auto *floatButton = dockTitleButton(titleBar, QStyle::SP_TitleBarNormalButton, QStringLiteral("Float"));
+    auto *floatButton = new DockTitleButton(titleBar, DockGlyph::PopOut, QStringLiteral("Float"));
     QObject::connect(floatButton, &QToolButton::clicked, dock, [dock]() {
         dock->setFloating(!dock->isFloating());
     });
     layout->addWidget(floatButton);
 
-    auto *closeButton = dockTitleButton(titleBar, QStyle::SP_TitleBarCloseButton, QStringLiteral("Close"));
+    auto *closeButton = new DockTitleButton(titleBar, DockGlyph::Close, QStringLiteral("Close"));
     QObject::connect(closeButton, &QToolButton::clicked, dock, &QDockWidget::hide);
     layout->addWidget(closeButton);
 
@@ -77,21 +161,7 @@ QToolButton *addDockAreaCollapseButton(QDockWidget *dock) {
         return nullptr;
     }
 
-    auto *button = new QToolButton(titleBar);
-    button->setAutoRaise(false);
-    button->setFixedSize(22, 18);
-    button->setFocusPolicy(Qt::NoFocus);
-    button->setToolTip(QStringLiteral("Collapse dock area"));
-    button->setStyleSheet(QStringLiteral(
-        "QToolButton {"
-        " border: 1px solid palette(mid);"
-        " border-radius: 3px;"
-        " padding: 0px;"
-        " font-weight: 700;"
-        "}"
-        "QToolButton:hover {"
-        " background: palette(button);"
-        "}"));
+    auto *button = new DockTitleButton(titleBar, DockGlyph::Left, QStringLiteral("Collapse dock area"));
     layout->insertWidget(0, button);
     return button;
 }
@@ -118,6 +188,14 @@ void configureDockAreaCollapseButton(QToolButton *button, Qt::DockWidgetArea are
     button->setIcon(QIcon());
     button->setText(dockAreaCollapseText(area, collapsed));
     button->setToolTip(collapsed ? QStringLiteral("Restore dock area") : QStringLiteral("Collapse dock area"));
+    button->setAccessibleName(button->toolTip());
+    if (auto *titleButton = dynamic_cast<DockTitleButton *>(button)) {
+        const QString text = dockAreaCollapseText(area, collapsed);
+        const DockGlyph glyph = text == QStringLiteral(">") ? DockGlyph::Right
+            : text == QStringLiteral("^") ? DockGlyph::Up
+            : text == QStringLiteral("v") ? DockGlyph::Down : DockGlyph::Left;
+        titleButton->setGlyph(glyph);
+    }
 }
 
 void refreshDockTitleIcon(QDockWidget *dock) {
@@ -128,15 +206,25 @@ void refreshDockTitleIcon(QDockWidget *dock) {
     if (iconName.isEmpty()) {
         return;
     }
+    const QIcon previousIcon = dock->windowIcon();
     const QIcon icon = assetIcon(iconName);
     dock->setWindowIcon(icon);
+    if (QWidget *owner = dock->parentWidget()) {
+        for (QTabBar *tabs : owner->findChildren<QTabBar *>()) {
+            for (int index = 0; index < tabs->count(); ++index) {
+                if (tabs->tabIcon(index).cacheKey() == previousIcon.cacheKey()) {
+                    tabs->setTabIcon(index, icon);
+                }
+            }
+        }
+    }
     QObject *stored = dock->property(kDockIconLabelProperty).value<QObject *>();
     auto *label = qobject_cast<QLabel *>(stored);
     if (label == nullptr && dock->titleBarWidget() != nullptr) {
         label = dock->titleBarWidget()->findChild<QLabel *>(QStringLiteral("DockTitleIconLabel"));
     }
     if (label != nullptr) {
-        label->setPixmap(icon.pixmap(16, 16));
+        label->setPixmap(icon.pixmap(kDockIconExtent, kDockIconExtent));
     }
 }
 

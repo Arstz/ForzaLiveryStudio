@@ -9,6 +9,7 @@
 #include "paint_database.h"
 #include "paint_color_popup.h"
 #include "scene_view.h"
+#include "theme_manager.h"
 #include "zip_extract.h"
 
 #include <QActionGroup>
@@ -1120,56 +1121,20 @@ CarPreviewWidget::CarPreviewWidget(QWidget *parent)
     setFocusPolicy(Qt::StrongFocus);
 
     referenceNote_ = new QLabel(QStringLiteral("Only for reference, ingame render may differ"), this);
+    referenceNote_->setObjectName(QStringLiteral("previewReference"));
     referenceNote_->setAttribute(Qt::WA_TransparentForMouseEvents);
-    referenceNote_->setStyleSheet(QStringLiteral(
-        "QLabel {"
-        " color: rgba(235, 236, 240, 220);"
-        " background: rgba(0, 0, 0, 90);"
-        " border-radius: 3px;"
-        " padding: 2px 6px;"
-        " font-size: 10px;"
-        "}"));
     referenceNote_->move(8, 6);
     referenceNote_->adjustSize();
     referenceNote_->raise();
 
     modelStatus_ = new QLabel(this);
+    modelStatus_->setObjectName(QStringLiteral("previewStatus"));
     modelStatus_->setAttribute(Qt::WA_TransparentForMouseEvents);
     modelStatus_->setAlignment(Qt::AlignCenter);
-    modelStatus_->setStyleSheet(QStringLiteral(
-        "QLabel {"
-        " color: rgba(235, 236, 240, 220);"
-        " background: rgba(0, 0, 0, 105);"
-        " border-radius: 4px;"
-        " padding: 6px 10px;"
-        "}"));
 
     sidePanel_ = new QFrame(this);
     sidePanel_->setObjectName(QStringLiteral("previewSidePanel"));
     sidePanel_->setAttribute(Qt::WA_StyledBackground, true);
-    sidePanel_->setStyleSheet(QStringLiteral(
-        "QFrame#previewSidePanel {"
-        " background: rgba(24, 25, 29, 246);"
-        " border-left: 1px solid rgba(255, 255, 255, 42);"
-        "}"
-        "QLabel { color: rgb(235, 236, 240); }"
-        "QLabel[secondary=\"true\"] { color: rgba(220, 222, 228, 155); }"
-        "QPushButton { text-align: left; padding: 5px 7px; }"
-        "QPushButton#previewClearPaint {"
-        " color: rgba(230, 232, 236, 190);"
-        " background: transparent;"
-        " border: 1px solid rgba(255, 255, 255, 42);"
-        " border-radius: 3px;"
-        " padding: 3px 9px;"
-        " text-align: center;"
-        "}"
-        "QPushButton#previewClearPaint:hover {"
-        " color: rgb(245, 246, 248);"
-        " background: rgba(255, 255, 255, 14);"
-        "}"
-        "QComboBox { padding: 5px 7px; }"
-        "QScrollArea { background: transparent; border: 0; }"
-        "QScrollArea > QWidget > QWidget { background: transparent; }"));
 
     auto *panelLayout = new QVBoxLayout(sidePanel_);
     panelLayout->setContentsMargins(0, 0, 0, 0);
@@ -1184,26 +1149,15 @@ CarPreviewWidget::CarPreviewWidget(QWidget *parent)
     scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     colorsPage_ = new QWidget(scroll);
     colorsLayout_ = new QVBoxLayout(colorsPage_);
-    colorsLayout_->setContentsMargins(12, 10, 12, 12);
-    colorsLayout_->setSpacing(10);
+    colorsLayout_->setContentsMargins(kUiMargin, kUiMargin, kUiMargin, kUiMargin);
+    colorsLayout_->setSpacing(kUiSpacing);
     scroll->setWidget(colorsPage_);
     panelLayout->addWidget(scroll, 1);
 
     sidePanelToggle_ = new QToolButton(this);
     sidePanelToggle_->setObjectName(QStringLiteral("previewSidePanelToggle"));
     sidePanelToggle_->setFocusPolicy(Qt::NoFocus);
-    sidePanelToggle_->setFixedSize(29, 32);
-    sidePanelToggle_->setStyleSheet(QStringLiteral(
-        "QToolButton#previewSidePanelToggle {"
-        " color: rgb(235, 236, 240);"
-        " background: rgba(24, 25, 29, 246);"
-        " border: 1px solid rgba(255, 255, 255, 42);"
-        " border-radius: 4px;"
-        " font-size: 16px;"
-        "}"
-        "QToolButton#previewSidePanelToggle:hover {"
-        " background: rgba(54, 57, 64, 250);"
-        "}"));
+    sidePanelToggle_->setFixedSize(kUiHeaderHeight, kUiHeaderHeight);
     connect(sidePanelToggle_, &QToolButton::clicked, this, [this]() {
         setSidePanelVisible(!sidePanelVisible_);
     });
@@ -1745,7 +1699,7 @@ void CarPreviewWidget::rebuildColorsPanel() {
             auto *button = new QPushButton(secondary ? QStringLiteral("Secondary") : QStringLiteral("Primary"), row);
             button->setObjectName((secondary ? QStringLiteral("paintSecondary.") : QStringLiteral("paintPrimary.")) + slot.name);
             button->setAccessibleName(slot.name + (secondary ? QStringLiteral(" secondary color") : QStringLiteral(" primary color")));
-            button->setFixedHeight(29);
+            button->setFixedHeight(kUiControlHeight);
             button->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
             layout->addWidget(button);
             connect(button, &QPushButton::clicked, this, [this, slot, secondary, button]() { chooseSlotColor(slot, secondary, button); });

@@ -1,5 +1,7 @@
 #include "paint_color_popup.h"
 
+#include "theme_manager.h"
+
 #include <QGridLayout>
 #include <QHideEvent>
 #include <QKeyEvent>
@@ -26,8 +28,7 @@ constexpr int kColorMaximum = 255;
 constexpr int kHueMaximum = 359;
 constexpr int kPercentMaximum = 100;
 constexpr int kPresetColumns = 8;
-constexpr int kPresetSize = 27;
-constexpr double kLabelValueThreshold = 0.5;
+constexpr int kPresetSize = kUiControlHeight;
 
 void addPresets(QVBoxLayout *layout, const QString &title, const QString &prefix,
                 const QVector<PaintColorPreset> &presets, PaintColorPopup *popup) {
@@ -46,6 +47,7 @@ void addPresets(QVBoxLayout *layout, const QString &title, const QString &prefix
     for (qsizetype index = 0; index < presets.size(); ++index) {
         const PaintColorPreset &preset = presets[index];
         auto *button = new QPushButton(content);
+        button->setProperty("uiSquareButton", true);
         button->setObjectName(prefix + QString::number(index));
         button->setFixedSize(kPresetSize, kPresetSize);
         button->setToolTip(preset.name + QLatin1Char('\n') + preset.color.name(QColor::HexRgb).toUpper());
@@ -126,10 +128,7 @@ private:
 
 void stylePaintColorButton(QWidget *button, const QColor &color) {
     if (button->property("paintColor").value<QColor>() == color) return;
-    const QColor foreground(color.valueF() > kLabelValueThreshold ? Qt::black : Qt::white);
-    button->setStyleSheet(QStringLiteral(
-        "background-color: %1; color: %2; border: 1px solid #777; border-radius: 3px; padding: 5px; text-align: center;")
-        .arg(color.name(QColor::HexRgb), foreground.name(QColor::HexRgb)));
+    button->setStyleSheet(colorSwatchStyle(color));
     button->setProperty("paintColor", color);
 }
 
@@ -147,10 +146,6 @@ PaintColorPopup::PaintColorPopup(const QColor &color, const QVector<PaintColorPr
     hueSlider_ = new QSlider(Qt::Horizontal, this);
     hueSlider_->setObjectName(QStringLiteral("paintColorHueSlider"));
     hueSlider_->setRange(0, kHueMaximum);
-    hueSlider_->setStyleSheet(QStringLiteral(
-        "QSlider::groove:horizontal { height: 14px; background: qlineargradient(x1:0,y1:0,x2:1,y2:0,"
-        "stop:0 red,stop:0.1667 yellow,stop:0.3333 lime,stop:0.5 cyan,stop:0.6667 blue,stop:0.8333 magenta,stop:1 red); }"
-        "QSlider::handle:horizontal { width: 7px; background: transparent; border: 2px solid white; margin: -3px 0; }"));
     layout->addWidget(hueSlider_);
     auto *fields = new QGridLayout;
     fields->addWidget(new QLabel(QStringLiteral("Hex"), this), 0, 0);

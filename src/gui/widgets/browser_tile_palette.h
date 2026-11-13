@@ -1,6 +1,6 @@
 #pragma once
 
-#include <QColor>
+#include "theme_manager.h"
 
 namespace gui {
 
@@ -14,13 +14,15 @@ struct BrowserTilePalette {
 };
 
 inline BrowserTilePalette browserTilePalette(bool dark) {
+    const UiColors colors = uiColors(dark ? UiTheme::Dark : UiTheme::Light);
+
     return {
-        dark ? QColor(34, 34, 34) : QColor(232, 235, 240),
-        dark ? QColor(42, 42, 42) : QColor(218, 223, 231),
-        dark ? QColor(68, 68, 68) : QColor(145, 153, 166),
-        dark ? QColor(119, 119, 119) : QColor(96, 107, 124),
-        dark ? QColor(21, 21, 21) : QColor(248, 249, 251),
-        dark ? QColor(238, 238, 238) : QColor(32, 34, 37),
+        colors.secondary,
+        colors.hover,
+        colors.border,
+        colors.focus,
+        colors.contrast,
+        colors.text,
     };
 }
 

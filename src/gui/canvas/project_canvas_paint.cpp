@@ -20,7 +20,7 @@ void drawFillMessageBubble(QPainter &painter, const QRect &canvasRect, const QSt
     bubble.moveCenter(canvasRect.center());
     painter.setPen(QPen(QColor(235, 235, 235), 1));
     painter.setBrush(QColor(25, 27, 31, 220));
-    painter.drawRoundedRect(bubble, 6, 6);
+    painter.drawRoundedRect(bubble, kUiCornerRadius, kUiCornerRadius);
     painter.drawText(bubble, Qt::AlignCenter, message);
 }
 
@@ -349,7 +349,6 @@ constexpr double kVisibilityBorderLineWidth = 1.0;
 const QColor kCursorHintBorderColor(0, 0, 0, 180);
 const QColor kCursorHintFillColor(20, 20, 22, 210);
 const QColor kCursorHintTextColor(245, 246, 248);
-constexpr double kCursorHintCornerRadius = 4.0;
 constexpr int kCursorHintPaddingX = 8;
 constexpr int kCursorHintPaddingY = 6;
 constexpr double kCursorHintCursorOffset = 18.0;
@@ -467,8 +466,7 @@ void ProjectCanvas::drawCursorHint(QPainter &painter) {
         hintPainter.setPen(QPen(kCursorHintBorderColor, 1));
         hintPainter.setBrush(kCursorHintFillColor);
         hintPainter.drawRoundedRect(QRectF(0.0, sectionY, hintSize.width(), sectionHeight),
-                                    kCursorHintCornerRadius,
-                                    kCursorHintCornerRadius);
+                                    kUiCornerRadius, kUiCornerRadius);
         hintPainter.setPen(kCursorHintTextColor);
         int textY = sectionY + paddingY;
         for (const QString &line : lines) {

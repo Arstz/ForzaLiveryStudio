@@ -20,9 +20,6 @@ struct SettingTip {
 
 using SettingTips = QHash<QString, SettingTip>;
 
-constexpr auto kShortcutConflictStyle =
-    "QLineEdit { border: 2px solid #d9534f; }";
-
 class ImmediateToolTipButton final : public QToolButton {
 public:
     using QToolButton::QToolButton;
@@ -50,8 +47,7 @@ void setShortcutConflictStyle(QKeySequenceEdit *edit, bool conflict) {
     QWidget *target = field != nullptr
         ? static_cast<QWidget *>(field)
         : static_cast<QWidget *>(edit);
-    target->setStyleSheet(
-        conflict ? QString::fromLatin1(kShortcutConflictStyle) : QString());
+    setUiState(target, conflict ? QStringLiteral("error") : QString());
 }
 
 void updateColorButton(QPushButton *button,
@@ -62,11 +58,7 @@ void updateColorButton(QPushButton *button,
     }
     button->setEnabled(customEnabled);
     button->setText(color.name(QColor::HexRgb).toUpper());
-    button->setStyleSheet(QStringLiteral("background-color: %1; color: %2;")
-                              .arg(color.name(QColor::HexRgb),
-                                   color.lightness() < 128
-                                       ? QStringLiteral("#ffffff")
-                                       : QStringLiteral("#202225")));
+    button->setStyleSheet(colorSwatchStyle(color));
 }
 
 SettingTips loadSettingTips() {
@@ -481,7 +473,7 @@ SettingsDialog::SettingsDialog(UiTheme theme,
     auto *resetAll = new QPushButton(QStringLiteral("Reset All"), resetControls);
     validationLabel_ = new QLabel(resetControls);
     validationLabel_->setWordWrap(true);
-    validationLabel_->setStyleSheet(QStringLiteral("color: #d07070;"));
+    setUiState(validationLabel_, QStringLiteral("error"));
     resetLayout->setContentsMargins(0, 0, 0, 0);
     resetLayout->setSpacing(8);
     resetLayout->addWidget(validationLabel_, 1);

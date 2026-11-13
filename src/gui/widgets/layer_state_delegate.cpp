@@ -3,6 +3,7 @@
 #include "editor_state.h"
 #include "gui_assets.h"
 #include "layer_tree_model.h"
+#include "theme_manager.h"
 
 #include <QtCore>
 #include <QtGui>
@@ -80,7 +81,7 @@ LayerStateDelegate::LayerStateDelegate(EditorState *state, QObject *parent)
 void LayerStateDelegate::paint(QPainter *painter, const QStyleOptionViewItem &option, const QModelIndex &index) const {
     const bool isGuide = index.data(LayerTreeModel::IsGuideRole).toBool();
     if (isGuide && !(option.state & QStyle::State_Selected)) {
-        painter->fillRect(option.rect, QColor(0x9c, 0x85, 0x5a));
+        painter->fillRect(option.rect, uiColors(currentUiTheme()).guide);
     }
     QStyleOptionViewItem itemOption(option);
     const bool isContour = index.data(LayerTreeModel::IsContourRole).toBool();

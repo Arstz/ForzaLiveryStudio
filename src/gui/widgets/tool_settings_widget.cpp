@@ -1,4 +1,5 @@
 #include "tool_settings_widget.h"
+#include "theme_manager.h"
 
 #include <QtWidgets>
 #include <algorithm>
@@ -7,7 +8,7 @@
 namespace gui {
 namespace {
 
-constexpr int kOptionSpacing = 6;
+constexpr int kOptionSpacing = kUiSpacing;
 constexpr int kFieldSpacing = 4;
 constexpr int kSliderWidth = 60;
 
@@ -16,7 +17,7 @@ constexpr int kSliderWidth = 60;
 ToolSettingsWidget::ToolSettingsWidget(QWidget *parent) : QWidget(parent) {
     setObjectName(QStringLiteral("ToolSettings"));
     layout_ = new QHBoxLayout(this);
-    layout_->setContentsMargins(kFieldSpacing, 1, kFieldSpacing, 1);
+    layout_->setContentsMargins(kFieldSpacing, 0, kFieldSpacing, 0);
     layout_->setSpacing(kOptionSpacing);
     addNumber(QStringLiteral("bucketTolerance"), QStringLiteral("Tolerance"), 0, 255, 0, 1, {QStringLiteral("bucket")});
     addCheck(QStringLiteral("moveToolAutoSelect"), QStringLiteral("Auto Select"), {QStringLiteral("move")});
@@ -43,7 +44,12 @@ QSize ToolSettingsWidget::sizeHint() const {
     const auto margins = layout_->contentsMargins();
     int height = 0;
     for (auto it = tools_.cbegin(); it != tools_.cend(); ++it) {
-        height = std::max(height, it.key()->sizeHint().height());
+        if (!it.key()->isHidden()) {
+            height = std::max(height, it.key()->sizeHint().height());
+        }
+    }
+    if (height > 0) {
+        height = std::max(height, kUiControlHeight);
     }
     size.setHeight(height + margins.top() + margins.bottom());
 
@@ -61,6 +67,7 @@ void ToolSettingsWidget::setTool(const QString &tool) {
     for (auto it = tools_.cbegin(); it != tools_.cend(); ++it) {
         it.key()->setVisible(it.value().contains(tool));
     }
+    updateGeometry();
 }
 
 void ToolSettingsWidget::setValue(const QString &key, const QVariant &value) {
@@ -112,6 +119,7 @@ void ToolSettingsWidget::finishEditing() {
 
 void ToolSettingsWidget::addCheck(const QString &key, const QString &text, const QStringList &tools) {
     auto *check = new QCheckBox(text, this);
+    check->setProperty("uiCompactCheck", true);
     check->setFocusPolicy(Qt::NoFocus);
     registerField(key, check, check, tools);
     connect(check, &QCheckBox::toggled, this, [this, key](bool value) {

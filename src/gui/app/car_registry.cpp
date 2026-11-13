@@ -27,8 +27,6 @@
 namespace gui {
 namespace {
 
-const QColor kMissingModelColor(255, 165, 0);
-const QColor kAvailableModelColor(Qt::white);
 constexpr int kVersionsRole = Qt::UserRole + 1;
 constexpr int kAvailableVersionsRole = Qt::UserRole + 2;
 constexpr int kVersionSpacing = 10;
@@ -48,7 +46,10 @@ public:
         QStyle *style = widget != nullptr ? widget->style() : QApplication::style();
 
         if (index.column() == 0) {
-            if (available.isEmpty()) itemOption.palette.setColor(QPalette::HighlightedText, kMissingModelColor);
+            if (available.isEmpty()) {
+                itemOption.palette.setColor(QPalette::Text, uiColors(currentUiTheme()).warning);
+                itemOption.palette.setColor(QPalette::HighlightedText, uiColors(currentUiTheme()).warning);
+            }
             QStyledItemDelegate::paint(painter, itemOption, index);
             return;
         }
@@ -62,7 +63,8 @@ public:
         painter->setFont(itemOption.font);
         for (const QString &version : versions) {
             const int width = itemOption.fontMetrics.horizontalAdvance(version);
-            painter->setPen(available.contains(version) ? kAvailableModelColor : kMissingModelColor);
+            painter->setPen(available.contains(version)
+                ? itemOption.palette.color(QPalette::Text) : uiColors(currentUiTheme()).warning);
             painter->drawText(QRect(x, textRect.top(), width, textRect.height()), Qt::AlignLeft | Qt::AlignVCenter, version);
             x += width + kVersionSpacing;
         }
@@ -306,7 +308,6 @@ bool chooseCarModel(QWidget *parent, int currentId, int *outId) {
         item->setData(1, kAvailableVersionsRole, available);
         item->setToolTip(0, entry.name);
         item->setToolTip(1, versionTips.join(QLatin1Char('\n')));
-        if (available.isEmpty()) item->setForeground(0, kMissingModelColor);
         if (entry.id == currentId) {
             list->setCurrentItem(item);
         }

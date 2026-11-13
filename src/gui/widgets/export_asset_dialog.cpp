@@ -1,4 +1,5 @@
 #include "export_asset_dialog.h"
+#include "theme_manager.h"
 
 #include <QComboBox>
 #include <QCheckBox>
@@ -12,7 +13,6 @@
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
-#include <QPalette>
 #include <QPushButton>
 #include <QSettings>
 #include <QSignalBlocker>
@@ -26,8 +26,8 @@ namespace {
 
 constexpr int kDialogWidth = 640;
 constexpr int kDialogHeight = 400;
-constexpr int kLayoutMargin = 12;
-constexpr int kLayoutSpacing = 8;
+constexpr int kLayoutMargin = kUiMargin;
+constexpr int kLayoutSpacing = kUiSpacing;
 constexpr char kGeometrySettingsKey[] = "export/dialogGeometry";
 constexpr char kDescriptorSettingsKey[] = "export/wgsDescriptor";
 
@@ -134,9 +134,7 @@ public:
         maskWarning_->setTextFormat(Qt::PlainText);
         maskWarning_->setWordWrap(true);
         maskWarning_->setTextInteractionFlags(Qt::TextSelectableByMouse);
-        QPalette warningPalette = maskWarning_->palette();
-        warningPalette.setColor(QPalette::WindowText, Qt::yellow);
-        maskWarning_->setPalette(warningPalette);
+        setUiState(maskWarning_, QStringLiteral("warning"));
         layout->addWidget(maskWarning_);
         buttons_ = new QDialogButtonBox(QDialogButtonBox::Save | QDialogButtonBox::Cancel, this);
         buttons_->button(QDialogButtonBox::Save)->setText(QStringLiteral("Export"));

@@ -10,6 +10,7 @@
 #include <QString>
 
 class QApplication;
+class QWidget;
 
 namespace gui {
 
@@ -17,6 +18,35 @@ enum class UiTheme {
     Dark,
     Light,
 };
+
+inline constexpr int kUiCornerRadius = 0;
+inline constexpr int kUiControlHeight = 28;
+inline constexpr int kUiCompactControlExtent = 22;
+inline constexpr int kUiHeaderHeight = 30;
+inline constexpr int kUiSpacing = 6;
+inline constexpr int kUiMargin = 10;
+inline constexpr int kUiSplitterWidth = 4;
+
+struct UiColors {
+    QColor main;
+    QColor secondary;
+    QColor contrast;
+    QColor accent;
+    QColor focus;
+    QColor border;
+    QColor text;
+    QColor mutedText;
+    QColor disabledText;
+    QColor hover;
+    QColor selection;
+    QColor warning;
+    QColor error;
+    QColor guide;
+};
+
+UiColors uiColors(UiTheme theme);
+QString colorSwatchStyle(const QColor &color);
+void setUiState(QWidget *widget, const QString &state);
 
 enum class CanvasColorMode {
     ThemeDefault,
