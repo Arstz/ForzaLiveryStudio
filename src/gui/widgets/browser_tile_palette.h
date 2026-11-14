@@ -13,15 +13,15 @@ struct BrowserTilePalette {
     QColor label;
 };
 
-inline BrowserTilePalette browserTilePalette(bool dark) {
-    const UiColors colors = uiColors(dark ? UiTheme::Dark : UiTheme::Light);
+inline BrowserTilePalette browserTilePalette(UiTheme theme) {
+    const UiColors colors = uiColors(theme);
 
     return {
-        colors.secondary,
+        colors.browserBackground,
         colors.hover,
         colors.border,
         colors.focus,
-        colors.contrast,
+        colors.browserPreview,
         colors.text,
     };
 }

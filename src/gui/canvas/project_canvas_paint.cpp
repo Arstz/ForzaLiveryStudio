@@ -540,10 +540,10 @@ void ProjectCanvas::drawRulersAndGuidelines(QPainter &painter) {
         painter.restore();
     }
 
-    const bool dark = isDarkTheme(currentUiTheme());
-    const QColor rulerBackground = dark ? QColor(38, 40, 44) : QColor(229, 231, 234);
-    const QColor rulerDivider = dark ? QColor(83, 87, 94) : QColor(151, 155, 162);
-    const QColor rulerText = dark ? QColor(216, 219, 224) : QColor(45, 48, 53);
+    const UiColors colors = uiColors(currentUiTheme());
+    const QColor rulerBackground = colors.rulerBackground;
+    const QColor rulerDivider = colors.rulerDivider;
+    const QColor rulerText = colors.rulerText;
     painter.fillRect(QRectF(0.0, 0.0, width(), kRulerExtent), rulerBackground);
     painter.fillRect(QRectF(0.0, kRulerExtent, kRulerExtent, height() - kRulerExtent), rulerBackground);
     painter.setPen(QPen(rulerDivider, 1.0));

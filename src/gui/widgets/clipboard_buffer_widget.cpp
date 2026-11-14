@@ -62,12 +62,17 @@ void ClipboardBufferWidget::setClipboard(const ProjectClipboard *clipboard) {
 }
 
 void ClipboardBufferWidget::setPreviewBackground(const PreviewBackground &background, UiTheme theme) {
+    const UiColors colors = uiColors(theme);
+
     if (previewBackground_.mode == background.mode
-        && previewBackground_.custom == background.custom && theme_ == theme) {
+        && previewBackground_.custom == background.custom && theme_ == theme
+        && previewBase_ == colors.preview && previewAlternate_ == colors.checkerboard) {
         return;
     }
     previewBackground_ = background;
     theme_ = theme;
+    previewBase_ = colors.preview;
+    previewAlternate_ = colors.checkerboard;
     update();
 }
 

@@ -391,12 +391,11 @@ private:
                        const QModelIndex &index,
                        bool expanded) const {
 
-        const bool dark = isDarkTheme(currentUiTheme());
         const bool hovered =
             option.state.testFlag(QStyle::State_MouseOver);
         const bool selected =
             option.state.testFlag(QStyle::State_Selected);
-        const BrowserTilePalette colors = browserTilePalette(dark);
+        const BrowserTilePalette colors = browserTilePalette(currentUiTheme());
         const QRect tileRect =
             option.rect.adjusted(
                 kGridMargin, kGridMargin,

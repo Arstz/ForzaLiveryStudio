@@ -11,13 +11,17 @@
     "hasTip": false,
     "tip": ""
   },
-  "theme.dark_canvas": {
-    "hasTip": false,
-    "tip": ""
+  "theme.canvas": {
+    "hasTip": true,
+    "tip": "Canvas background for the selected theme."
   },
-  "theme.light_canvas": {
-    "hasTip": false,
-    "tip": ""
+  "theme.color_role": {
+    "hasTip": true,
+    "tip": "Choose a shared UI color or a color for a specific UI part."
+  },
+  "theme.color_override": {
+    "hasTip": true,
+    "tip": "Override the selected color for this theme. Reset restores its theme default. Changes are previewed until Settings is accepted or canceled."
   },
   "theme.buffer_background": {
     "hasTip": true,

@@ -8,6 +8,8 @@ Small changes:
     -Remove save layout option, proceed saving on change
     -Adjust OpenGL background to be theme aware
     -Add toggle for wireframe in 2D canvas only (Group with show car UV unwrap to Option -> UV ->)
+    -Fix status bar height to 32 px
+    -Write "Shape Name (decimal_ID)" in Layers widget on new layer created
 
 Medium changes:
     -Discard shapes/logos per version

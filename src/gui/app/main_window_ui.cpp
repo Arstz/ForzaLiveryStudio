@@ -883,6 +883,10 @@ void MainWindow::applyTheme(UiTheme theme, bool save) {
     }
     if (canvas_ != nullptr) {
         canvas_->setCanvasColor(canvasColorForTheme(theme, loadCanvasColorSettings()));
+        canvas_->update();
+    }
+    if (carPreview_ != nullptr) {
+        carPreview_->update();
     }
     const PreviewBackgroundSettings previewBackgroundSettings = loadPreviewBackgroundSettings();
     if (clipboardWidget_ != nullptr) {
@@ -1001,12 +1005,14 @@ void MainWindow::refreshShortcutActionText(QAction *action,
 void MainWindow::showSettingsDialog() {
     const UiTheme originalTheme = theme_;
     const SystemIconSet originalIconSet = loadSystemIconSet();
+    const ThemeColorOverrides originalColors = themeColorOverrides();
     SettingsDialog dialog(theme_, loadCanvasColorSettings(), loadPreviewBackgroundSettings(),
                           loadBehaviorSettings(), shortcutSettingsItems(), this);
     dialog.setThemeChangedCallback([this](UiTheme theme) {
         applyTheme(theme, false);
     });
     if (dialog.exec() != QDialog::Accepted) {
+        setThemeColorOverrides(originalColors);
         applyTheme(originalTheme, false);
         return;
     }
@@ -1014,6 +1020,8 @@ void MainWindow::showSettingsDialog() {
     applyBehaviorSettings(dialog.selectedBehaviorSettings());
     saveCanvasColorSettings(dialog.selectedCanvasSettings());
     savePreviewBackgroundSettings(dialog.selectedPreviewBackgroundSettings());
+    setThemeColorOverrides(dialog.selectedThemeColorOverrides());
+    saveThemeColorOverrides();
     applyTheme(dialog.selectedTheme());
     const SystemIconSet selectedIconSet = dialog.selectedSystemIconSet();
     QString associationError;

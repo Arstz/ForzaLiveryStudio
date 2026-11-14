@@ -239,6 +239,7 @@ SettingsDialog::SettingsDialog(UiTheme theme,
                                QWidget *parent)
     : QDialog(parent)
     , canvasSettings_(canvasSettings)
+    , themeColorOverrides_(themeColorOverrides())
     , previewBackgroundSettings_(previewBackgroundSettings)
     , behaviorSettings_(behaviorSettings)
     , shortcuts_(shortcuts) {
@@ -297,13 +298,15 @@ SettingsDialog::SettingsDialog(UiTheme theme,
 
     SettingsPage themePage = createSettingsPage(pages);
     themeCombo_ = new QComboBox(themePage.widget);
-    themeCombo_->addItem(QStringLiteral("Dark"), themeSettingsValue(UiTheme::Dark));
-    themeCombo_->addItem(QStringLiteral("Light"), themeSettingsValue(UiTheme::Light));
-    themeCombo_->setCurrentIndex(theme == UiTheme::Light ? 1 : 0);
+    for (const UiThemeDefinition &definition : uiThemes()) {
+        themeCombo_->addItem(definition.name, definition.id);
+    }
+    themeCombo_->setCurrentIndex(themeCombo_->findData(themeSettingsValue(theme)));
     QObject::connect(themeCombo_, &QComboBox::currentIndexChanged, this, [this]() {
         if (themeChangedCallback_) {
             themeChangedCallback_(selectedTheme());
         }
+        updateThemeColorControls();
         updateCanvasColorControls();
         updatePreviewBackgroundControls();
     });
@@ -332,18 +335,45 @@ SettingsDialog::SettingsDialog(UiTheme theme,
 
         return row;
     };
-    addSettingRow(themePage, QStringLiteral("theme.dark_canvas"),
-                  QStringLiteral("Dark canvas"),
-                  makeColorRow(false, &darkCanvasMode_, &darkCanvasColorButton_,
-                      [this]() { updateCanvasColorControls(); },
-                      [this]() { chooseCanvasColor(UiTheme::Dark); }), tips);
-    addSettingRow(themePage, QStringLiteral("theme.light_canvas"),
-                  QStringLiteral("Light canvas"),
-                  makeColorRow(false, &lightCanvasMode_, &lightCanvasColorButton_,
-                      [this]() { updateCanvasColorControls(); },
-                      [this]() { chooseCanvasColor(UiTheme::Light); }), tips);
-    darkCanvasMode_->setCurrentIndex(canvasSettings_.darkMode == CanvasColorMode::Custom ? 1 : 0);
-    lightCanvasMode_->setCurrentIndex(canvasSettings_.lightMode == CanvasColorMode::Custom ? 1 : 0);
+    addSettingRow(themePage, QStringLiteral("theme.canvas"),
+                  QStringLiteral("Canvas"),
+                  makeColorRow(false, &canvasMode_, &canvasColorButton_,
+                      [this]() {
+                          canvasSettings_[selectedTheme()].mode = canvasMode_->currentData().toString() == QStringLiteral("custom")
+                              ? CanvasColorMode::Custom : CanvasColorMode::ThemeDefault;
+                          updateCanvasColorControls();
+                      },
+                      [this]() { chooseCanvasColor(); }), tips);
+
+    themeColorRole_ = new QComboBox(themePage.widget);
+    for (const UiColorRole &role : uiColorRoles()) {
+        themeColorRole_->addItem(role.label, role.id);
+    }
+    QObject::connect(themeColorRole_, &QComboBox::currentIndexChanged,
+                     this, [this]() { updateThemeColorControls(); });
+    addSettingRow(themePage, QStringLiteral("theme.color_role"),
+                  QStringLiteral("UI color"), themeColorRole_, tips);
+    auto *colorRow = new QWidget(themePage.widget);
+    auto *colorLayout = new QHBoxLayout(colorRow);
+    colorLayout->setContentsMargins(0, 0, 0, 0);
+    themeColorButton_ = new QPushButton(colorRow);
+    resetThemeColorButton_ = new QPushButton(QStringLiteral("Reset color"), colorRow);
+    resetThemeColorsButton_ = new QPushButton(QStringLiteral("Reset theme colors"), colorRow);
+    colorLayout->addWidget(themeColorButton_, 1);
+    colorLayout->addWidget(resetThemeColorButton_);
+    colorLayout->addWidget(resetThemeColorsButton_);
+    QObject::connect(themeColorButton_, &QPushButton::clicked, this, [this]() { chooseThemeColor(); });
+    QObject::connect(resetThemeColorButton_, &QPushButton::clicked, this, [this]() {
+        themeColorOverrides_[selectedTheme()].remove(themeColorRole_->currentData().toString());
+        previewThemeColors();
+    });
+    QObject::connect(resetThemeColorsButton_, &QPushButton::clicked, this, [this]() {
+        themeColorOverrides_.remove(selectedTheme());
+        previewThemeColors();
+    });
+    addSettingRow(themePage, QStringLiteral("theme.color_override"),
+                  QStringLiteral("Color override"), colorRow, tips);
+    updateThemeColorControls();
 
     addSettingRow(themePage, QStringLiteral("theme.buffer_background"),
                   QStringLiteral("Buffer background"),
@@ -546,19 +576,11 @@ UiTheme SettingsDialog::selectedTheme() const {
 }
 
 CanvasColorSettings SettingsDialog::selectedCanvasSettings() const {
-    CanvasColorSettings result = canvasSettings_;
-    result.darkMode = darkCanvasMode_->currentData().toString() == QStringLiteral("custom")
-        ? CanvasColorMode::Custom : CanvasColorMode::ThemeDefault;
-    result.lightMode = lightCanvasMode_->currentData().toString() == QStringLiteral("custom")
-        ? CanvasColorMode::Custom : CanvasColorMode::ThemeDefault;
-    if (!result.darkCustom.isValid()) {
-        result.darkCustom = defaultCanvasColor(UiTheme::Dark);
-    }
-    if (!result.lightCustom.isValid()) {
-        result.lightCustom = defaultCanvasColor(UiTheme::Light);
-    }
+    return canvasSettings_;
+}
 
-    return result;
+ThemeColorOverrides SettingsDialog::selectedThemeColorOverrides() const {
+    return themeColorOverrides_;
 }
 
 PreviewBackgroundSettings SettingsDialog::selectedPreviewBackgroundSettings() const {
@@ -648,25 +670,54 @@ void SettingsDialog::resetAllShortcuts() {
     }
 }
 
-void SettingsDialog::chooseCanvasColor(UiTheme theme) {
-    const QColor current = theme == UiTheme::Light
-        ? (canvasSettings_.lightCustom.isValid()
-               ? canvasSettings_.lightCustom : defaultCanvasColor(UiTheme::Light))
-        : (canvasSettings_.darkCustom.isValid()
-               ? canvasSettings_.darkCustom : defaultCanvasColor(UiTheme::Dark));
-    const QColor picked = QColorDialog::getColor(
-        current, this, QStringLiteral("Canvas Color"));
+void SettingsDialog::chooseCanvasColor() {
+    const UiTheme theme = selectedTheme();
+    const QColor custom = canvasSettings_.value(theme).custom;
+    const QColor current = custom.isValid() ? custom : defaultCanvasColor(theme);
+    const QColor picked = QColorDialog::getColor(current, this, QStringLiteral("Canvas Color"));
+
     if (!picked.isValid()) {
         return;
     }
-    if (theme == UiTheme::Light) {
-        canvasSettings_.lightCustom = picked;
-        lightCanvasMode_->setCurrentIndex(1);
-    } else {
-        canvasSettings_.darkCustom = picked;
-        darkCanvasMode_->setCurrentIndex(1);
-    }
+    canvasSettings_[theme].custom = picked;
+    canvasSettings_[theme].mode = CanvasColorMode::Custom;
     updateCanvasColorControls();
+}
+
+void SettingsDialog::chooseThemeColor() {
+    const UiColorRole &role = uiColorRoles().at(themeColorRole_->currentIndex());
+    const QColor current = uiColors(selectedTheme()).*role.member;
+    const QColor picked = QColorDialog::getColor(current, this, role.label, QColorDialog::ShowAlphaChannel);
+
+    if (!picked.isValid()) {
+        return;
+    }
+    themeColorOverrides_[selectedTheme()].insert(role.id, picked);
+    previewThemeColors();
+}
+
+void SettingsDialog::updateThemeColorControls() {
+    if (themeColorButton_ == nullptr) {
+        return;
+    }
+    const UiColorRole &role = uiColorRoles().at(themeColorRole_->currentIndex());
+    const QMap<QString, QColor> overrides = themeColorOverrides_.value(selectedTheme());
+    const QColor color = uiColors(selectedTheme()).*role.member;
+
+    updateColorButton(themeColorButton_, color, true);
+    themeColorButton_->setText(color.name(QColor::HexArgb).toUpper());
+    resetThemeColorButton_->setEnabled(overrides.contains(role.id));
+    resetThemeColorsButton_->setEnabled(!overrides.isEmpty());
+}
+
+void SettingsDialog::previewThemeColors() {
+    setThemeColorOverrides(themeColorOverrides_);
+    if (themeChangedCallback_) {
+        themeChangedCallback_(selectedTheme());
+    }
+    updateThemeColorControls();
+    updateCanvasColorControls();
+    updatePreviewBackgroundControls();
 }
 
 void SettingsDialog::choosePreviewBackgroundColor(bool buffer) {
@@ -699,15 +750,12 @@ void SettingsDialog::chooseGuidelineColor() {
 }
 
 void SettingsDialog::updateCanvasColorControls() {
-    const CanvasColorSettings settings = selectedCanvasSettings();
-    updateColorButton(darkCanvasColorButton_,
-                 settings.darkMode == CanvasColorMode::Custom
-                     ? settings.darkCustom : defaultCanvasColor(UiTheme::Dark),
-                 settings.darkMode == CanvasColorMode::Custom);
-    updateColorButton(lightCanvasColorButton_,
-                 settings.lightMode == CanvasColorMode::Custom
-                     ? settings.lightCustom : defaultCanvasColor(UiTheme::Light),
-                 settings.lightMode == CanvasColorMode::Custom);
+    const UiTheme theme = selectedTheme();
+    const CanvasColorPreference preference = canvasSettings_.value(theme);
+    const QSignalBlocker blocker(canvasMode_);
+    canvasMode_->setCurrentIndex(preference.mode == CanvasColorMode::Custom ? 1 : 0);
+    updateColorButton(canvasColorButton_, canvasColorForTheme(theme, canvasSettings_),
+                      preference.mode == CanvasColorMode::Custom);
     updateColorButton(guidelineColorButton_,
                  behaviorSettings_.guidelineColor.isValid()
                      ? behaviorSettings_.guidelineColor : QColor(0, 170, 255),

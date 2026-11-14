@@ -331,7 +331,7 @@ private:
     };
     QVector<ShortcutAction> shortcutActions_;
     QVector<IconAction> iconActions_;
-    UiTheme theme_ = UiTheme::Dark;
+    UiTheme theme_ = kDefaultUiTheme;
     bool haveLastSelectedShapeDefaults_ = false;
     std::array<quint8, 4> lastSelectedShapeColor_ = {255, 255, 255, 255};
     double lastSelectedShapeScaleX_ = 1.0;

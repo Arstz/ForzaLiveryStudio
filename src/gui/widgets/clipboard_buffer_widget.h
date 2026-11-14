@@ -30,7 +30,9 @@ private:
     const ProjectClipboard *clipboard_ = nullptr;
     ShapeGeometryStore geometry_;
     PreviewBackground previewBackground_;
-    UiTheme theme_ = UiTheme::Dark;
+    UiTheme theme_ = kDefaultUiTheme;
+    QColor previewBase_;
+    QColor previewAlternate_;
     bool geometryLoaded_ = false;
 };
 

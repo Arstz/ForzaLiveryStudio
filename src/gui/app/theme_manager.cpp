@@ -1,7 +1,12 @@
 #include "theme_manager.h"
+#include "gui_assets.h"
 
 #include <QApplication>
 #include <QIconEngine>
+#include <QFile>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QLinearGradient>
 #include <QMenu>
 #include <QPainter>
@@ -19,18 +24,20 @@
 namespace gui {
 namespace {
 
-UiTheme currentTheme = UiTheme::Dark;
+UiTheme currentTheme = kDefaultUiTheme;
+std::optional<ThemeColorOverrides> currentColorOverrides;
+QMap<UiTheme, UiColors> resolvedColors;
 
 constexpr double kGlyphStrokeWidth = 1.5;
 constexpr double kCheckStrokeWidth = 2.0;
 constexpr int kMenuIconExtent = 16;
-constexpr int kLightResizeHandleFactor = 105;
 constexpr int kSliderGrooveExtent = 6;
 constexpr int kSliderHandleExtent = 14;
 constexpr int kSliderHandleThickness = 20;
 constexpr int kSliderInset = 1;
 constexpr int kHueGrooveExtent = 14;
 constexpr double kOutlineWidth = 1.0;
+constexpr int kThemeSettingsVersion = 2;
 
 int checkBoxExtent(const QWidget *widget) {
     return widget != nullptr && widget->property("uiCompactCheck").toBool()
@@ -39,8 +46,7 @@ int checkBoxExtent(const QWidget *widget) {
 
 void drawResizeHandle(QPainter &painter, const QStyleOption &option) {
     const UiColors colors = uiColors(currentUiTheme());
-    const QColor background = currentUiTheme() == UiTheme::Light
-        ? colors.main.lighter(kLightResizeHandleFactor) : colors.contrast;
+    const QColor background = colors.resizeHandle;
     const QRect area = option.rect;
     const bool hovered = option.state.testFlag(QStyle::State_MouseOver);
     const bool pressed = option.state.testFlag(QStyle::State_Sunken);
@@ -199,7 +205,7 @@ public:
 
     void paint(QPainter *painter, const QRect &rect, QIcon::Mode mode, QIcon::State) override {
         const UiColors colors = uiColors(currentUiTheme());
-        const QColor foreground = mode == QIcon::Disabled ? colors.disabledText : colors.text;
+        const QColor foreground = mode == QIcon::Disabled ? colors.disabledText : colors.icon;
 
         if (direction_.has_value()) {
             drawArrow(*painter, rect, *direction_, foreground);
@@ -275,7 +281,7 @@ public:
             return;
         case PE_IndicatorTabClose:
             drawClose(*painter, option->rect,
-                      option->state.testFlag(State_Enabled) ? colors.text : colors.disabledText);
+                      option->state.testFlag(State_Enabled) ? colors.icon : colors.disabledText);
             return;
         case PE_IndicatorArrowUp:
         case PE_IndicatorSpinUp: direction = Qt::UpArrow; break;
@@ -287,7 +293,7 @@ public:
         }
         if (direction.has_value()) {
             drawArrow(*painter, option->rect, *direction,
-                      option->state.testFlag(State_Enabled) ? colors.text : colors.disabledText);
+                      option->state.testFlag(State_Enabled) ? colors.icon : colors.disabledText);
             return;
         }
 
@@ -404,7 +410,7 @@ QString themeStyleSheet(UiTheme theme) {
         QLabel[uiState="warning"] { color: @warning; }
         QLabel[uiState="error"] { color: @error; }
         QPushButton, QToolButton {
-            color: @text; background: @secondary;
+            color: @text; background: @buttonBackground;
             border: 1px solid @border; border-radius: @radiuspx;
             min-height: @fieldHeightpx; padding: 3px 8px;
         }
@@ -441,9 +447,9 @@ QString themeStyleSheet(UiTheme theme) {
         QCheckBox[uiCompactCheck="true"] { min-height: @compactControlpx; }
         QCheckBox[uiCompactCheck="true"]::indicator { width: @compactControlpx; height: @compactControlpx; }
         QLineEdit, QComboBox, QTextEdit, QPlainTextEdit, QAbstractSpinBox {
-            color: @text; background: @main; border: 1px solid @border;
+            color: @text; background: @editorBackground; border: 1px solid @border;
             border-radius: @radiuspx; padding: 3px 7px;
-            selection-background-color: @selection; selection-color: @text;
+            selection-background-color: @selection; selection-color: @selectedText;
         }
         QLineEdit, QComboBox, QAbstractSpinBox { min-height: @fieldHeightpx; }
         QComboBox, QAbstractSpinBox { padding-right: 22px; }
@@ -463,7 +469,7 @@ QString themeStyleSheet(UiTheme theme) {
         QPushButton[uiState="mixed"] { background: @contrast; color: @text; }
         QLineEdit[uiState="error"] { border-color: @error; }
         QAbstractSpinBox QLineEdit {
-            background: @main; border: none; border-radius: 0; padding: 0; min-height: 0;
+            background: @editorBackground; border: none; border-radius: 0; padding: 0; min-height: 0;
         }
         QComboBox::drop-down { subcontrol-origin: border; width: 20px; border: none; }
         QAbstractSpinBox::up-button, QAbstractSpinBox::down-button {
@@ -477,7 +483,7 @@ QString themeStyleSheet(UiTheme theme) {
         }
         QAbstractItemView {
             color: @text; background: @secondary; alternate-background-color: @main;
-            border: none; selection-background-color: @selection; selection-color: @text;
+            border: none; selection-background-color: @selection; selection-color: @selectedText;
             outline: 0;
         }
         QAbstractItemView[uiMainSurface="true"] { background: @main; alternate-background-color: @main; }
@@ -485,7 +491,7 @@ QString themeStyleSheet(UiTheme theme) {
             min-height: @fieldHeightpx; padding: 0 4px; border: 1px solid transparent; border-radius: 0;
         }
         QAbstractItemView::item:hover { background: @hover; }
-        QAbstractItemView::item:selected { background: @selection; color: @text; }
+        QAbstractItemView::item:selected { background: @selection; color: @selectedText; }
         QAbstractItemView::item:focus { border: 1px solid @focus; }
         QHeaderView::section {
             color: @text; background: @main; border: none;
@@ -504,13 +510,13 @@ QString themeStyleSheet(UiTheme theme) {
         QScrollBar::add-page, QScrollBar::sub-page { background: transparent; }
         QSlider:horizontal { min-height: @controlHeightpx; }
         QSlider:vertical { min-width: @controlHeightpx; }
-        QToolBar { background: @main; border: none; border-bottom: 1px solid @border; spacing: @spacingpx; padding: 3px; }
+        QToolBar { background: @toolbarBackground; border: none; border-bottom: 1px solid @border; spacing: @spacingpx; padding: 3px; }
         QToolBar#ToolSettingsBar { background: @secondary; margin: 0; padding: 1px; spacing: 0; }
         QScrollArea#ToolSettingsPanel, QWidget#ToolSettings { background: @secondary; margin: 0; padding: 0; }
         QScrollArea#ToolSettingsPanel > QWidget { background: @secondary; }
         QScrollArea#ToolSettingsPanel QScrollBar:horizontal { height: @scrollExtentpx; }
         QScrollArea#ToolSettingsPanel QScrollBar::handle:horizontal { margin: 0; }
-        QStatusBar { background: @secondary; color: @muted; }
+        QStatusBar { background: @statusBackground; color: @muted; }
         QStatusBar::item { border: none; }
         QMenuBar { background: @main; color: @text; }
         QMenuBar::item { padding: 5px 8px; border-radius: @radiuspx; background: transparent; }
@@ -525,7 +531,7 @@ QString themeStyleSheet(UiTheme theme) {
         QMenu::item:disabled { color: @disabled; }
         QMenu::separator { height: 1px; background: @border; margin: 2px 4px; }
         QToolTip {
-            color: @text; background: @secondary; border: 1px solid @border;
+            color: @tooltipText; background: @tooltipBackground; border: 1px solid @border;
             border-radius: @radiuspx; padding: 5px 8px;
         }
         QGroupBox {
@@ -576,6 +582,14 @@ QString themeStyleSheet(UiTheme theme) {
         QFrame#paintColorPopup { background: @main; border: 1px solid @border; border-radius: @radiuspx; }
     )");
     const QMap<QString, QColor> colorTokens = {
+        {QStringLiteral("@selectedText"), colors.selectedText},
+        {QStringLiteral("@editorBackground"), colors.editorBackground},
+        {QStringLiteral("@buttonBackground"), colors.buttonBackground},
+        {QStringLiteral("@toolbarBackground"), colors.toolbarBackground},
+        {QStringLiteral("@statusBackground"), colors.statusBackground},
+        {QStringLiteral("@tooltipBackground"), colors.tooltipBackground},
+        {QStringLiteral("@tooltipText"), colors.tooltipText},
+
         {QStringLiteral("@main"), colors.main},
         {QStringLiteral("@secondary"), colors.secondary},
         {QStringLiteral("@contrast"), colors.contrast},
@@ -592,7 +606,9 @@ QString themeStyleSheet(UiTheme theme) {
     };
 
     for (auto token = colorTokens.cbegin(); token != colorTokens.cend(); ++token) {
-        sheet.replace(token.key(), token.value().name());
+        const QColor color = token.value();
+        sheet.replace(token.key(), QStringLiteral("rgba(%1,%2,%3,%4)")
+            .arg(color.red()).arg(color.green()).arg(color.blue()).arg(color.alpha()));
     }
     sheet.replace(QStringLiteral("@radius"), QString::number(kUiCornerRadius));
     sheet.replace(QStringLiteral("@fieldHeight"), QString::number(kUiControlHeight - 8));
@@ -636,27 +652,136 @@ QString previewBackgroundModeValue(PreviewBackgroundMode mode) {
 
 } // namespace
 
-UiColors uiColors(UiTheme theme) {
-    if (theme == UiTheme::Light) {
-        return {
-            .main = QColor(QStringLiteral("#f6dcb9")),
-            .secondary = QColor(QStringLiteral("#fef1eb")),
-            .contrast = QColor(QStringLiteral("#cfbfbf")),
-            .accent = QColor(QStringLiteral("#cfdad4")),
-            .focus = QColor(QStringLiteral("#526b5b")),
-            .border = QColor(QStringLiteral("#947e78")),
-            .text = QColor(QStringLiteral("#352e2c")),
-            .mutedText = QColor(QStringLiteral("#6e5b54")),
-            .disabledText = QColor(QStringLiteral("#8b7770")),
-            .hover = QColor(QStringLiteral("#e9dfd5")),
-            .selection = QColor(QStringLiteral("#cfdad4")),
-            .warning = QColor(QStringLiteral("#885d25")),
-            .error = QColor(QStringLiteral("#a34950")),
-            .guide = QColor(QStringLiteral("#ead5b4")),
-        };
+const QVector<UiColorRole> &uiColorRoles() {
+    static const QVector<UiColorRole> roles = {
+        {QStringLiteral("main"), QStringLiteral("Main surface"), &UiColors::main},
+        {QStringLiteral("secondary"), QStringLiteral("Secondary surface"), &UiColors::secondary},
+        {QStringLiteral("contrast"), QStringLiteral("Contrast surface"), &UiColors::contrast},
+        {QStringLiteral("accent"), QStringLiteral("Accent"), &UiColors::accent},
+        {QStringLiteral("focus"), QStringLiteral("Focus outline"), &UiColors::focus},
+        {QStringLiteral("border"), QStringLiteral("Border"), &UiColors::border},
+        {QStringLiteral("text"), QStringLiteral("Text"), &UiColors::text},
+        {QStringLiteral("mutedText"), QStringLiteral("Secondary text"), &UiColors::mutedText},
+        {QStringLiteral("disabledText"), QStringLiteral("Disabled text"), &UiColors::disabledText},
+        {QStringLiteral("hover"), QStringLiteral("Hover surface"), &UiColors::hover},
+        {QStringLiteral("selection"), QStringLiteral("Selection surface"), &UiColors::selection},
+        {QStringLiteral("warning"), QStringLiteral("Warning"), &UiColors::warning},
+        {QStringLiteral("error"), QStringLiteral("Error"), &UiColors::error},
+        {QStringLiteral("guide"), QStringLiteral("Guide layer"), &UiColors::guide},
+        {QStringLiteral("selectedText"), QStringLiteral("Selected text"), &UiColors::selectedText, &UiColors::text},
+        {QStringLiteral("icon"), QStringLiteral("Icons"), &UiColors::icon, &UiColors::text},
+        {QStringLiteral("canvas"), QStringLiteral("Canvas background"), &UiColors::canvas, &UiColors::secondary},
+        {QStringLiteral("preview"), QStringLiteral("Thumbnail background"), &UiColors::preview, &UiColors::secondary},
+        {QStringLiteral("checkerboard"), QStringLiteral("Checkerboard alternate"), &UiColors::checkerboard, &UiColors::contrast},
+        {QStringLiteral("carPreview"), QStringLiteral("3D preview background"), &UiColors::carPreview, &UiColors::contrast},
+        {QStringLiteral("rulerBackground"), QStringLiteral("Ruler background"), &UiColors::rulerBackground, &UiColors::secondary},
+        {QStringLiteral("rulerDivider"), QStringLiteral("Ruler divider"), &UiColors::rulerDivider, &UiColors::border},
+        {QStringLiteral("rulerText"), QStringLiteral("Ruler text"), &UiColors::rulerText, &UiColors::mutedText},
+        {QStringLiteral("resizeHandle"), QStringLiteral("Resize divider"), &UiColors::resizeHandle, &UiColors::contrast},
+        {QStringLiteral("editorBackground"), QStringLiteral("Input background"), &UiColors::editorBackground, &UiColors::main},
+        {QStringLiteral("buttonBackground"), QStringLiteral("Button background"), &UiColors::buttonBackground, &UiColors::secondary},
+        {QStringLiteral("toolbarBackground"), QStringLiteral("Toolbar background"), &UiColors::toolbarBackground, &UiColors::main},
+        {QStringLiteral("statusBackground"), QStringLiteral("Status bar background"), &UiColors::statusBackground, &UiColors::secondary},
+        {QStringLiteral("tooltipBackground"), QStringLiteral("Tooltip background"), &UiColors::tooltipBackground, &UiColors::secondary},
+        {QStringLiteral("tooltipText"), QStringLiteral("Tooltip text"), &UiColors::tooltipText, &UiColors::text},
+        {QStringLiteral("browserBackground"), QStringLiteral("Browser tile background"), &UiColors::browserBackground, &UiColors::secondary},
+        {QStringLiteral("browserPreview"), QStringLiteral("Browser preview background"), &UiColors::browserPreview, &UiColors::contrast},
+    };
+
+    return roles;
+}
+
+const QVector<UiThemeDefinition> &uiThemes() {
+    static const QVector<UiThemeDefinition> themes = []() {
+        QVector<UiThemeDefinition> result;
+        QFile file(assetPath(QStringLiteral("themes.json")));
+        if (file.open(QIODevice::ReadOnly)) {
+            const QJsonArray definitions = QJsonDocument::fromJson(file.readAll()).array();
+            for (const QJsonValue &value : definitions) {
+                const QJsonObject object = value.toObject();
+                UiThemeDefinition definition;
+                definition.id = object.value(QStringLiteral("id")).toString().trimmed().toLower();
+                definition.name = object.value(QStringLiteral("name")).toString().trimmed();
+                definition.dark = object.value(QStringLiteral("dark")).toBool(true);
+                if (definition.id.isEmpty() || definition.name.isEmpty()
+                    || definition.id.contains(QLatin1Char('/'))
+                    || definition.id.contains(QLatin1Char('\\'))
+                    || std::any_of(result.cbegin(), result.cend(), [&](const auto &existing) {
+                        return existing.id == definition.id;
+                    })) {
+                    continue;
+                }
+                const QJsonObject colors = object.value(QStringLiteral("colors")).toObject();
+                for (const UiColorRole &role : uiColorRoles()) {
+                    const QColor color(colors.value(role.id).toString());
+                    if (color.isValid()) {
+                        definition.colors.insert(role.id, color);
+                    }
+                }
+                result.push_back(definition);
+            }
+        }
+        if (std::none_of(result.cbegin(), result.cend(), [](const auto &definition) {
+                return definition.id == kDefaultUiTheme;
+            })) {
+            result.prepend({kDefaultUiTheme, QStringLiteral("Mahogany Dark"), {}, true});
+        }
+
+        return result;
+    }();
+
+    return themes;
+}
+
+ThemeColorOverrides themeColorOverrides() {
+    if (!currentColorOverrides.has_value()) {
+        ThemeColorOverrides overrides;
+        QSettings settings;
+        settings.beginGroup(QStringLiteral("ui/themeColors"));
+        for (const QString &theme : settings.childGroups()) {
+            settings.beginGroup(theme);
+            for (const UiColorRole &role : uiColorRoles()) {
+                const QColor color(settings.value(role.id).toString());
+                if (color.isValid()) {
+                    overrides[theme].insert(role.id, color);
+                }
+            }
+            settings.endGroup();
+        }
+        currentColorOverrides = overrides;
     }
 
-    return {
+    return *currentColorOverrides;
+}
+
+void setThemeColorOverrides(const ThemeColorOverrides &overrides) {
+    if (themeColorOverrides() == overrides) {
+        return;
+    }
+    currentColorOverrides = overrides;
+    resolvedColors.clear();
+    QPixmapCache::clear();
+}
+
+void saveThemeColorOverrides() {
+    const ThemeColorOverrides overrides = themeColorOverrides();
+    QSettings settings;
+    settings.beginGroup(QStringLiteral("ui/themeColors"));
+    settings.remove(QString());
+    for (auto theme = overrides.cbegin(); theme != overrides.cend(); ++theme) {
+        settings.beginGroup(theme.key());
+        for (const UiColorRole &role : uiColorRoles()) {
+            const QColor color = theme.value().value(role.id);
+            if (color.isValid()) {
+                settings.setValue(role.id, color.name(QColor::HexArgb));
+            }
+        }
+        settings.endGroup();
+    }
+}
+
+UiColors uiColors(UiTheme theme) {
+    static const UiColors defaults = {
         .main = QColor(QStringLiteral("#252426")),
         .secondary = QColor(QStringLiteral("#302d30")),
         .contrast = QColor(QStringLiteral("#40383b")),
@@ -672,6 +797,40 @@ UiColors uiColors(UiTheme theme) {
         .error = QColor(QStringLiteral("#e4a3aa")),
         .guide = QColor(QStringLiteral("#514637")),
     };
+    const auto cached = resolvedColors.constFind(theme);
+    if (cached != resolvedColors.cend()) {
+        return cached.value();
+    }
+    UiColors colors = defaults;
+    const auto &definitions = uiThemes();
+    const auto found = std::find_if(definitions.cbegin(), definitions.cend(), [&](const auto &definition) {
+        return definition.id == theme;
+    });
+    const QMap<QString, QColor> definition = found == definitions.cend()
+        ? QMap<QString, QColor>() : found->colors;
+    const QMap<QString, QColor> overrides = themeColorOverrides().value(theme);
+    const auto applyColor = [&](const UiColorRole &role) {
+        const QColor color = overrides.value(role.id, definition.value(role.id));
+        if (color.isValid()) {
+            colors.*role.member = color;
+        }
+    };
+
+    for (const UiColorRole &role : uiColorRoles()) {
+        if (role.fallback == nullptr) {
+            applyColor(role);
+        }
+    }
+    for (const UiColorRole &role : uiColorRoles()) {
+        if (role.fallback != nullptr) {
+            colors.*role.member = colors.*role.fallback;
+            applyColor(role);
+        }
+    }
+
+    resolvedColors.insert(theme, colors);
+
+    return colors;
 }
 
 QIcon uiAddIcon() {
@@ -712,58 +871,88 @@ void setUiState(QWidget *widget, const QString &state) {
 }
 
 QString themeSettingsValue(UiTheme theme) {
-    return theme == UiTheme::Light ? QStringLiteral("light") : QStringLiteral("dark");
+    return themeFromSettingsValue(theme);
 }
 
 UiTheme themeFromSettingsValue(const QString &value) {
-    return value.compare(QStringLiteral("light"), Qt::CaseInsensitive) == 0 ? UiTheme::Light : UiTheme::Dark;
+    const QString id = value.trimmed().toLower();
+    const auto &themes = uiThemes();
+    const auto found = std::find_if(themes.cbegin(), themes.cend(), [&](const auto &theme) {
+        return theme.id == id;
+    });
+
+    return found != themes.cend() ? found->id : kDefaultUiTheme;
 }
 
 UiTheme loadUiTheme() {
-    return themeFromSettingsValue(QSettings().value(QStringLiteral("ui/theme"), QStringLiteral("dark")).toString());
+    QSettings settings;
+    QString theme = settings.value(QStringLiteral("ui/theme"), kDefaultUiTheme).toString();
+    if (settings.value(QStringLiteral("ui/themeVersion"), 0).toInt() < kThemeSettingsVersion) {
+        if (theme.compare(QStringLiteral("dark"), Qt::CaseInsensitive) == 0
+            || theme.compare(QStringLiteral("light"), Qt::CaseInsensitive) == 0) {
+            theme = QStringLiteral("mahogany-") + theme.toLower();
+        }
+        settings.setValue(QStringLiteral("ui/theme"), themeFromSettingsValue(theme));
+        settings.setValue(QStringLiteral("ui/themeVersion"), kThemeSettingsVersion);
+    }
+
+    return themeFromSettingsValue(theme);
 }
 
 void saveUiTheme(UiTheme theme) {
-    QSettings().setValue(QStringLiteral("ui/theme"), themeSettingsValue(theme));
+    QSettings settings;
+    settings.setValue(QStringLiteral("ui/theme"), themeSettingsValue(theme));
+    settings.setValue(QStringLiteral("ui/themeVersion"), kThemeSettingsVersion);
 }
 
 QColor defaultCanvasColor(UiTheme theme) {
-    return uiColors(theme).secondary;
+    return uiColors(theme).canvas;
 }
 
 CanvasColorSettings loadCanvasColorSettings() {
     QSettings settings;
     CanvasColorSettings result;
-    result.darkMode = settings.value(QStringLiteral("ui/canvas/darkMode"), QStringLiteral("default")).toString() == QStringLiteral("custom")
-        ? CanvasColorMode::Custom
-        : CanvasColorMode::ThemeDefault;
-    result.lightMode = settings.value(QStringLiteral("ui/canvas/lightMode"), QStringLiteral("default")).toString() == QStringLiteral("custom")
-        ? CanvasColorMode::Custom
-        : CanvasColorMode::ThemeDefault;
-
     const QColor legacy(settings.value(QStringLiteral("ui/canvasColor")).toString());
-    const QColor dark(settings.value(QStringLiteral("ui/canvas/darkCustom"),
-                                     legacy.isValid() ? legacy.name(QColor::HexRgb)
-                                                      : defaultCanvasColor(UiTheme::Dark).name(QColor::HexRgb)).toString());
-    const QColor light(settings.value(QStringLiteral("ui/canvas/lightCustom"),
-                                      defaultCanvasColor(UiTheme::Light).name(QColor::HexRgb)).toString());
-    result.darkCustom = validColor(dark, defaultCanvasColor(UiTheme::Dark));
-    result.lightCustom = validColor(light, defaultCanvasColor(UiTheme::Light));
-    if (legacy.isValid() && !settings.contains(QStringLiteral("ui/canvas/darkMode"))) {
-        result.darkMode = CanvasColorMode::Custom;
+    for (const UiThemeDefinition &theme : uiThemes()) {
+        CanvasColorPreference preference;
+        const QString prefix = QStringLiteral("ui/canvas/themes/%1/").arg(theme.id);
+        QString mode = settings.value(prefix + QStringLiteral("mode")).toString();
+        QColor custom(settings.value(prefix + QStringLiteral("custom")).toString());
+        if (!settings.contains(prefix + QStringLiteral("mode"))
+            && (theme.id == QStringLiteral("mahogany-dark") || theme.id == QStringLiteral("mahogany-light"))) {
+            const QString oldPrefix = QStringLiteral("ui/canvas/%1").arg(
+                theme.id == QStringLiteral("mahogany-dark") ? QStringLiteral("dark") : QStringLiteral("light"));
+            mode = settings.value(oldPrefix + QStringLiteral("Mode")).toString();
+            custom = QColor(settings.value(oldPrefix + QStringLiteral("Custom")).toString());
+            if (theme.id == QStringLiteral("mahogany-dark") && legacy.isValid()) {
+                custom = validColor(custom, legacy);
+                if (mode.isEmpty()) {
+                    mode = QStringLiteral("custom");
+                }
+            }
+        }
+        preference.mode = mode == QStringLiteral("custom") ? CanvasColorMode::Custom : CanvasColorMode::ThemeDefault;
+        preference.custom = validColor(custom, defaultCanvasColor(theme.id));
+        result.insert(theme.id, preference);
     }
+
     return result;
 }
 
 void saveCanvasColorSettings(const CanvasColorSettings &settings) {
-    QSettings qsettings;
-    qsettings.remove(QStringLiteral("ui/canvasColor"));
-    qsettings.setValue(QStringLiteral("ui/canvas/darkMode"), settings.darkMode == CanvasColorMode::Custom ? QStringLiteral("custom") : QStringLiteral("default"));
-    qsettings.setValue(QStringLiteral("ui/canvas/lightMode"), settings.lightMode == CanvasColorMode::Custom ? QStringLiteral("custom") : QStringLiteral("default"));
-    qsettings.setValue(QStringLiteral("ui/canvas/darkCustom"),
-                       validColor(settings.darkCustom, defaultCanvasColor(UiTheme::Dark)).name(QColor::HexRgb));
-    qsettings.setValue(QStringLiteral("ui/canvas/lightCustom"),
-                       validColor(settings.lightCustom, defaultCanvasColor(UiTheme::Light)).name(QColor::HexRgb));
+    QSettings stored;
+    for (auto theme = settings.cbegin(); theme != settings.cend(); ++theme) {
+        const QString prefix = QStringLiteral("ui/canvas/themes/%1/").arg(theme.key());
+        stored.setValue(prefix + QStringLiteral("mode"), theme->mode == CanvasColorMode::Custom
+            ? QStringLiteral("custom") : QStringLiteral("default"));
+        stored.setValue(prefix + QStringLiteral("custom"),
+                        validColor(theme->custom, defaultCanvasColor(theme.key())).name(QColor::HexRgb));
+    }
+    stored.remove(QStringLiteral("ui/canvasColor"));
+    stored.remove(QStringLiteral("ui/canvas/darkMode"));
+    stored.remove(QStringLiteral("ui/canvas/lightMode"));
+    stored.remove(QStringLiteral("ui/canvas/darkCustom"));
+    stored.remove(QStringLiteral("ui/canvas/lightCustom"));
 }
 
 TransformModeSettings loadTransformModeSettings() {
@@ -931,11 +1120,11 @@ PreviewBackgroundSettings loadPreviewBackgroundSettings() {
     result.layers.mode = previewBackgroundMode(
         settings.value(QStringLiteral("ui/previews/layersMode"), QStringLiteral("default")).toString());
     result.buffer.custom = QColor(settings.value(
-        QStringLiteral("ui/previews/bufferCustom"), defaultCanvasColor(UiTheme::Dark).name()).toString());
+        QStringLiteral("ui/previews/bufferCustom"), defaultCanvasColor(kDefaultUiTheme).name()).toString());
     result.layers.custom = QColor(settings.value(
-        QStringLiteral("ui/previews/layersCustom"), defaultCanvasColor(UiTheme::Dark).name()).toString());
-    result.buffer.custom = validColor(result.buffer.custom, defaultCanvasColor(UiTheme::Dark));
-    result.layers.custom = validColor(result.layers.custom, defaultCanvasColor(UiTheme::Dark));
+        QStringLiteral("ui/previews/layersCustom"), defaultCanvasColor(kDefaultUiTheme).name()).toString());
+    result.buffer.custom = validColor(result.buffer.custom, defaultCanvasColor(kDefaultUiTheme));
+    result.layers.custom = validColor(result.layers.custom, defaultCanvasColor(kDefaultUiTheme));
 
     return result;
 }
@@ -947,13 +1136,13 @@ void savePreviewBackgroundSettings(const PreviewBackgroundSettings &settings) {
     qsettings.setValue(QStringLiteral("ui/previews/layersMode"),
                        previewBackgroundModeValue(settings.layers.mode));
     qsettings.setValue(QStringLiteral("ui/previews/bufferCustom"),
-                       validColor(settings.buffer.custom, defaultCanvasColor(UiTheme::Dark)).name(QColor::HexRgb));
+                       validColor(settings.buffer.custom, defaultCanvasColor(kDefaultUiTheme)).name(QColor::HexRgb));
     qsettings.setValue(QStringLiteral("ui/previews/layersCustom"),
-                       validColor(settings.layers.custom, defaultCanvasColor(UiTheme::Dark)).name(QColor::HexRgb));
+                       validColor(settings.layers.custom, defaultCanvasColor(kDefaultUiTheme)).name(QColor::HexRgb));
 }
 
 QColor defaultPreviewBackgroundColor(UiTheme theme) {
-    return paletteForTheme(theme).color(QPalette::Base);
+    return uiColors(theme).preview;
 }
 
 QColor previewBackgroundColor(UiTheme theme, const PreviewBackground &background) {
@@ -971,7 +1160,7 @@ QBrush previewBackgroundBrush(UiTheme theme, const PreviewBackground &background
     constexpr int kCheckerExtent = 8;
     constexpr int kCheckerTileExtent = kCheckerExtent * 2;
     const QColor base = defaultPreviewBackgroundColor(theme);
-    const QColor alternate = isDarkTheme(theme) ? base.lighter(145) : base.darker(112);
+    const QColor alternate = uiColors(theme).checkerboard;
     QImage tile(kCheckerTileExtent, kCheckerTileExtent, QImage::Format_RGB32);
     tile.fill(base);
     QPainter painter(&tile);
@@ -982,18 +1171,23 @@ QBrush previewBackgroundBrush(UiTheme theme, const PreviewBackground &background
 }
 
 QColor canvasColorForTheme(UiTheme theme, const CanvasColorSettings &settings) {
-    const CanvasColorMode mode = theme == UiTheme::Light ? settings.lightMode : settings.darkMode;
-    const QColor custom = theme == UiTheme::Light ? settings.lightCustom : settings.darkCustom;
+    const CanvasColorPreference preference = settings.value(theme);
 
-    return mode == CanvasColorMode::Custom && custom.isValid() ? custom : defaultCanvasColor(theme);
+    return preference.mode == CanvasColorMode::Custom && preference.custom.isValid()
+        ? preference.custom : defaultCanvasColor(theme);
 }
 
 bool isDarkTheme(UiTheme theme) {
-    return theme == UiTheme::Dark;
+    const auto &themes = uiThemes();
+    const auto found = std::find_if(themes.cbegin(), themes.cend(), [&](const auto &definition) {
+        return definition.id == theme;
+    });
+
+    return found == themes.cend() || found->dark;
 }
 
 QColor iconColorForTheme(UiTheme theme) {
-    return uiColors(theme).text;
+    return uiColors(theme).icon;
 }
 
 QPalette paletteForTheme(UiTheme theme) {
@@ -1003,13 +1197,13 @@ QPalette paletteForTheme(UiTheme theme) {
     palette.setColor(QPalette::WindowText, colors.text);
     palette.setColor(QPalette::Base, colors.secondary);
     palette.setColor(QPalette::AlternateBase, colors.main);
-    palette.setColor(QPalette::ToolTipBase, colors.secondary);
-    palette.setColor(QPalette::ToolTipText, colors.text);
+    palette.setColor(QPalette::ToolTipBase, colors.tooltipBackground);
+    palette.setColor(QPalette::ToolTipText, colors.tooltipText);
     palette.setColor(QPalette::Text, colors.text);
-    palette.setColor(QPalette::Button, colors.secondary);
+    palette.setColor(QPalette::Button, colors.buttonBackground);
     palette.setColor(QPalette::ButtonText, colors.text);
     palette.setColor(QPalette::Highlight, colors.selection);
-    palette.setColor(QPalette::HighlightedText, colors.text);
+    palette.setColor(QPalette::HighlightedText, colors.selectedText);
     palette.setColor(QPalette::PlaceholderText, colors.mutedText);
     palette.setColor(QPalette::Link, colors.focus);
     palette.setColor(QPalette::Mid, colors.border);

@@ -8,6 +8,7 @@
 #include <QMap>
 #include <QSize>
 #include <QString>
+#include <QVector>
 
 class QApplication;
 class QIcon;
@@ -15,10 +16,8 @@ class QWidget;
 
 namespace gui {
 
-enum class UiTheme {
-    Dark,
-    Light,
-};
+using UiTheme = QString;
+inline const UiTheme kDefaultUiTheme = QStringLiteral("mahogany-dark");
 
 inline constexpr int kUiCornerRadius = 0;
 inline constexpr int kUiControlHeight = 28;
@@ -46,8 +45,47 @@ struct UiColors {
     QColor warning;
     QColor error;
     QColor guide;
+    QColor selectedText;
+    QColor icon;
+    QColor canvas;
+    QColor preview;
+    QColor checkerboard;
+    QColor carPreview;
+    QColor rulerBackground;
+    QColor rulerDivider;
+    QColor rulerText;
+    QColor resizeHandle;
+    QColor editorBackground;
+    QColor buttonBackground;
+    QColor toolbarBackground;
+    QColor statusBackground;
+    QColor tooltipBackground;
+    QColor tooltipText;
+    QColor browserBackground;
+    QColor browserPreview;
 };
 
+struct UiColorRole {
+    QString id;
+    QString label;
+    QColor UiColors::*member;
+    QColor UiColors::*fallback = nullptr;
+};
+
+struct UiThemeDefinition {
+    UiTheme id;
+    QString name;
+    QMap<QString, QColor> colors;
+    bool dark = true;
+};
+
+using ThemeColorOverrides = QMap<UiTheme, QMap<QString, QColor>>;
+
+const QVector<UiThemeDefinition> &uiThemes();
+const QVector<UiColorRole> &uiColorRoles();
+ThemeColorOverrides themeColorOverrides();
+void setThemeColorOverrides(const ThemeColorOverrides &overrides);
+void saveThemeColorOverrides();
 UiColors uiColors(UiTheme theme);
 QIcon uiAddIcon();
 QString colorSwatchStyle(const QColor &color);
@@ -58,12 +96,12 @@ enum class CanvasColorMode {
     Custom,
 };
 
-struct CanvasColorSettings {
-    CanvasColorMode darkMode = CanvasColorMode::ThemeDefault;
-    CanvasColorMode lightMode = CanvasColorMode::ThemeDefault;
-    QColor darkCustom;
-    QColor lightCustom;
+struct CanvasColorPreference {
+    QColor custom;
+    CanvasColorMode mode = CanvasColorMode::ThemeDefault;
 };
+
+using CanvasColorSettings = QMap<UiTheme, CanvasColorPreference>;
 
 struct TransformModeSettings {
     bool relativeMode = false;

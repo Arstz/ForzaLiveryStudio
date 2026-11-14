@@ -134,7 +134,8 @@ int main(int argc, char **argv) {
     QSettings().setValue("ui/behavior/autoSavePenPaths", false);
     QSettings().setValue("ui/behavior/autoSaveLiningPaths", false);
     try {
-    for (auto theme : {gui::UiTheme::Dark, gui::UiTheme::Light}) {
+    for (const auto &definition : gui::uiThemes()) {
+        const auto theme = definition.id;
         gui::applyUiTheme(application, theme);
         gui::saveUiTheme(theme);
         for (int iteration = 0; iteration < 3; ++iteration) {

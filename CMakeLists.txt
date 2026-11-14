@@ -946,6 +946,7 @@ set(FLS_GUI_ASSET_FILES
     compact_fit_shapes_combined.json
     lining_shapes.json
     settings_tips.json
+    themes.json
     vector/shape_geometry.json.gz
     vector/shape_names.json
     raster/decal_textures.bin

@@ -93,6 +93,7 @@ Restart the editor after repairing runtime assets loaded during initialization.
 | `assets/vector/` | Native shape geometry and `shape_names.json` registry. |
 | `assets/raster/` | Packed raster decals. |
 | `assets/icons/` | Editor icons and cursors. |
+| `assets/themes.json` | Theme definitions and UI color defaults. |
 | `assets/cars/` | Car registry and preview metadata. |
 | `assets/cars/paint_colors.json` | Per-title manufacturer colors and native finish definitions. |
 | `assets/compact_fit_shapes.json` | Compact Fit catalog and task membership. |
@@ -113,10 +114,26 @@ the application entry point and links the UI library.
 
 ### GUI appearance
 
-`theme_manager.*` owns semantic UI colors, control metrics, the Qt palette,
-and the shared stylesheet. Light mode uses cream and blush surfaces with sage
-accents and rose-gray preview contrast. Dark mode pairs charcoal surfaces with
-muted versions of those colors. Custom widget painting uses the same color roles.
+`theme_manager.*` owns the theme registry, semantic UI colors, component color
+roles, control metrics, the Qt palette, and the shared stylesheet. The selector
+uses stable string IDs from `assets/themes.json`. Each definition supplies an
+`id`, a display `name`, a `dark` classification, and a `colors` object keyed by
+the roles in `uiColorRoles()`. Add definitions to extend the selector. Definitions
+load at startup; restart after changing the file.
+
+Mahogany Dark and Mahogany Light use charcoal or cream and blush surfaces with
+sage accents. Dark and Light use the legacy neutral palettes with blue accents.
+Missing semantic colors use the built-in fallback palette. Component roles
+inherit semantic colors unless the definition or user supplies a color. Shared
+color overrides also update inherited component colors. Colors accept Qt color
+strings, including `#AARRGGBB` for alpha.
+
+Settings exposes per-theme color overrides, a color reset, and a theme color
+reset. Changes preview immediately; accepting saves them and canceling restores
+the previous colors and theme. Overrides persist under `ui/themeColors/<id>`.
+Canvas background preferences persist per theme under `ui/canvas/themes/<id>`.
+Existing theme selections and canvas preferences migrate to Mahogany themes.
+Custom widget painting uses the resolved theme roles.
 Panels, tabs, controls, and painted UI surfaces use square corners.
 Dock actions share a square button frame with one outline. Floating docks reserve
 an edge margin for resizing, and title bars expose close and collapse controls.

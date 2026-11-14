@@ -22,9 +22,10 @@ QPixmap tintedPixmap(const QPixmap &source, const QColor &color) {
 
 QIcon themedAssetIcon(const QString &fileName, bool mirrored) {
     const UiTheme theme = currentUiTheme();
-    const QString key = QStringLiteral("%1|%2|%3")
+    const QString key = QStringLiteral("%1|%2|%3|%4")
                             .arg(themeSettingsValue(theme), fileName)
-                            .arg(mirrored);
+                            .arg(mirrored)
+                            .arg(iconColorForTheme(theme).name(QColor::HexArgb));
     static QHash<QString, QIcon> cache;
     const auto cached = cache.constFind(key);
     if (cached != cache.constEnd()) {

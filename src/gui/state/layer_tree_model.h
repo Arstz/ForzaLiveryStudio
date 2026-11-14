@@ -68,7 +68,9 @@ private:
 
     ShapeGeometryStore geometry_;
     PreviewBackground previewBackground_;
-    UiTheme theme_ = UiTheme::Dark;
+    UiTheme theme_ = kDefaultUiTheme;
+    QColor previewBase_;
+    QColor previewAlternate_;
     EditorState *state_ = nullptr;
     QString displayParentGroupId_;
     QHash<QString, int> leafPositions_;

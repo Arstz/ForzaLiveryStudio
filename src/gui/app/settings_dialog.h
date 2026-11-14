@@ -39,6 +39,7 @@ public:
 
     UiTheme selectedTheme() const;
     CanvasColorSettings selectedCanvasSettings() const;
+    ThemeColorOverrides selectedThemeColorOverrides() const;
     PreviewBackgroundSettings selectedPreviewBackgroundSettings() const;
     BehaviorSettings selectedBehaviorSettings() const;
     SystemIconSet selectedSystemIconSet() const;
@@ -50,7 +51,10 @@ public:
 private:
     void resetShortcutRow(int row);
     void resetAllShortcuts();
-    void chooseCanvasColor(UiTheme theme);
+    void chooseCanvasColor();
+    void chooseThemeColor();
+    void updateThemeColorControls();
+    void previewThemeColors();
     void choosePreviewBackgroundColor(bool buffer);
     void chooseGuidelineColor();
     void updateCanvasColorControls();
@@ -60,14 +64,17 @@ private:
 
     std::function<void(UiTheme)> themeChangedCallback_;
     CanvasColorSettings canvasSettings_;
+    ThemeColorOverrides themeColorOverrides_;
     PreviewBackgroundSettings previewBackgroundSettings_;
     BehaviorSettings behaviorSettings_;
     QVector<ShortcutSettingsItem> shortcuts_;
     QComboBox *themeCombo_ = nullptr;
-    QComboBox *darkCanvasMode_ = nullptr;
-    QPushButton *darkCanvasColorButton_ = nullptr;
-    QComboBox *lightCanvasMode_ = nullptr;
-    QPushButton *lightCanvasColorButton_ = nullptr;
+    QComboBox *canvasMode_ = nullptr;
+    QPushButton *canvasColorButton_ = nullptr;
+    QComboBox *themeColorRole_ = nullptr;
+    QPushButton *themeColorButton_ = nullptr;
+    QPushButton *resetThemeColorButton_ = nullptr;
+    QPushButton *resetThemeColorsButton_ = nullptr;
     QComboBox *bufferBackgroundMode_ = nullptr;
     QPushButton *bufferBackgroundColorButton_ = nullptr;
     QComboBox *layersBackgroundMode_ = nullptr;

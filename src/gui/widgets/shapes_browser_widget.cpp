@@ -111,8 +111,8 @@ struct TilePaintLayout {
 
 TilePaintLayout paintTileFrame(QPainter &painter, const QWidget &tile, bool hovered) {
     const QRect tileRect = tile.rect().adjusted(2, 2, -2, -2);
-    const bool dark = isDarkTheme(currentUiTheme());
-    const BrowserTilePalette colors = browserTilePalette(dark);
+
+    const BrowserTilePalette colors = browserTilePalette(currentUiTheme());
     const QRect previewRect((tile.width() - kPreviewSize.width()) / 2, 12,
                             kPreviewSize.width(), kPreviewSize.height());
 

@@ -1997,7 +1997,8 @@ void CarPreviewWidget::paintGL() {
     if (transparentBackground_) {
         functions->glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
     } else {
-        functions->glClearColor(0.09f, 0.10f, 0.12f, 1.0f);
+        const QColor background = uiColors(currentUiTheme()).carPreview;
+        functions->glClearColor(background.redF(), background.greenF(), background.blueF(), 1.0f);
     }
     functions->glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
