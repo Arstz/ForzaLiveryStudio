@@ -23,6 +23,7 @@
 #include <QDropEvent>
 #include <QMouseEvent>
 #include <QTemporaryDir>
+#include <QTest>
 #include <QTextStream>
 #include <QTimer>
 #include <cmath>
@@ -293,6 +294,112 @@ void flags(Harness &h) {
     click(h.tree->viewport(), QPoint(row.left() + 44, row.center().y()));
     require(h.commands.contains(gui::EditorCommandType::Selection) && h.state->selectedLayerIds() == QSet<QString>{"loose"},
             "Layers row click bypassed state selection commands");
+}
+
+void layerSelection(Harness &h) {
+    gui::ProjectCanvas *canvas = nullptr;
+    for (QWidget *widget : h.window.findChildren<QWidget *>()) {
+        if (auto *found = dynamic_cast<gui::ProjectCanvas *>(widget)) canvas = found;
+    }
+    require(canvas != nullptr, "selection test needs a canvas");
+    canvas->resize(1000, 600);
+    fls::Project project;
+    fls::scene::ensureProjectSceneRoot(project);
+    for (int row = 0; row < 6; ++row) {
+        auto node = shape(QString::number(row), row * 200);
+        node->transform = {row * 200.0, 0, 0.25, 0.25, 0, 0};
+        project.root->append(std::move(node));
+    }
+    gui::BoundsAccumulator bounds;
+    for (const auto *node : gui::sceneShapeLeaves(*project.root)) {
+        bounds.add(gui::sceneWorldTransform(*node), canvas->shapeInkBounds(101));
+    }
+    gui::CanvasCamera camera;
+    camera.setViewBounds(bounds.bounds());
+    camera.recompute(QPointF(28, 28), canvas->width() - 28, canvas->height() - 28);
+    const auto rowClick = [&](const QString &id, Qt::KeyboardModifiers modifiers = {}) {
+        const QRect rect = h.tree->visualRect(h.index(id));
+        QTest::mouseClick(h.tree->viewport(), Qt::LeftButton, modifiers, QPoint(rect.left() + 44, rect.center().y()));
+        QApplication::processEvents();
+    };
+    const auto check = [&](const QSet<QString> &expected) {
+        QSet<QString> rows;
+        for (const QModelIndex &index : h.tree->selectionModel()->selectedRows()) {
+            rows.insert(index.data(gui::LayerTreeModel::EntryIdRole).toString());
+        }
+        require(rows == expected && h.state->selectedLayerIds() == expected,
+                QStringLiteral("Layers selection mismatch: expected %1, rows %2, scene %3")
+                    .arg(QStringList(expected.values()).join(','), QStringList(rows.values()).join(','),
+                         QStringList(h.state->selectedLayerIds().values()).join(',')));
+    };
+    for (const QString &source : {QString("tree"), QString("command"), QString("select"), QString("marquee"), QString("move")}) {
+        h.reset(project);
+        rowClick("5");
+        if (source == "tree") {
+            rowClick("1");
+        } else if (source == "command") {
+            h.select({"1"});
+        } else {
+            canvas->setTool(source);
+            canvas->setMoveToolAutoSelect(true);
+            if (source == "marquee") {
+                const QPointF start = camera.worldToScreen(QPointF(160, -40));
+                const QPointF end = camera.worldToScreen(QPointF(240, 40));
+                QMouseEvent press(QEvent::MouseButtonPress, start, canvas->mapToGlobal(start.toPoint()),
+                                  Qt::LeftButton, Qt::LeftButton, {});
+                QApplication::sendEvent(canvas, &press);
+                QMouseEvent release(QEvent::MouseButtonRelease, end, canvas->mapToGlobal(end.toPoint()),
+                                    Qt::LeftButton, Qt::NoButton, {});
+                QApplication::sendEvent(canvas, &release);
+            } else {
+                click(canvas, camera.worldToScreen(QPointF(200, 0)).toPoint());
+            }
+        }
+        check({"1"});
+        require(h.tree->currentIndex() == h.index("1"), "external selection retained a stale current row: " + source);
+        rowClick("3", Qt::ShiftModifier);
+        check({"1", "2", "3"});
+        rowClick("2", Qt::ShiftModifier);
+        check({"1", "2"});
+        rowClick("4", Qt::ShiftModifier);
+        check({"1", "2", "3", "4"});
+        rowClick("2", Qt::ControlModifier);
+        check({"1", "3", "4"});
+        rowClick("0", Qt::ControlModifier);
+        check({"0", "1", "3", "4"});
+        h.state->setSelectedLayerIds({"2", "3"});
+        check({"2", "3"});
+        require(h.tree->currentIndex() == h.index("3"), "multi-selection did not choose a selected current row");
+        rowClick("4", Qt::ShiftModifier);
+        check({"2", "3", "4"});
+        h.state->clearSelection();
+        check({});
+        require(!h.tree->currentIndex().isValid(), "clearing selection retained the range anchor");
+        h.state->noteProjectStructureChanged();
+        h.state->setSelectedLayerIds({"1"});
+        rowClick("3", Qt::ShiftModifier);
+        check({"1", "2", "3"});
+        QTest::keyPress(h.tree, Qt::Key_Shift);
+        h.state->setSelectedLayerIds({"3"});
+        rowClick("4", Qt::ShiftModifier);
+        QTest::keyRelease(h.tree, Qt::Key_Shift);
+        check({"3", "4"});
+        h.state->setSelectedLayerIds({"1"});
+        QTest::keyClick(h.tree, Qt::Key_Up, Qt::ShiftModifier);
+        check({"1", "2"});
+        QTest::keyClick(h.tree, Qt::Key_Up, Qt::ShiftModifier);
+        check({"1", "2", "3"});
+        QTest::keyClick(h.tree, Qt::Key_Down, Qt::ShiftModifier);
+        check({"1", "2"});
+    }
+    for (const QString &id : {QString("source"), QString("guide"), QString("path")}) {
+        h.reset();
+        rowClick("loose");
+        h.select({id});
+        require(h.tree->currentIndex() == h.index(id), "external selection did not anchor the selected entry: " + id);
+        h.state->noteProjectStructureChanged();
+        require(h.tree->currentIndex() == h.index(id), "model rebuild lost the selected current entry: " + id);
+    }
 }
 
 void properties(Harness &h) {
@@ -1305,6 +1412,11 @@ int main(int argc, char **argv) {
     gui::applyUiTheme(application, gui::loadUiTheme());
     try {
         Harness harness;
+        if (argc == 2 && QString::fromLocal8Bit(argv[1]) == QStringLiteral("--layer-selection")) {
+            layerSelection(harness);
+            QTextStream(stdout) << "Layers selection synchronization checks passed\n";
+            return 0;
+        }
         if (argc == 2 && QString::fromLocal8Bit(argv[1]) == QStringLiteral("--pen-snapping-history")) {
             penSnappingHistory(harness);
             QTextStream(stdout) << "Pen snapping history checks passed\n";
@@ -1315,6 +1427,7 @@ int main(int argc, char **argv) {
             return 0;
         }
         flags(harness);
+        layerSelection(harness);
         properties(harness);
         reparent(harness);
         singleChildGroups(harness);

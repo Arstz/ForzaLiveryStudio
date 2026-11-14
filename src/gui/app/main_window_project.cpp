@@ -367,22 +367,21 @@ void MainWindow::updateSelectionFromTree() {
     for (const QModelIndex &index : tree_->selectionModel()->selectedRows()) {
         command.entries.push_back(index.data(LayerTreeModel::EntryIdRole).toString());
     }
-    suppressTreeReveal_ = true;
+    const QScopedValueRollback<bool> treeSelectionGuard(updatingSelectionFromTree_, true);
     state_->executeCommand(command);
-    suppressTreeReveal_ = false;
     if (canvas_ != nullptr) {
         canvas_->setFocus();
     }
 }
 
 void MainWindow::syncTreeSelectionFromIds() {
-    if (tree_->selectionModel() == nullptr) {
+    if (updatingSelectionFromTree_ || tree_->selectionModel() == nullptr) {
         return;
     }
     ScopedPerf perf("syncTreeSelectionFromIds");
-    syncingSelection_ = true;
-    tree_->selectionModel()->clearSelection();
+    const QScopedValueRollback<bool> selectionGuard(syncingSelection_, true);
 
+    QItemSelection selection;
     QModelIndex firstSelected;
     QModelIndex firstExactLeaf;
     QModelIndex firstFullGroup;
@@ -433,7 +432,7 @@ void MainWindow::syncTreeSelectionFromIds() {
                 ? coveredFor(index) && !parentCovered
                 : index.data(LayerTreeModel::EntryIdRole).toString() == selectedGroupId;
             if (selected) {
-                tree_->selectionModel()->select(index, QItemSelectionModel::Select | QItemSelectionModel::Rows);
+                selection.select(index, index);
                 if (!firstSelected.isValid()) {
                     firstSelected = index;
                 }
@@ -448,12 +447,10 @@ void MainWindow::syncTreeSelectionFromIds() {
         }
     };
     visit(QModelIndex());
-    syncingSelection_ = false;
-
-    if (!suppressTreeReveal_) {
-        const QModelIndex revealIndex = firstFullGroup.isValid() ? firstFullGroup : (firstExactLeaf.isValid() ? firstExactLeaf : firstSelected);
-        revealTreeIndex(revealIndex);
-    }
+    const QModelIndex revealIndex = firstFullGroup.isValid() ? firstFullGroup : (firstExactLeaf.isValid() ? firstExactLeaf : firstSelected);
+    const QModelIndex current = selection.contains(tree_->currentIndex()) ? tree_->currentIndex() : revealIndex;
+    tree_->setExternalSelection(selection, current);
+    revealTreeIndex(revealIndex);
 }
 
 void MainWindow::revealTreeIndex(const QModelIndex &index) {

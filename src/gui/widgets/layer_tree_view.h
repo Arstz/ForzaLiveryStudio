@@ -19,11 +19,13 @@ class LayerTreeView final : public QTreeView {
 public:
     explicit LayerTreeView(QWidget *parent = nullptr);
     void setLeewayEntryId(const QString &entryId);
+    void setExternalSelection(const QItemSelection &selection, const QModelIndex &current);
 
 Q_SIGNALS:
     void leewayEntryRequested(const QString &entryId);
 
 protected:
+    QItemSelectionModel::SelectionFlags selectionCommand(const QModelIndex &index, const QEvent *event = nullptr) const override;
     void paintEvent(QPaintEvent *event) override;
     void mousePressEvent(QMouseEvent *event) override;
     void mouseReleaseEvent(QMouseEvent *event) override;
@@ -44,6 +46,7 @@ private:
     bool dropTargetForPosition(const QPoint &position, QModelIndex *dropParent, int *dropRow, int *indicatorY) const;
 
     QPersistentModelIndex pressedBadgeIndex_;
+    bool syncingExternalSelection_ = false;
     int dropIndicatorY_ = -1;
     int dragScrollDirection_ = 0;
     QPoint lastDragPosition_;

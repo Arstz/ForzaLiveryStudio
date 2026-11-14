@@ -53,6 +53,25 @@ void LayerTreeView::setLeewayEntryId(const QString &entryId) {
     viewport()->update();
 }
 
+void LayerTreeView::setExternalSelection(const QItemSelection &selection, const QModelIndex &current) {
+    if (selectionModel() == nullptr) {
+        return;
+    }
+    const QScopedValueRollback<bool> selectionGuard(syncingExternalSelection_, true);
+    selectionModel()->setCurrentIndex(QModelIndex(), QItemSelectionModel::NoUpdate);
+    selectionModel()->select(selection, QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
+    selectionModel()->select(QModelIndex(), QItemSelectionModel::Select);
+    selectionModel()->setCurrentIndex(current, QItemSelectionModel::NoUpdate);
+}
+
+QItemSelectionModel::SelectionFlags LayerTreeView::selectionCommand(const QModelIndex &index, const QEvent *event) const {
+    if (syncingExternalSelection_) {
+        return QItemSelectionModel::NoUpdate;
+    }
+
+    return QTreeView::selectionCommand(index, event);
+}
+
 void LayerTreeView::paintEvent(QPaintEvent *event) {
     QTreeView::paintEvent(event);
     QPainter painter(viewport());

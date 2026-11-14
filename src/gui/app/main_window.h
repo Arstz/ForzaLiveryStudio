@@ -290,7 +290,7 @@ private:
     std::unique_ptr<QLockFile> scratchLock_;
     bool defaultLayoutPending_ = false;
     bool syncingSelection_ = false;
-    bool suppressTreeReveal_ = false;
+    bool updatingSelectionFromTree_ = false;
     bool loadingProperties_ = false;
     QVector<QPersistentModelIndex> autoExpandedTreeIndexes_;
     QStringList autoExpandedGroupIds_;
