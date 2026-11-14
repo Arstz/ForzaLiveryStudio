@@ -8,9 +8,9 @@ struct BrowserTilePalette {
     QColor base;
     QColor hover;
     QColor stroke;
-    QColor activeStroke;
     QColor previewBase;
     QColor label;
+    QColor hoverLabel;
 };
 
 inline BrowserTilePalette browserTilePalette(UiTheme theme) {
@@ -18,11 +18,11 @@ inline BrowserTilePalette browserTilePalette(UiTheme theme) {
 
     return {
         colors.browserBackground,
-        colors.hover,
+        uiSelectionHoverColor(colors.selection),
         colors.border,
-        colors.focus,
         colors.browserPreview,
         colors.text,
+        colors.selectedText,
     };
 }
 

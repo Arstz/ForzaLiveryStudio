@@ -6,6 +6,7 @@
 #include <QApplication>
 #include <QEvent>
 #include <QAbstractButton>
+#include <QFontMetrics>
 #include <QHBoxLayout>
 #include <QMainWindow>
 #include <QMenuBar>
@@ -30,10 +31,40 @@ namespace gui {
 namespace {
 
 constexpr int kDefaultCaptionHeight = 32;
+constexpr int kCaptionLogoExtent = 16;
+constexpr int kCaptionMenuHorizontalPadding = 8;
 constexpr double kCaptionButtonWidthRatio = 1.5;
 constexpr double kRestoreOffset = 3.0;
 
 enum class CaptionAction { Minimize, Maximize, Close };
+
+class CaptionLogo final : public QWidget {
+public:
+    CaptionLogo(QMainWindow &window, QWidget *parent) : QWidget(parent), window_(&window) {
+        setAttribute(Qt::WA_TransparentForMouseEvents);
+        setFixedSize(kDefaultCaptionHeight, kDefaultCaptionHeight);
+    }
+
+    QSize sizeHint() const override {
+        return minimumSize();
+    }
+
+    QSize minimumSizeHint() const override {
+        return sizeHint();
+    }
+
+protected:
+    void paintEvent(QPaintEvent *) override {
+        QPainter painter(this);
+        QRect logo(QPoint(), QSize(kCaptionLogoExtent, kCaptionLogoExtent));
+
+        logo.moveCenter(rect().center());
+        window_->windowIcon().paint(&painter, logo);
+    }
+
+private:
+    QPointer<QMainWindow> window_;
+};
 
 void enableSystemCommands(QWindow &window) {
     const HWND handle = reinterpret_cast<HWND>(window.winId());
@@ -98,14 +129,18 @@ protected:
     void paintEvent(QPaintEvent *) override {
         QPainter painter(this);
         const UiColors colors = uiColors(currentUiTheme());
+        const QRectF highlight = QRectF(rect()).adjusted(kUiHighlightMargin, kUiHighlightMargin,
+            -kUiHighlightMargin, -kUiHighlightMargin);
         QRectF glyph(QPointF(), QSizeF(kUiActionGlyphExtent, kUiActionGlyphExtent));
         const bool hovered = underMouse();
 
         glyph.moveCenter(QRectF(rect()).center());
-        if (isDown() || hovered) {
-            painter.fillRect(rect(), isDown() ? colors.selection : uiSelectionHoverColor(colors.selection));
-        }
         painter.setRenderHint(QPainter::Antialiasing);
+        if (isDown() || hovered) {
+            painter.setPen(Qt::NoPen);
+            painter.setBrush(isDown() ? colors.selection : uiSelectionHoverColor(colors.selection));
+            painter.drawRoundedRect(highlight, kUiCornerRadius, kUiCornerRadius);
+        }
         painter.setPen(QPen(isDown() || hovered ? colors.selectedText : colors.text,
             kUiActionGlyphStrokeWidth, Qt::SolidLine, Qt::SquareCap, Qt::MiterJoin));
         painter.setBrush(Qt::NoBrush);
@@ -184,9 +219,11 @@ public:
     explicit TitleMenuBar(QMainWindow &window)
         : QMenuBar(&window)
         , window_(&window)
+        , logo_(new CaptionLogo(window, this))
         , controls_(new CaptionControls(window, this)) {
         setObjectName(QStringLiteral("WindowTitleMenu"));
         setNativeMenuBar(false);
+        setCornerWidget(logo_, Qt::TopLeftCorner);
         setCornerWidget(controls_, Qt::TopRightCorner);
         window.installEventFilter(this);
         QCoreApplication::instance()->installNativeEventFilter(this);
@@ -232,6 +269,9 @@ protected:
     bool eventFilter(QObject *watched, QEvent *event) override {
         if (watched == window_) {
             switch (event->type()) {
+            case QEvent::WindowIconChange:
+                logo_->update();
+                break;
             case QEvent::WinIdChange:
             case QEvent::Show:
             case QEvent::WindowStateChange:
@@ -340,19 +380,27 @@ private:
 
         observeFrameWindow();
         const QFont menuFont = uiTextFont();
+        const QFontMetrics menuMetrics(menuFont, this);
+        const QMargins textMargins = uiTextInsets(menuFont);
         const int safeCaptionHeight = frameWindow_ != nullptr ? frameWindow_->safeAreaMargins().top() : 0;
         const int captionHeight = std::max(kUiControlHeight,
             safeCaptionHeight > 0 ? safeCaptionHeight : kDefaultCaptionHeight);
-        const int menuInset = std::max(0, (captionHeight - kUiControlHeight) / 2);
+        const int menuPadding = std::max(0, captionHeight - 2 * kUiHighlightMargin - menuMetrics.height());
+        const int menuTopPadding = std::clamp(
+            (menuPadding + textMargins.top() - textMargins.bottom()) / 2, 0, menuPadding);
+        const int menuBottomPadding = menuPadding - menuTopPadding;
         const QString sheet = QStringLiteral(
             "QMenuBar#WindowTitleMenu { padding: 0; }"
-            "QMenuBar#WindowTitleMenu::item { margin-top: %1px; margin-bottom: %2px; }")
-            .arg(menuInset).arg(menuInset + kUiControlBorderWidth);
+            "QMenuBar#WindowTitleMenu::item { padding: %1px %2px %3px %2px;"
+            " margin: %4px %4px %5px %4px; }")
+            .arg(menuTopPadding).arg(kCaptionMenuHorizontalPadding).arg(menuBottomPadding)
+            .arg(kUiHighlightMargin).arg(kUiHighlightMargin + kUiControlBorderWidth);
 
         if (font() != menuFont) {
             setFont(menuFont);
         }
         controls_->setCaptionHeight(captionHeight);
+        logo_->setFixedSize(captionHeight, captionHeight);
         setFixedHeight(captionHeight + kUiControlBorderWidth);
         if (styleSheet() != sheet) {
             setStyleSheet(sheet);
@@ -361,6 +409,7 @@ private:
 
     QPointer<QMainWindow> window_;
     QPointer<QWindow> frameWindow_;
+    CaptionLogo *logo_;
     CaptionControls *controls_;
     HWND nativeWindow_ = nullptr;
     bool updating_ = false;

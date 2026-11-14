@@ -14,7 +14,6 @@ constexpr const char *kDockIconNameProperty = "flsDockIconName";
 constexpr const char *kDockIconLabelProperty = "flsDockIconLabel";
 constexpr const char *kDockTitleLayoutProperty = "flsDockTitleLayout";
 constexpr int kDockIconExtent = 16;
-constexpr int kDockTitleVerticalMargin = 3;
 
 enum class DockGlyph { Close, Left, Right, Up, Down };
 
@@ -24,14 +23,14 @@ public:
         : QToolButton(parent), glyph_(glyph) {
         setAutoRaise(false);
         setProperty("uiDockButton", true);
-        setFixedSize(kUiCompactControlExtent, kUiCompactControlExtent);
+        setFixedSize(kUiControlHeight, kUiControlHeight);
         setFocusPolicy(Qt::NoFocus);
         setToolTip(toolTip);
         setAccessibleName(toolTip);
     }
 
     QSize sizeHint() const override {
-        return QSize(kUiCompactControlExtent, kUiCompactControlExtent);
+        return QSize(kUiControlHeight, kUiControlHeight);
     }
 
     QSize minimumSizeHint() const override {
@@ -59,7 +58,7 @@ protected:
         option.text.clear();
         style()->drawComplexControl(QStyle::CC_ToolButton, &option, &painter, this);
         painter.setRenderHint(QPainter::Antialiasing);
-        painter.setPen(QPen(isEnabled() ? colors.text : colors.disabledText,
+        painter.setPen(QPen(!isEnabled() ? colors.disabledText : underMouse() || isDown() ? colors.selectedText : colors.text,
                             kUiActionGlyphStrokeWidth, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
         painter.setBrush(Qt::NoBrush);
         if (glyph_ == DockGlyph::Close) {
@@ -98,8 +97,8 @@ void setDockTitleIcon(QDockWidget *dock, const QString &iconName) {
     titleBar->setMinimumHeight(kUiHeaderHeight);
     titleBar->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
     auto *layout = new QHBoxLayout(titleBar);
-    layout->setContentsMargins(kUiSpacing, kDockTitleVerticalMargin,
-                               kUiSpacing, kDockTitleVerticalMargin);
+    layout->setContentsMargins(kUiSpacing, kUiHighlightMargin,
+                               kUiSpacing, kUiHighlightMargin + kUiControlBorderWidth);
     layout->setSpacing(kUiSpacing);
     titleBar->setProperty(kDockTitleLayoutProperty, QVariant::fromValue<QObject *>(layout));
 

@@ -1,5 +1,6 @@
 #include "main_window.h"
 #include "tool_settings_widget.h"
+#include "theme_toolbar.h"
 
 #include <algorithm>
 #include <array>
@@ -78,7 +79,7 @@ const auto kToolFlags = std::to_array<ToolFlag>({
 } // namespace
 
 void MainWindow::setupToolSettings() {
-    toolSettingsBar_ = new QToolBar(QStringLiteral("Tool Settings"), this);
+    toolSettingsBar_ = new ThemeToolBar(QStringLiteral("Tool Settings"), this);
     toolSettingsBar_->setObjectName(QStringLiteral("ToolSettingsBar"));
     toolSettingsBar_->setAllowedAreas(Qt::TopToolBarArea | Qt::BottomToolBarArea);
     toolSettingsBar_->setMovable(true);

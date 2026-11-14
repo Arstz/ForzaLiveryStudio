@@ -66,12 +66,7 @@ void drawResizeHandle(QPainter &painter, const QStyleOption &option) {
     const bool pressed = option.state.testFlag(QStyle::State_Sunken);
 
     painter.save();
-    painter.fillRect(area, hovered || pressed ? colors.accent : background);
-    if (area.width() < area.height()) {
-        painter.fillRect(QRect(area.center().x(), area.top(), kUiControlBorderWidth, area.height()), colors.border);
-    } else {
-        painter.fillRect(QRect(area.left(), area.center().y(), area.width(), kUiControlBorderWidth), colors.border);
-    }
+    painter.fillRect(area, pressed ? colors.selection : hovered ? uiSelectionHoverColor(colors.selection) : background);
     painter.restore();
 }
 
@@ -143,8 +138,8 @@ void drawSlider(QPainter &painter, const QStyleOptionSlider &option, const QWidg
                                 kUiCornerRadius, kUiCornerRadius);
     }
     if (option.subControls.testFlag(QStyle::SC_SliderHandle)) {
-        painter.setPen(QPen(active ? colors.focus : enabled ? colors.border : colors.disabledText, kOutlineWidth));
-        painter.setBrush(!enabled ? colors.main : active ? colors.secondary : colors.accent);
+        painter.setPen(active ? Qt::NoPen : QPen(enabled ? colors.border : colors.disabledText, kOutlineWidth));
+        painter.setBrush(!enabled ? colors.main : active ? uiSelectionHoverColor(colors.selection) : colors.accent);
         painter.drawRoundedRect(QRectF(handle).adjusted(inset, inset, -inset, -inset),
                                 kUiCornerRadius, kUiCornerRadius);
     }
@@ -260,10 +255,11 @@ void drawCheckBox(QPainter &painter, const QStyleOption &option) {
 
     painter.save();
     painter.setRenderHint(QPainter::Antialiasing);
-    painter.setPen(QPen(active ? colors.focus : colors.border, 1.0));
-    painter.setBrush(!enabled ? colors.main : checked || mixed ? colors.accent : colors.secondary);
+    painter.setPen(active ? Qt::NoPen : QPen(colors.border, kOutlineWidth));
+    painter.setBrush(!enabled ? colors.main : active ? uiSelectionHoverColor(colors.selection)
+        : checked || mixed ? colors.selection : colors.secondary);
     painter.drawRoundedRect(box, kUiCornerRadius, kUiCornerRadius);
-    painter.setPen(QPen(enabled ? colors.text : colors.disabledText,
+    painter.setPen(QPen(!enabled ? colors.disabledText : active || checked || mixed ? colors.selectedText : colors.text,
                         kCheckStrokeWidth, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
     if (mixed) {
         painter.drawLine(QPointF(box.left() + box.width() * 0.25, box.center().y()),
@@ -437,10 +433,9 @@ public:
 QString themeStyleSheet(UiTheme theme) {
     const UiColors colors = uiColors(theme);
     const QFont secondaryFont = uiSecondaryTextFont();
-    const QFontMetrics textMetrics(uiTextFont());
-    const int baselineOffset = qRound((textMetrics.ascent() - textMetrics.descent() - textMetrics.capHeight()) / 2.0);
-    const int textTopInset = std::max(0, -2 * baselineOffset);
-    const int textBottomInset = std::max(0, 2 * baselineOffset);
+    const QMargins textMargins = uiTextInsets(uiTextFont());
+    const int textTopInset = textMargins.top();
+    const int textBottomInset = textMargins.bottom();
     const int textInsets = textTopInset + textBottomInset;
     const int controlContent = kUiControlHeight - 2 * kUiControlBorderWidth - textInsets;
     QString sheet = QStringLiteral(R"(
@@ -470,11 +465,12 @@ QString themeStyleSheet(UiTheme theme) {
             padding: @baselineTopInsetpx 8px @baselineBottomInsetpx 8px;
         }
         QToolButton { padding: @baselineTopInsetpx 6px @baselineBottomInsetpx 6px; }
-        QPushButton:hover, QToolButton:hover { background: @hover; border-color: @focus; }
+        QPushButton:hover, QToolButton:hover { color: @selectedText; background: @highlightFill; border-color: transparent; }
         QPushButton:pressed, QToolButton:pressed,
-        QPushButton:checked, QToolButton:checked { background: @selection; border-color: @focus; }
-        QPushButton:checked:hover, QToolButton:checked:hover { background: @accent; }
+        QPushButton:checked, QToolButton:checked { color: @selectedText; background: @selection; border-color: transparent; }
+        QPushButton:checked:hover, QToolButton:checked:hover { background: @highlightFill; }
         QPushButton:focus, QPushButton:default, QToolButton:focus { border-color: @focus; }
+        QPushButton:focus:hover, QPushButton:default:hover, QToolButton:focus:hover { border-color: transparent; }
         QPushButton:disabled, QToolButton:disabled {
             color: @disabled; background: @main; border-color: @border;
         }
@@ -483,24 +479,24 @@ QString themeStyleSheet(UiTheme theme) {
             padding: @baselineTopInsetpx @toolbarPaddingpx @baselineBottomInsetpx @toolbarPaddingpx;
         }
         QToolBar#MainToolBar QToolButton:checked,
-        QToolBar#MainToolBar QToolButton:pressed { color: @selectedText; background: @selection; border-color: @focus; }
+        QToolBar#MainToolBar QToolButton:pressed { color: @selectedText; background: @selection; border-color: transparent; }
         QToolBar#MainToolBar QToolButton:hover,
         QToolBar#MainToolBar QToolButton:checked:hover {
-            color: @selectedText; background: @toolHoverFill; border-color: @toolHoverOutline;
+            color: @selectedText; background: @highlightFill; border-color: transparent;
         }
-        QToolBar#MainToolBar QToolButton:pressed:hover { background: @selection; border-color: @focus; }
+        QToolBar#MainToolBar QToolButton:pressed:hover { background: @selection; border-color: transparent; }
         QToolBar#MainToolBar QToolButton:disabled {
             color: @disabled; background: transparent; border-color: transparent;
         }
         QToolButton[uiCompact="true"] { min-height: 0; min-width: 0; padding: 0; }
         QToolButton[uiFlat="true"] { background: transparent; border-color: transparent; }
-        QToolButton[uiFlat="true"]:hover { background: @hover; border-color: @border; }
+        QToolButton[uiFlat="true"]:hover { color: @selectedText; background: @highlightFill; border-color: transparent; }
         QToolButton[uiDockButton="true"] {
             background: transparent; border: 1px solid transparent; border-radius: @radiuspx;
             min-height: @dockExtentpx; max-height: @dockExtentpx;
             min-width: @dockExtentpx; max-width: @dockExtentpx; margin: 0; padding: 0;
         }
-        QToolButton[uiDockButton="true"]:hover { background: @toolHoverFill; border-color: transparent; }
+        QToolButton[uiDockButton="true"]:hover { background: @highlightFill; border-color: transparent; }
         QToolButton[uiDockButton="true"]:pressed { background: @selection; border-color: transparent; }
         QToolButton[uiDockButton="true"]:disabled { background: transparent; border-color: transparent; }
         QPushButton[uiSquareButton="true"], QToolButton[uiSquareButton="true"] {
@@ -532,9 +528,12 @@ QString themeStyleSheet(UiTheme theme) {
             padding-top: @baselineTopInsetpx; padding-bottom: @baselineBottomInsetpx;
         }
         QComboBox, QAbstractSpinBox { padding-right: 22px; }
-        QLineEdit:hover, QComboBox:hover, QAbstractSpinBox:hover { border-color: @focus; }
+        QLineEdit:hover, QComboBox:hover, QAbstractSpinBox:hover,
+        QTextEdit:hover, QPlainTextEdit:hover { color: @selectedText; background: @highlightFill; border-color: transparent; }
         QLineEdit:focus, QComboBox:focus, QTextEdit:focus,
         QPlainTextEdit:focus, QAbstractSpinBox:focus { border-color: @focus; }
+        QLineEdit:focus:hover, QComboBox:focus:hover, QAbstractSpinBox:focus:hover,
+        QTextEdit:focus:hover, QPlainTextEdit:focus:hover { border-color: transparent; }
         QLineEdit:disabled, QComboBox:disabled, QTextEdit:disabled,
         QPlainTextEdit:disabled, QAbstractSpinBox:disabled {
             color: @disabled;
@@ -551,7 +550,10 @@ QString themeStyleSheet(UiTheme theme) {
             background: transparent; border: none; margin: 0; padding: 0;
             min-width: 0; min-height: 0; max-width: @innerEditorLimitpx; max-height: @innerEditorLimitpx;
         }
-        QLineEdit > QToolButton:hover { background: @hover; }
+        QLineEdit > QToolButton:hover { background: @highlightFill; }
+        QAbstractSpinBox:hover QLineEdit, QComboBox:hover QLineEdit {
+            color: @selectedText; background: @highlightFill;
+        }
         QComboBox::drop-down { subcontrol-origin: border; width: 20px; border: none; }
         QAbstractSpinBox::up-button, QAbstractSpinBox::down-button {
             subcontrol-origin: padding; width: 18px; border: none; background: transparent;
@@ -569,11 +571,12 @@ QString themeStyleSheet(UiTheme theme) {
         }
         QAbstractItemView[uiMainSurface="true"] { background: @main; alternate-background-color: @main; }
         QAbstractItemView::item {
-            min-height: @fieldHeightpx; padding: 0 4px; border: 1px solid transparent; border-radius: 0;
+            min-height: @fieldHeightpx; padding: 0 4px; border: 1px solid transparent; border-radius: @radiuspx;
         }
-        QAbstractItemView::item:hover { background: @hover; }
+        QAbstractItemView::item:hover { color: @selectedText; background: @highlightFill; border-color: transparent; }
         QAbstractItemView::item:selected { background: @selection; color: @selectedText; }
         QAbstractItemView::item:focus { border: 1px solid @focus; }
+        QAbstractItemView::item:focus:hover { border-color: transparent; }
         QHeaderView::section {
             color: @text; background: @main; border: none;
             border-bottom: 1px solid @border; padding: 5px 6px; font-weight: 600;
@@ -586,7 +589,7 @@ QString themeStyleSheet(UiTheme theme) {
         QScrollBar::handle { background: @border; border-radius: @radiuspx; }
         QScrollBar::handle:vertical { min-height: 28px; margin: 2px; }
         QScrollBar::handle:horizontal { min-width: 28px; margin: 2px; }
-        QScrollBar::handle:hover { background: @focus; }
+        QScrollBar::handle:hover { background: @highlightFill; }
         QScrollBar::add-line, QScrollBar::sub-line { width: 0; height: 0; }
         QScrollBar::add-page, QScrollBar::sub-page { background: transparent; }
         QSlider:horizontal { min-height: @controlHeightpx; }
@@ -594,7 +597,10 @@ QString themeStyleSheet(UiTheme theme) {
         QToolBar { background: @toolbarBackground; border: none; margin: 0; spacing: @spacingpx; padding: 0; }
         QToolBar#MainToolBar:horizontal { border-bottom: @separatorExtentpx solid @border; }
         QToolBar#MainToolBar:vertical { border-right: @separatorExtentpx solid @border; }
-        QToolBar#ToolSettingsBar { background: @toolbarBackground; margin: 0; padding: 0; spacing: 0; }
+        QToolBar#ToolSettingsBar {
+            background: @toolbarBackground; border-bottom: @separatorExtentpx solid @border;
+            margin: 0; padding: 0; spacing: 0;
+        }
         QScrollArea#ToolSettingsPanel, QWidget#ToolSettings { background: @toolbarBackground; margin: 0; padding: 0; }
         QScrollArea#ToolSettingsPanel > QWidget,
         QScrollArea#ToolSettingsPanel > QWidget > QWidget { background: @toolbarBackground; }
@@ -604,17 +610,17 @@ QString themeStyleSheet(UiTheme theme) {
         QStatusBar::item { border: none; }
         QMenuBar { background: @main; color: @text; border-bottom: @separatorExtentpx solid @border; }
         QMenuBar::item {
-            padding: 5px 8px; margin-bottom: @separatorExtentpx;
+            padding: 5px 8px; margin: @highlightMarginpx @highlightMarginpx @highlightBottompx @highlightMarginpx;
             border-radius: @radiuspx; background: transparent;
         }
-        QMenuBar::item:selected { background: @accent; }
+        QMenuBar::item:selected { color: @selectedText; background: @highlightFill; }
         QMenu {
             color: @text; background: @secondary; border: 1px solid @border;
             border-radius: @radiuspx; padding: 2px;
         }
         QMenu::item { padding: 3px 6px; margin: 0; border-radius: @radiuspx; }
         QMenu::indicator { width: @menuIconpx; height: @menuIconpx; }
-        QMenu::item:selected { background: @selection; }
+        QMenu::item:selected { color: @selectedText; background: @highlightFill; }
         QMenu::item:disabled { color: @disabled; }
         QMenu::separator { height: 1px; background: @border; margin: 2px 4px; }
         QToolTip {
@@ -643,11 +649,16 @@ QString themeStyleSheet(UiTheme theme) {
             border-top-right-radius: @radiuspx; border-bottom-right-radius: @radiuspx;
         }
         QTabBar::tab:selected { background: @accent; border-color: @focus; }
-        QTabBar::tab:hover { background: @hover; }
+        QTabBar::tab:hover { color: @selectedText; background: @highlightFill; border-color: transparent; }
         QTabBar QToolButton { min-height: 0; min-width: 0; margin: 0; padding: 0; }
-        QMainWindow > QTabBar { background: @secondary; border: none; margin: 0; padding: 0; }
+        QMainWindow > QTabBar {
+            background: @secondary; border: none; border-bottom: @separatorExtentpx solid @border;
+            margin: 0; padding: 0;
+        }
         QMainWindow > QTabBar::tab {
-            color: @text; background: @secondary; border-color: transparent; margin: 0;
+            color: @text; background: transparent; border-color: transparent;
+            border-radius: @radiuspx;
+            margin: @highlightMarginpx @highlightMarginpx @highlightBottompx @highlightMarginpx;
             padding: @baselineTopInsetpx @spacingpx @baselineBottomInsetpx @spacingpx;
         }
         QMainWindow > QTabBar::tab:top, QMainWindow > QTabBar::tab:bottom {
@@ -658,9 +669,9 @@ QString themeStyleSheet(UiTheme theme) {
             padding: @spacingpx @baselineBottomInsetpx @spacingpx @baselineTopInsetpx;
         }
         QMainWindow > QTabBar::tab:selected { color: @selectedText; background: @selection; border-color: transparent; }
-        QMainWindow > QTabBar::tab:hover { background: @hover; border-color: @focus; }
-        QMainWindow > QTabBar::tab:selected:hover { background: @accent; }
-        QMainWindow > QTabBar::tab:disabled { color: @disabled; background: @secondary; border-color: transparent; }
+        QMainWindow > QTabBar::tab:hover { color: @selectedText; background: @highlightFill; border-color: transparent; }
+        QMainWindow > QTabBar::tab:selected:hover { background: @highlightFill; }
+        QMainWindow > QTabBar::tab:disabled { color: @disabled; background: transparent; border-color: transparent; }
         QFrame[frameShape="4"] { border: none; background: @border; min-height: 1px; max-height: 1px; }
         QFrame[frameShape="5"] { border: none; background: @border; min-width: 1px; max-width: 1px; }
         QProgressBar {
@@ -675,7 +686,7 @@ QString themeStyleSheet(UiTheme theme) {
             background: transparent;
         }
         QToolButton#previewSidePanelToggle { background: @main; min-height: 0; padding: 0; font-size: 16px; }
-        QToolButton#previewSidePanelToggle:hover { background: @hover; }
+        QToolButton#previewSidePanelToggle:hover { color: @selectedText; background: @highlightFill; border-color: transparent; }
         QLabel#previewReference, QLabel#previewStatus {
             color: @text; background: @secondary; border: 1px solid @border;
             border-radius: @radiuspx; padding: 3px 6px;
@@ -685,8 +696,7 @@ QString themeStyleSheet(UiTheme theme) {
         QFrame#paintColorPopup { background: @main; border: 1px solid @border; border-radius: @radiuspx; }
     )");
     const QMap<QString, QColor> colorTokens = {
-        {QStringLiteral("@toolHoverFill"), uiSelectionHoverColor(colors.selection)},
-        {QStringLiteral("@toolHoverOutline"), uiSelectionHoverColor(colors.focus)},
+        {QStringLiteral("@highlightFill"), uiSelectionHoverColor(colors.selection)},
         {QStringLiteral("@selectedText"), colors.selectedText},
         {QStringLiteral("@editorBackground"), colors.editorBackground},
         {QStringLiteral("@buttonBackground"), colors.buttonBackground},
@@ -726,9 +736,11 @@ QString themeStyleSheet(UiTheme theme) {
     sheet.replace(QStringLiteral("@baselineBottomInset"), QString::number(textBottomInset));
     sheet.replace(QStringLiteral("@toolbarPadding"), QString::number(kUiToolbarButtonPadding));
     sheet.replace(QStringLiteral("@separatorExtent"), QString::number(kUiControlBorderWidth));
+    sheet.replace(QStringLiteral("@highlightMargin"), QString::number(kUiHighlightMargin));
+    sheet.replace(QStringLiteral("@highlightBottom"), QString::number(kUiHighlightMargin + kUiControlBorderWidth));
     sheet.replace(QStringLiteral("@innerEditorLimit"), QString::number(QWIDGETSIZE_MAX));
     sheet.replace(QStringLiteral("@scrollExtent"), QString::number(kUiSplitterWidth));
-    sheet.replace(QStringLiteral("@dockExtent"), QString::number(kUiCompactControlExtent - 2));
+    sheet.replace(QStringLiteral("@dockExtent"), QString::number(kUiControlHeight - 2 * kUiControlBorderWidth));
     sheet.replace(QStringLiteral("@squareExtent"), QString::number(kUiControlHeight - 2 * kUiControlBorderWidth));
     sheet.replace(QStringLiteral("@menuIcon"), QString::number(kMenuIconExtent));
     sheet.replace(QStringLiteral("@spacing"), QString::number(kUiSpacing));
@@ -967,6 +979,13 @@ int uiTextPixelSize(const QFont &font) {
     return std::max(1, QFontInfo(font).pixelSize());
 }
 
+QMargins uiTextInsets(const QFont &font) {
+    const QFontMetrics metrics(font);
+    const int offset = qRound((metrics.ascent() - metrics.descent() - metrics.capHeight()) / 2.0);
+
+    return QMargins(0, std::max(0, -2 * offset), 0, std::max(0, 2 * offset));
+}
+
 QColor uiSelectionHoverColor(const QColor &color) {
     return color.lighter(kToolbarHoverLightness);
 }
@@ -974,15 +993,16 @@ QColor uiSelectionHoverColor(const QColor &color) {
 void applyUiToolbarMetrics(QToolBar &toolbar) {
     const int iconExtent = uiTextPixelSize(toolbar.font());
     const bool mainToolbar = toolbar.objectName() == QStringLiteral("MainToolBar");
+    const bool settingsToolbar = toolbar.objectName() == QStringLiteral("ToolSettingsBar");
     const bool horizontal = toolbar.orientation() == Qt::Horizontal;
 
     toolbar.ensurePolished();
     toolbar.setIconSize(QSize(iconExtent, iconExtent));
-    toolbar.setContentsMargins(0, 0,
-        mainToolbar && !horizontal ? kUiControlBorderWidth : 0,
-        mainToolbar && horizontal ? kUiControlBorderWidth : 0);
+    toolbar.setContentsMargins(0, 0, 0, 0);
     if (QLayout *layout = toolbar.layout()) {
-        layout->setContentsMargins(0, 0, 0, 0);
+        layout->setContentsMargins(kUiHighlightMargin, kUiHighlightMargin,
+            kUiHighlightMargin + (mainToolbar && !horizontal ? kUiControlBorderWidth : 0),
+            kUiHighlightMargin + ((mainToolbar && horizontal) || settingsToolbar ? kUiControlBorderWidth : 0));
     }
 }
 
@@ -1004,7 +1024,8 @@ QString colorSwatchStyle(const QColor &color) {
 
     return QStringLiteral(
         "QPushButton, QToolButton { background-color: rgba(%1,%2,%3,%4); color: %5; }"
-        "QPushButton:hover, QToolButton:hover, QPushButton:focus, QToolButton:focus { border-color: palette(text); }")
+        "QPushButton:focus, QToolButton:focus { border-color: palette(text); }"
+        "QPushButton:hover, QToolButton:hover { border-color: transparent; }")
         .arg(color.red()).arg(color.green()).arg(color.blue()).arg(color.alpha()).arg(foreground);
 }
 
