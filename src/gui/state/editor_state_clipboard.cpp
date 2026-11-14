@@ -54,13 +54,12 @@ bool EditorState::buildEntryClipboard(const QVector<QString> &entries, ProjectCl
     }
     QVector<QString> ordered = normalizeEntrySelection(entries);
     const ProjectIndexCache &cache = projectIndexCache();
+    QHash<QString, int> orderByEntry;
+    walkNode(static_cast<const fls::scene::Layer &>(*project_.root), [&](const fls::scene::Layer &node) {
+        orderByEntry.insert(node.id, orderByEntry.size());
+    });
     std::stable_sort(ordered.begin(), ordered.end(), [&](const QString &a, const QString &b) {
-        const QString pa = cache.parentByChild.value(a);
-        const QString pb = cache.parentByChild.value(b);
-        if (pa == pb) {
-            return cache.orderByChild.value(a, 0) < cache.orderByChild.value(b, 0);
-        }
-        return a < b;
+        return orderByEntry.value(a) < orderByEntry.value(b);
     });
     ProjectClipboard copied;
     for (const QString &entryId : ordered) {

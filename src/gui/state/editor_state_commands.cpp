@@ -61,7 +61,8 @@ QVector<QString> EditorState::selectionEntries() const {
     if (!selectedEntryIds_.isEmpty()) {
         return normalizeEntrySelection(selectedEntryIds_);
     }
-    QVector<QString> entries = selectedLayerIds_.values();
+    QVector<QString> entries = fullySelectedTopGroupIds();
+    entries += selectedLayerIds_.values();
     entries += selectedGuideLayerIds_.values();
 
     return normalizeEntrySelection(entries);

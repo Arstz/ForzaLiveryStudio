@@ -1240,9 +1240,7 @@ void MainWindow::insertCustomGroup(const QString &name, const ProjectClipboard &
     state_->beginProjectEdit();
     state_->insertClipboardAboveSelection(
         placement, selectedEntryIds(), &layerSelection, &guideSelection, false, &insertedRoots);
-    state_->selectedLayerIds_ = layerSelection;
-    state_->selectedGuideLayerIds_ = guideSelection;
-    state_->selectedEntryIds_.clear();
+    state_->setSelectionFromEntries(layerSelection, guideSelection, insertedRoots);
     QRectF insertedBounds;
     bool hasInsertedBounds = false;
     for (const QString &id : layerSelection) {

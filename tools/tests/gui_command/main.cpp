@@ -13,6 +13,7 @@
 #include "lining_fill.h"
 #include "cubic_contour.h"
 #include "image_io.h"
+#include "livery_section_bar.h"
 
 #include <limits>
 
@@ -862,6 +863,141 @@ void gradientSnapping(Harness &h) {
     canvas->setAutomaticSnapping(false);
 }
 
+void liveryClipboard(Harness &h) {
+    auto *sections = h.window.findChild<gui::LiverySectionBar *>();
+    gui::ProjectCanvas *canvas = nullptr;
+    for (QWidget *widget : h.window.findChildren<QWidget *>()) {
+        if (auto *found = dynamic_cast<gui::ProjectCanvas *>(widget)) canvas = found;
+    }
+    require(sections != nullptr && canvas != nullptr, "clipboard checks need a section bar and canvas");
+    for (const QString &scenario : {QString("flat-inserted"), QString("nested-inserted"),
+                                    QString("flat-marquee"), QString("nested-marquee")}) {
+        const bool groupedClipboard = scenario.startsWith("nested");
+        fls::Project project;
+        fls::scene::ensureProjectSceneRoot(project);
+        project.isLivery = true;
+        for (int slot = 0; slot < 2; ++slot) {
+            auto section = std::make_unique<fls::scene::Group>();
+            section->id = section->name = QStringLiteral("section_%1").arg(slot);
+            section->isLiverySection = true;
+            section->liverySectionSlot = slot;
+            project.root->append(std::move(section));
+        }
+        h.reset(std::move(project));
+        sections->setCurrentRow(0);
+        gui::ProjectClipboard clipboard;
+        auto group = std::make_unique<fls::scene::Group>();
+        group->id = "custom-root";
+        group->transform = {12, -8, 1.2, 0.8, 25, 0.1};
+        auto nested = std::make_unique<fls::scene::Group>();
+        nested->id = "custom-nested";
+        nested->transform = {-17, 9, 0.6, 1.4, -13, -0.2};
+        nested->append(shape("custom-a", -20));
+        nested->append(shape("custom-b", 20));
+        group->append(std::move(nested));
+        group->append(shape("custom-c", 55));
+        if (groupedClipboard) {
+            clipboard.rootIds.push_back(group->id);
+            clipboard.nodes.push_back(std::move(group));
+        } else {
+            while (!group->children.empty()) {
+                auto child = group->takeAt(0);
+                clipboard.rootIds.push_back(child->id);
+                clipboard.nodes.push_back(std::move(child));
+            }
+        }
+        h.window.insertCustomGroup("Custom", clipboard);
+        h.validate();
+        const auto *source = h.state->groupForId("section_0");
+        require(source->children.size() == 1, "custom group insertion lost its root");
+        const QString sourceRoot = source->children.front()->id;
+        if (scenario.endsWith("marquee")) {
+            h.state->clearSelection();
+            canvas->resize(1000, 600);
+            canvas->setSeparateSelectAndMarqueeTools(true);
+            canvas->setTool("marquee");
+            canvas->refitView();
+            const QPointF start(35, 35);
+            const QPointF end(canvas->width() - 10, canvas->height() - 10);
+            QMouseEvent press(QEvent::MouseButtonPress, start, canvas->mapToGlobal(start.toPoint()),
+                              Qt::LeftButton, Qt::LeftButton, {});
+            QApplication::sendEvent(canvas, &press);
+            QMouseEvent release(QEvent::MouseButtonRelease, end, canvas->mapToGlobal(end.toPoint()),
+                                Qt::LeftButton, Qt::NoButton, {});
+            QApplication::sendEvent(canvas, &release);
+            require(h.state->selectedLayerIds().size() == 3 && h.state->selectedEntryIds_.isEmpty(),
+                    "marquee did not select the custom group's leaves");
+            canvas->setSeparateSelectAndMarqueeTools(gui::loadBehaviorSettings().separateSelectAndMarqueeTools);
+            canvas->setTool("select");
+        }
+        h.window.copySelection();
+        require(h.state->clipboard() && h.state->clipboard()->nodes.size() == 1
+                    && h.state->clipboard()->nodes.front()->kind() == fls::scene::LayerKind::Group,
+                "copy flattened the custom group: " + scenario);
+        require(h.state->selectionEntries() == QVector<QString>{sourceRoot},
+                "selection did not resolve to the custom group: " + scenario);
+        const QByteArray original = fls::encodeProjectDocument(*h.state->project());
+        sections->setCurrentRow(1);
+        require(h.state->activeSectionId_ == "section_1" && h.state->selectionEntries().isEmpty(),
+                "section switch retained the source selection");
+        h.window.pasteClipboard();
+        h.validate();
+        const auto *destination = h.state->groupForId("section_1");
+        require(destination->children.size() == 1, "paste flattened the custom group");
+        const QString pastedRoot = destination->children.front()->id;
+        const auto sourceShapes = gui::sceneShapeLeaves(*h.state->groupForId(sourceRoot));
+        const auto pastedShapes = gui::sceneShapeLeaves(*h.state->groupForId(pastedRoot));
+        require(sourceShapes.size() == 3 && pastedShapes.size() == sourceShapes.size(),
+                "paste changed the section shape count");
+        require(gui::sceneShapeLeaves(*h.state->project()->root).size() == 6,
+                "paste did not increase the project shape count");
+        require(h.state->groupForId(pastedRoot)->children.front()->kind() == fls::scene::LayerKind::Group,
+                "paste lost the nested group");
+        for (int i = 0; i < sourceShapes.size(); ++i) {
+            require(sourceShapes[i]->id != pastedShapes[i]->id, "paste reused a source layer ID");
+            require(pastedShapes[i]->name == sourceShapes[i]->name + " (Copy)", "paste changed layer order");
+            sameWorld(gui::sceneWorldTransform(*sourceShapes[i]), gui::sceneWorldTransform(*pastedShapes[i]),
+                      "pasted custom shape");
+        }
+        require(sections->item(0)->text().endsWith("(3)") && sections->item(1)->text().endsWith("(3)"),
+                "paste left stale section counts");
+        const QByteArray pasted = fls::encodeProjectDocument(*h.state->project());
+        h.window.undo();
+        require(fls::encodeProjectDocument(*h.state->project()) == original, "paste undo changed the source project");
+        h.validate();
+        h.window.redo();
+        require(fls::encodeProjectDocument(*h.state->project()) == pasted, "paste redo changed the copied project");
+        h.validate();
+        sections->setCurrentRow(0);
+        h.validate();
+        sections->setCurrentRow(1);
+        h.validate();
+    }
+
+    gui::EditorState state;
+    state.setProject(fixture());
+    state.setSelectionIds({"a", "b", "path", "c"}, {"guide"});
+    require(state.selectionEntries() == QVector<QString>{"source"}, "leaf selection lost the outer group");
+    state.setSelectionIds({"a", "b", "path"}, {});
+    require(!state.selectionEntries().contains("inner"), "partial selection included an unselected guide");
+    state.setSelectionIds({"a", "b", "path", "loose"}, {"guide"});
+    const QVector<QString> entries = state.selectionEntries();
+    require(QSet<QString>(entries.begin(), entries.end()) == QSet<QString>{"inner", "loose"},
+            "leaf selection lost its nested group or loose shape");
+    gui::EditorCommand selection;
+    selection.type = gui::EditorCommandType::Selection;
+    selection.entries = {"a", "b"};
+    require(state.executeCommand(selection) && state.selectionEntries() == selection.entries,
+            "explicit leaf selection was promoted to a group");
+    gui::ProjectClipboard ordered;
+    require(state.buildEntryClipboard({"loose", "d", "c", "b", "a"}, ordered), "ordered copy failed");
+    require(ordered.rootIds == QVector<QString>{"a", "b", "c", "d", "loose"},
+            "clipboard roots did not follow scene draw order");
+    require(state.buildEntryClipboard({"loose", "d", "source"}, ordered), "mixed group copy failed");
+    require(ordered.rootIds == QVector<QString>{"source", "d", "loose"},
+            "clipboard reordered a group and shapes from different parents");
+}
+
 void liveRenderEntries(Harness &h) {
     auto project = fixture();
     project.isLivery = true;
@@ -1422,6 +1558,11 @@ int main(int argc, char **argv) {
             QTextStream(stdout) << "Pen snapping history checks passed\n";
             return 0;
         }
+        if (argc == 2 && QString::fromLocal8Bit(argv[1]) == QStringLiteral("--livery-clipboard")) {
+            liveryClipboard(harness);
+            QTextStream(stdout) << "Livery clipboard checks passed\n";
+            return 0;
+        }
         if (argc == 3 && QString::fromLocal8Bit(argv[1]) == QStringLiteral("--profile-transforms")) {
             profileTransforms(harness, QString::fromLocal8Bit(argv[2]));
             return 0;
@@ -1434,6 +1575,7 @@ int main(int argc, char **argv) {
         rejectedMoves(harness);
         actions(harness);
         liveryMoves(harness);
+        liveryClipboard(harness);
         moveAutoSelection(harness);
         gradientSnapping(harness);
         liveRenderEntries(harness);
