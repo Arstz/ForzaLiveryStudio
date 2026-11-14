@@ -10,7 +10,16 @@ namespace {
 
 constexpr int kOptionSpacing = kUiSpacing;
 constexpr int kFieldSpacing = 4;
+constexpr int kRowPadding = kFieldSpacing;
 constexpr int kSliderWidth = 60;
+
+QLabel *controlLabel(const QString &text, QWidget *parent) {
+    auto *label = new QLabel(text, parent);
+    label->setProperty("uiControlLabel", true);
+    label->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+
+    return label;
+}
 
 } // namespace
 
@@ -18,7 +27,7 @@ ToolSettingsWidget::ToolSettingsWidget(QWidget *parent) : QWidget(parent) {
     setObjectName(QStringLiteral("ToolSettings"));
     setAttribute(Qt::WA_StyledBackground, true);
     layout_ = new QHBoxLayout(this);
-    layout_->setContentsMargins(kFieldSpacing, kFieldSpacing, kFieldSpacing, kFieldSpacing);
+    layout_->setContentsMargins(kFieldSpacing, kRowPadding, kFieldSpacing, kRowPadding);
     layout_->setSpacing(kOptionSpacing);
     addNumber(QStringLiteral("bucketTolerance"), QStringLiteral("Tolerance"), 0, 255, 0, 1, {QStringLiteral("bucket")});
     addCheck(QStringLiteral("moveToolAutoSelect"), QStringLiteral("Auto Select"), {QStringLiteral("move")});
@@ -116,7 +125,6 @@ void ToolSettingsWidget::finishEditing() {
 
 void ToolSettingsWidget::addCheck(const QString &key, const QString &text, const QStringList &tools) {
     auto *check = new QCheckBox(text, this);
-    check->setProperty("uiCompactCheck", true);
     check->setFocusPolicy(Qt::NoFocus);
     registerField(key, check, check, tools);
     connect(check, &QCheckBox::toggled, this, [this, key](bool value) {
@@ -130,9 +138,8 @@ void ToolSettingsWidget::addChoice(const QString &key, const QString &text, cons
     auto *row = new QHBoxLayout(container);
     row->setContentsMargins(0, 0, 0, 0);
     row->setSpacing(kFieldSpacing);
-    row->addWidget(new QLabel(text, container));
+    row->addWidget(controlLabel(text, container));
     auto *choice = new QComboBox(container);
-    choice->setProperty("uiCompact", true);
     choice->addItems(choices);
     choice->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
     choice->setFocusPolicy(Qt::NoFocus);
@@ -154,7 +161,7 @@ void ToolSettingsWidget::addNumber(const QString &key, const QString &text, doub
     const double scale = std::pow(10.0, decimals);
     row->setContentsMargins(0, 0, 0, 0);
     row->setSpacing(kFieldSpacing);
-    row->addWidget(new QLabel(text, container));
+    row->addWidget(controlLabel(text, container));
     slider->setObjectName(QStringLiteral("toolSettings.") + key + QStringLiteral(".slider"));
     slider->setProperty("valueScale", scale);
     slider->setRange(qRound(minimum * scale), qRound(maximum * scale));
@@ -162,7 +169,6 @@ void ToolSettingsWidget::addNumber(const QString &key, const QString &text, doub
     slider->setFixedWidth(kSliderWidth);
     slider->setFocusPolicy(Qt::NoFocus);
     slider->installEventFilter(this);
-    number->setProperty("uiCompact", true);
     number->setDecimals(decimals);
     number->setRange(minimum, maximum);
     number->setSingleStep(step);
@@ -191,7 +197,7 @@ void ToolSettingsWidget::registerField(const QString &key, QWidget *field, QWidg
     fields_.insert(key, field);
     tools_.insert(container, tools);
     container->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Preferred);
-    layout_->addWidget(container);
+    layout_->addWidget(container, 0, Qt::AlignVCenter);
 }
 
 } // namespace gui

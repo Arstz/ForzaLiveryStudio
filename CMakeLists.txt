@@ -242,6 +242,8 @@ qt_add_library(fls_editor_ui STATIC
     src/gui/app/settings_dialog.h
     src/gui/app/system_integration.cpp
     src/gui/app/system_integration.h
+    src/gui/app/title_menu_bar.cpp
+    src/gui/app/title_menu_bar.h
     src/gui/app/theme_manager.cpp
     src/gui/app/theme_manager.h
     src/gui/key_bindings.cpp

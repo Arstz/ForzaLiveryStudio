@@ -445,6 +445,7 @@ public:
         icon->setProperty("flsPropertyIconName", iconName);
         layout->addWidget(icon);
         auto *label = new QLabel(text, this);
+        label->setProperty("uiControlLabel", true);
         layout->addWidget(label);
         layout->addStretch(1);
         setCursor(Qt::SizeVerCursor);

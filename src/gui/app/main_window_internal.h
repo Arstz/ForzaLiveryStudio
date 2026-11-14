@@ -18,7 +18,6 @@ namespace gui::mw_detail {
 
 constexpr double kInitialWindowScreenFraction = 0.8;
 constexpr int kTreeIconExtent = 64;
-constexpr int kToolbarIconExtent = 18;
 constexpr int kDockSplitterHandleWidth = kUiSplitterWidth;
 constexpr int kDetailsLabelMargin = kUiMargin;
 

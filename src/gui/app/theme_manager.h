@@ -3,6 +3,7 @@
 #include "contour_data.h"
 
 #include <QColor>
+#include <QFont>
 #include <QBrush>
 #include <QPalette>
 #include <QMap>
@@ -12,6 +13,7 @@
 
 class QApplication;
 class QIcon;
+class QToolBar;
 class QWidget;
 
 namespace gui {
@@ -20,7 +22,10 @@ using UiTheme = QString;
 inline const UiTheme kDefaultUiTheme = QStringLiteral("mahogany-dark");
 
 inline constexpr int kUiCornerRadius = 0;
-inline constexpr int kUiControlHeight = 28;
+inline constexpr int kUiControlHeight = 27;
+inline constexpr int kUiControlBorderWidth = 1;
+inline constexpr int kUiToolbarButtonPadding = 3;
+inline constexpr int kUiToolbarIconSpacing = 4;
 inline constexpr int kUiCompactControlExtent = 22;
 inline constexpr int kUiHeaderHeight = 30;
 inline constexpr int kUiSpacing = 6;
@@ -87,6 +92,11 @@ ThemeColorOverrides themeColorOverrides();
 void setThemeColorOverrides(const ThemeColorOverrides &overrides);
 void saveThemeColorOverrides();
 UiColors uiColors(UiTheme theme);
+QFont uiTextFont();
+QFont uiSecondaryTextFont();
+int uiTextPixelSize(const QFont &font);
+QColor uiSelectionHoverColor(const QColor &color);
+void applyUiToolbarMetrics(QToolBar &toolbar);
 QIcon uiAddIcon();
 QString colorSwatchStyle(const QColor &color);
 void setUiState(QWidget *widget, const QString &state);

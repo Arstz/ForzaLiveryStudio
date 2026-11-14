@@ -1,6 +1,7 @@
 #include "main_window.h"
 
 #include "main_window_internal.h"
+#include "title_menu_bar.h"
 
 #include <QLockFile>
 
@@ -19,6 +20,7 @@ MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent) {
     theme_ = loadUiTheme();
     setWindowTitle(QStringLiteral("Forza Livery Studio"));
+    setMenuBar(createTitleMenuBar(*this));
     resize(screen()->availableGeometry().size() * kInitialWindowScreenFraction);
     setAcceptDrops(true);
 

@@ -4,11 +4,21 @@
 #include <QApplication>
 #include <QIconEngine>
 #include <QFile>
+#include <QFontDatabase>
+#include <QFontInfo>
+#include <QFontMetrics>
+#include <QLineEdit>
+#include <QAbstractSpinBox>
+#include <QLayout>
+#include <QMainWindow>
+#include <QTabBar>
+#include <QToolBar>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLinearGradient>
 #include <QMenu>
+#include <QMenuBar>
 #include <QPainter>
 #include <QPixmap>
 #include <QPixmapCache>
@@ -16,6 +26,7 @@
 #include <QSettings>
 #include <QStyleFactory>
 #include <QStyleOption>
+#include <QStyleHints>
 
 #include <algorithm>
 #include <cmath>
@@ -38,10 +49,13 @@ constexpr int kSliderInset = 1;
 constexpr int kHueGrooveExtent = 14;
 constexpr double kOutlineWidth = 1.0;
 constexpr int kThemeSettingsVersion = 2;
+constexpr double kTextPointSizeIncrease = 1.0;
+constexpr int kTextPixelSizeIncrease = 1;
+constexpr int kToolbarHoverLightness = 112;
 
-int checkBoxExtent(const QWidget *widget) {
-    return widget != nullptr && widget->property("uiCompactCheck").toBool()
-        ? kUiCompactControlExtent : kUiControlHeight;
+bool isDockTabBar(const QWidget *widget) {
+    return qobject_cast<const QTabBar *>(widget) != nullptr
+        && qobject_cast<QMainWindow *>(widget->parentWidget()) != nullptr;
 }
 
 void drawResizeHandle(QPainter &painter, const QStyleOption &option) {
@@ -53,6 +67,11 @@ void drawResizeHandle(QPainter &painter, const QStyleOption &option) {
 
     painter.save();
     painter.fillRect(area, hovered || pressed ? colors.accent : background);
+    if (area.width() < area.height()) {
+        painter.fillRect(QRect(area.center().x(), area.top(), kUiControlBorderWidth, area.height()), colors.border);
+    } else {
+        painter.fillRect(QRect(area.left(), area.center().y(), area.width(), kUiControlBorderWidth), colors.border);
+    }
     painter.restore();
 }
 
@@ -263,6 +282,22 @@ public:
     explicit ThemeStyle(QStyle *style)
         : QProxyStyle(style) {}
 
+    using QProxyStyle::polish;
+
+    void polish(QWidget *widget) override {
+        QProxyStyle::polish(widget);
+        if (auto *lineEditor = qobject_cast<QLineEdit *>(widget)) {
+            lineEditor->setAlignment((lineEditor->alignment() & ~Qt::AlignVertical_Mask) | Qt::AlignVCenter);
+        } else if (auto *spinEditor = qobject_cast<QAbstractSpinBox *>(widget)) {
+            spinEditor->setAlignment((spinEditor->alignment() & ~Qt::AlignVertical_Mask) | Qt::AlignVCenter);
+        } else if (auto *tabs = qobject_cast<QTabBar *>(widget); isDockTabBar(tabs)) {
+            const int iconExtent = uiTextPixelSize(tabs->font());
+
+            tabs->setIconSize(QSize(iconExtent, iconExtent));
+            tabs->setDrawBase(false);
+        }
+    }
+
     void drawPrimitive(PrimitiveElement element, const QStyleOption *option,
                        QPainter *painter, const QWidget *widget = nullptr) const override {
         const UiColors colors = uiColors(currentUiTheme());
@@ -352,14 +387,29 @@ public:
         return QProxyStyle::standardIcon(icon, option, widget);
     }
 
+    int styleHint(StyleHint hint, const QStyleOption *option, const QWidget *widget,
+                  QStyleHintReturn *returnData) const override {
+        if (hint == SH_UnderlineShortcut && (qobject_cast<const QMenuBar *>(widget) != nullptr
+            || qobject_cast<const QMenu *>(widget) != nullptr)) {
+            return false;
+        }
+
+        return QProxyStyle::styleHint(hint, option, widget, returnData);
+    }
+
     int pixelMetric(PixelMetric metric, const QStyleOption *option,
                     const QWidget *widget) const override {
         switch (metric) {
+        case PM_LineEditIconSize:
+            return uiTextPixelSize(widget != nullptr ? widget->font() : uiTextFont());
         case PM_IndicatorWidth:
         case PM_IndicatorHeight:
-            return qobject_cast<const QMenu *>(widget) != nullptr ? kMenuIconExtent : checkBoxExtent(widget);
+            return qobject_cast<const QMenu *>(widget) != nullptr ? kMenuIconExtent
+                : kUiControlHeight;
         case PM_TabBarScrollButtonWidth:
             return kUiCompactControlExtent;
+        case PM_TabBarTabShiftVertical:
+            return isDockTabBar(widget) ? 0 : QProxyStyle::pixelMetric(metric, option, widget);
         case PM_SliderLength:
             return kSliderHandleExtent;
         case PM_SliderControlThickness:
@@ -386,25 +436,29 @@ public:
 
 QString themeStyleSheet(UiTheme theme) {
     const UiColors colors = uiColors(theme);
+    const QFont secondaryFont = uiSecondaryTextFont();
+    const QFontMetrics textMetrics(uiTextFont());
+    const int baselineOffset = qRound((textMetrics.ascent() - textMetrics.descent() - textMetrics.capHeight()) / 2.0);
+    const int textTopInset = std::max(0, -2 * baselineOffset);
+    const int textBottomInset = std::max(0, 2 * baselineOffset);
+    const int textInsets = textTopInset + textBottomInset;
+    const int controlContent = kUiControlHeight - 2 * kUiControlBorderWidth - textInsets;
     QString sheet = QStringLiteral(R"(
         QWidget { color: @text; }
         QWidget:disabled { color: @disabled; }
         QMainWindow, QDialog { background: @main; color: @text; }
         QDockWidget { color: @text; }
         QWidget#dockHeader {
-            background: @secondary; border: 1px solid @border;
-            border-top-left-radius: @radiuspx; border-top-right-radius: @radiuspx;
-            border-bottom-left-radius: 0; border-bottom-right-radius: 0;
+            background: @secondary; border: none; border-bottom: @separatorExtentpx solid @border;
         }
-        QWidget#dockHeader[panelFocused="true"] { border-color: @focus; background: @accent; }
+        QWidget#dockHeader[panelFocused="true"] { background: @accent; }
         QWidget#dockHeader QLabel { background: transparent; border: none; margin: 0; padding: 0; }
         QFrame#dockBody {
-            background: @secondary; border: 1px solid @border; border-top: none;
-            border-top-left-radius: 0; border-top-right-radius: 0;
-            border-bottom-left-radius: @radiuspx; border-bottom-right-radius: @radiuspx;
+            background: @secondary; border: none;
         }
         QLabel#dockTitle { font-weight: 600; background: transparent; border: none; }
         QLabel { color: @text; background: transparent; }
+        QLabel[uiControlLabel="true"] { padding: @baselineTopInsetpx 0 @baselineBottomInsetpx 0; }
         QLabel:disabled { color: @disabled; }
         QLabel[secondary="true"], QLabel[uiState="mixed"] { color: @muted; }
         QLabel[uiState="warning"] { color: @warning; }
@@ -412,9 +466,10 @@ QString themeStyleSheet(UiTheme theme) {
         QPushButton, QToolButton {
             color: @text; background: @buttonBackground;
             border: 1px solid @border; border-radius: @radiuspx;
-            min-height: @fieldHeightpx; padding: 3px 8px;
+            min-height: @controlContentpx; max-height: @controlContentpx;
+            padding: @baselineTopInsetpx 8px @baselineBottomInsetpx 8px;
         }
-        QToolButton { padding: 3px 6px; }
+        QToolButton { padding: @baselineTopInsetpx 6px @baselineBottomInsetpx 6px; }
         QPushButton:hover, QToolButton:hover { background: @hover; border-color: @focus; }
         QPushButton:pressed, QToolButton:pressed,
         QPushButton:checked, QToolButton:checked { background: @selection; border-color: @focus; }
@@ -423,40 +478,60 @@ QString themeStyleSheet(UiTheme theme) {
         QPushButton:disabled, QToolButton:disabled {
             color: @disabled; background: @main; border-color: @border;
         }
+        QToolBar#MainToolBar QToolButton {
+            background: transparent; border-color: transparent;
+            padding: @baselineTopInsetpx @toolbarPaddingpx @baselineBottomInsetpx @toolbarPaddingpx;
+        }
+        QToolBar#MainToolBar QToolButton:checked,
+        QToolBar#MainToolBar QToolButton:pressed { color: @selectedText; background: @selection; border-color: @focus; }
+        QToolBar#MainToolBar QToolButton:hover,
+        QToolBar#MainToolBar QToolButton:checked:hover {
+            color: @selectedText; background: @toolHoverFill; border-color: @toolHoverOutline;
+        }
+        QToolBar#MainToolBar QToolButton:pressed:hover { background: @selection; border-color: @focus; }
+        QToolBar#MainToolBar QToolButton:disabled {
+            color: @disabled; background: transparent; border-color: transparent;
+        }
         QToolButton[uiCompact="true"] { min-height: 0; min-width: 0; padding: 0; }
         QToolButton[uiFlat="true"] { background: transparent; border-color: transparent; }
         QToolButton[uiFlat="true"]:hover { background: @hover; border-color: @border; }
         QToolButton[uiDockButton="true"] {
-            background: @secondary; border: 1px solid @border; border-radius: @radiuspx;
+            background: transparent; border: 1px solid transparent; border-radius: @radiuspx;
             min-height: @dockExtentpx; max-height: @dockExtentpx;
             min-width: @dockExtentpx; max-width: @dockExtentpx; margin: 0; padding: 0;
         }
-        QToolButton[uiDockButton="true"]:hover { background: @hover; border-color: @focus; }
-        QToolButton[uiDockButton="true"]:pressed { background: @selection; border-color: @focus; }
-        QToolButton[uiDockButton="true"]:disabled { background: @main; border-color: @border; }
+        QToolButton[uiDockButton="true"]:hover { background: @toolHoverFill; border-color: transparent; }
+        QToolButton[uiDockButton="true"]:pressed { background: @selection; border-color: transparent; }
+        QToolButton[uiDockButton="true"]:disabled { background: transparent; border-color: transparent; }
         QPushButton[uiSquareButton="true"], QToolButton[uiSquareButton="true"] {
             min-height: @squareExtentpx; max-height: @squareExtentpx;
             min-width: @squareExtentpx; max-width: @squareExtentpx; margin: 0; padding: 0;
         }
+        QToolButton[uiHelpButton="true"] {
+            min-height: @inputContentpx; max-height: @inputContentpx;
+            min-width: @squareExtentpx; max-width: @squareExtentpx; margin: 0;
+            padding: @baselineTopInsetpx 0 @baselineBottomInsetpx 0;
+        }
         QCheckBox {
             color: @text; background: transparent; spacing: @spacingpx;
-            min-height: @controlHeightpx; margin: 0; padding: 0;
+            min-height: @checkRowContentpx; max-height: @checkRowContentpx; margin: 0;
+            padding: @baselineTopInsetpx 0 @baselineBottomInsetpx 0;
         }
         QCheckBox:disabled { color: @disabled; }
-        QCheckBox::indicator { width: @controlHeightpx; height: @controlHeightpx; }
-        QCheckBox[uiCompactCheck="true"] { min-height: @compactControlpx; }
-        QCheckBox[uiCompactCheck="true"]::indicator { width: @compactControlpx; height: @compactControlpx; }
+        QCheckBox::indicator {
+            width: @checkExtentpx; height: @checkExtentpx;
+            subcontrol-origin: margin; subcontrol-position: center left;
+        }
         QLineEdit, QComboBox, QTextEdit, QPlainTextEdit, QAbstractSpinBox {
             color: @text; background: @editorBackground; border: 1px solid @border;
             border-radius: @radiuspx; padding: 3px 7px;
             selection-background-color: @selection; selection-color: @selectedText;
         }
-        QLineEdit, QComboBox, QAbstractSpinBox { min-height: @fieldHeightpx; }
-        QComboBox, QAbstractSpinBox { padding-right: 22px; }
-        QAbstractSpinBox[uiCompact="true"], QComboBox[uiCompact="true"] {
-            min-height: @compactFieldpx; max-height: @compactFieldpx;
-            padding-top: 0; padding-bottom: 0;
+        QLineEdit, QComboBox, QAbstractSpinBox {
+            min-height: @inputContentpx; max-height: @inputContentpx;
+            padding-top: @baselineTopInsetpx; padding-bottom: @baselineBottomInsetpx;
         }
+        QComboBox, QAbstractSpinBox { padding-right: 22px; }
         QLineEdit:hover, QComboBox:hover, QAbstractSpinBox:hover { border-color: @focus; }
         QLineEdit:focus, QComboBox:focus, QTextEdit:focus,
         QPlainTextEdit:focus, QAbstractSpinBox:focus { border-color: @focus; }
@@ -468,9 +543,15 @@ QString themeStyleSheet(UiTheme theme) {
         QAbstractSpinBox[uiState="mixed"] QLineEdit { color: @muted; }
         QPushButton[uiState="mixed"] { background: @contrast; color: @text; }
         QLineEdit[uiState="error"] { border-color: @error; }
-        QAbstractSpinBox QLineEdit {
+        QAbstractSpinBox QLineEdit, QComboBox QLineEdit {
             background: @editorBackground; border: none; border-radius: 0; padding: 0; min-height: 0;
+            max-height: @innerEditorLimitpx;
         }
+        QLineEdit > QToolButton {
+            background: transparent; border: none; margin: 0; padding: 0;
+            min-width: 0; min-height: 0; max-width: @innerEditorLimitpx; max-height: @innerEditorLimitpx;
+        }
+        QLineEdit > QToolButton:hover { background: @hover; }
         QComboBox::drop-down { subcontrol-origin: border; width: 20px; border: none; }
         QAbstractSpinBox::up-button, QAbstractSpinBox::down-button {
             subcontrol-origin: padding; width: 18px; border: none; background: transparent;
@@ -510,16 +591,22 @@ QString themeStyleSheet(UiTheme theme) {
         QScrollBar::add-page, QScrollBar::sub-page { background: transparent; }
         QSlider:horizontal { min-height: @controlHeightpx; }
         QSlider:vertical { min-width: @controlHeightpx; }
-        QToolBar { background: @toolbarBackground; border: none; border-bottom: 1px solid @border; spacing: @spacingpx; padding: 3px; }
-        QToolBar#ToolSettingsBar { background: @secondary; margin: 0; padding: 1px; spacing: 0; }
-        QScrollArea#ToolSettingsPanel, QWidget#ToolSettings { background: @secondary; margin: 0; padding: 0; }
-        QScrollArea#ToolSettingsPanel > QWidget { background: @secondary; }
-        QScrollArea#ToolSettingsPanel QScrollBar:horizontal { height: @scrollExtentpx; }
+        QToolBar { background: @toolbarBackground; border: none; margin: 0; spacing: @spacingpx; padding: 0; }
+        QToolBar#MainToolBar:horizontal { border-bottom: @separatorExtentpx solid @border; }
+        QToolBar#MainToolBar:vertical { border-right: @separatorExtentpx solid @border; }
+        QToolBar#ToolSettingsBar { background: @toolbarBackground; margin: 0; padding: 0; spacing: 0; }
+        QScrollArea#ToolSettingsPanel, QWidget#ToolSettings { background: @toolbarBackground; margin: 0; padding: 0; }
+        QScrollArea#ToolSettingsPanel > QWidget,
+        QScrollArea#ToolSettingsPanel > QWidget > QWidget { background: @toolbarBackground; }
+        QScrollArea#ToolSettingsPanel QScrollBar:horizontal { background: @toolbarBackground; height: @scrollExtentpx; }
         QScrollArea#ToolSettingsPanel QScrollBar::handle:horizontal { margin: 0; }
         QStatusBar { background: @statusBackground; color: @muted; }
         QStatusBar::item { border: none; }
-        QMenuBar { background: @main; color: @text; }
-        QMenuBar::item { padding: 5px 8px; border-radius: @radiuspx; background: transparent; }
+        QMenuBar { background: @main; color: @text; border-bottom: @separatorExtentpx solid @border; }
+        QMenuBar::item {
+            padding: 5px 8px; margin-bottom: @separatorExtentpx;
+            border-radius: @radiuspx; background: transparent;
+        }
         QMenuBar::item:selected { background: @accent; }
         QMenu {
             color: @text; background: @secondary; border: 1px solid @border;
@@ -558,6 +645,22 @@ QString themeStyleSheet(UiTheme theme) {
         QTabBar::tab:selected { background: @accent; border-color: @focus; }
         QTabBar::tab:hover { background: @hover; }
         QTabBar QToolButton { min-height: 0; min-width: 0; margin: 0; padding: 0; }
+        QMainWindow > QTabBar { background: @secondary; border: none; margin: 0; padding: 0; }
+        QMainWindow > QTabBar::tab {
+            color: @text; background: @secondary; border-color: transparent; margin: 0;
+            padding: @baselineTopInsetpx @spacingpx @baselineBottomInsetpx @spacingpx;
+        }
+        QMainWindow > QTabBar::tab:top, QMainWindow > QTabBar::tab:bottom {
+            min-height: @inputContentpx; max-height: @inputContentpx;
+        }
+        QMainWindow > QTabBar::tab:left, QMainWindow > QTabBar::tab:right {
+            min-width: @inputContentpx; max-width: @inputContentpx;
+            padding: @spacingpx @baselineBottomInsetpx @spacingpx @baselineTopInsetpx;
+        }
+        QMainWindow > QTabBar::tab:selected { color: @selectedText; background: @selection; border-color: transparent; }
+        QMainWindow > QTabBar::tab:hover { background: @hover; border-color: @focus; }
+        QMainWindow > QTabBar::tab:selected:hover { background: @accent; }
+        QMainWindow > QTabBar::tab:disabled { color: @disabled; background: @secondary; border-color: transparent; }
         QFrame[frameShape="4"] { border: none; background: @border; min-height: 1px; max-height: 1px; }
         QFrame[frameShape="5"] { border: none; background: @border; min-width: 1px; max-width: 1px; }
         QProgressBar {
@@ -577,11 +680,13 @@ QString themeStyleSheet(UiTheme theme) {
             color: @text; background: @secondary; border: 1px solid @border;
             border-radius: @radiuspx; padding: 3px 6px;
         }
-        QLabel#previewReference { font-size: 10px; }
+        QLabel#previewReference { font-size: @smallFontSize; }
         QLabel#previewStatus { padding: 6px 10px; }
         QFrame#paintColorPopup { background: @main; border: 1px solid @border; border-radius: @radiuspx; }
     )");
     const QMap<QString, QColor> colorTokens = {
+        {QStringLiteral("@toolHoverFill"), uiSelectionHoverColor(colors.selection)},
+        {QStringLiteral("@toolHoverOutline"), uiSelectionHoverColor(colors.focus)},
         {QStringLiteral("@selectedText"), colors.selectedText},
         {QStringLiteral("@editorBackground"), colors.editorBackground},
         {QStringLiteral("@buttonBackground"), colors.buttonBackground},
@@ -613,13 +718,23 @@ QString themeStyleSheet(UiTheme theme) {
     sheet.replace(QStringLiteral("@radius"), QString::number(kUiCornerRadius));
     sheet.replace(QStringLiteral("@fieldHeight"), QString::number(kUiControlHeight - 8));
     sheet.replace(QStringLiteral("@controlHeight"), QString::number(kUiControlHeight));
-    sheet.replace(QStringLiteral("@compactControl"), QString::number(kUiCompactControlExtent));
-    sheet.replace(QStringLiteral("@compactField"), QString::number(kUiCompactControlExtent - 2));
+    sheet.replace(QStringLiteral("@controlContent"), QString::number(controlContent));
+    sheet.replace(QStringLiteral("@inputContent"), QString::number(controlContent));
+    sheet.replace(QStringLiteral("@checkExtent"), QString::number(kUiControlHeight));
+    sheet.replace(QStringLiteral("@checkRowContent"), QString::number(kUiControlHeight - textInsets));
+    sheet.replace(QStringLiteral("@baselineTopInset"), QString::number(textTopInset));
+    sheet.replace(QStringLiteral("@baselineBottomInset"), QString::number(textBottomInset));
+    sheet.replace(QStringLiteral("@toolbarPadding"), QString::number(kUiToolbarButtonPadding));
+    sheet.replace(QStringLiteral("@separatorExtent"), QString::number(kUiControlBorderWidth));
+    sheet.replace(QStringLiteral("@innerEditorLimit"), QString::number(QWIDGETSIZE_MAX));
     sheet.replace(QStringLiteral("@scrollExtent"), QString::number(kUiSplitterWidth));
     sheet.replace(QStringLiteral("@dockExtent"), QString::number(kUiCompactControlExtent - 2));
-    sheet.replace(QStringLiteral("@squareExtent"), QString::number(kUiControlHeight - 2));
+    sheet.replace(QStringLiteral("@squareExtent"), QString::number(kUiControlHeight - 2 * kUiControlBorderWidth));
     sheet.replace(QStringLiteral("@menuIcon"), QString::number(kMenuIconExtent));
     sheet.replace(QStringLiteral("@spacing"), QString::number(kUiSpacing));
+    sheet.replace(QStringLiteral("@smallFontSize"), secondaryFont.pointSizeF() > 0
+        ? QStringLiteral("%1pt").arg(secondaryFont.pointSizeF())
+        : QStringLiteral("%1px").arg(secondaryFont.pixelSize()));
 
     return sheet;
 }
@@ -831,6 +946,44 @@ UiColors uiColors(UiTheme theme) {
     resolvedColors.insert(theme, colors);
 
     return colors;
+}
+
+QFont uiTextFont() {
+    QFont font = uiSecondaryTextFont();
+    if (font.pointSizeF() > 0) {
+        font.setPointSizeF(font.pointSizeF() + kTextPointSizeIncrease);
+    } else {
+        font.setPixelSize(font.pixelSize() + kTextPixelSizeIncrease);
+    }
+
+    return font;
+}
+
+QFont uiSecondaryTextFont() {
+    return QFontDatabase::systemFont(QFontDatabase::GeneralFont);
+}
+
+int uiTextPixelSize(const QFont &font) {
+    return std::max(1, QFontInfo(font).pixelSize());
+}
+
+QColor uiSelectionHoverColor(const QColor &color) {
+    return color.lighter(kToolbarHoverLightness);
+}
+
+void applyUiToolbarMetrics(QToolBar &toolbar) {
+    const int iconExtent = uiTextPixelSize(toolbar.font());
+    const bool mainToolbar = toolbar.objectName() == QStringLiteral("MainToolBar");
+    const bool horizontal = toolbar.orientation() == Qt::Horizontal;
+
+    toolbar.ensurePolished();
+    toolbar.setIconSize(QSize(iconExtent, iconExtent));
+    toolbar.setContentsMargins(0, 0,
+        mainToolbar && !horizontal ? kUiControlBorderWidth : 0,
+        mainToolbar && horizontal ? kUiControlBorderWidth : 0);
+    if (QLayout *layout = toolbar.layout()) {
+        layout->setContentsMargins(0, 0, 0, 0);
+    }
 }
 
 QIcon uiAddIcon() {
@@ -1229,8 +1382,17 @@ void applyUiTheme(QApplication &app, UiTheme theme) {
     if (QStyleFactory::keys().contains(QStringLiteral("Fusion"))) {
         app.setStyle(new ThemeStyle(QStyleFactory::create(QStringLiteral("Fusion"))));
     }
+    app.setFont(uiTextFont());
+#if defined(Q_OS_WIN) && QT_VERSION >= QT_VERSION_CHECK(6, 9, 0)
+    app.styleHints()->setColorScheme(isDarkTheme(theme) ? Qt::ColorScheme::Dark : Qt::ColorScheme::Light);
+#endif
     app.setPalette(paletteForTheme(theme));
     app.setStyleSheet(themeStyleSheet(theme));
+    for (QWidget *widget : app.allWidgets()) {
+        if (auto *toolbar = qobject_cast<QToolBar *>(widget)) {
+            applyUiToolbarMetrics(*toolbar);
+        }
+    }
 }
 
 UiTheme currentUiTheme() {

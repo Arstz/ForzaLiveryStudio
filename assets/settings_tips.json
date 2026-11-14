@@ -51,7 +51,7 @@
     "hasTip": true,
     "tip": "Skew anchor will be removed in favour of separate Skew tool."
   },
-  "editor.guideline_color": {
+  "theme.guideline_color": {
     "hasTip": false,
     "tip": ""
   },

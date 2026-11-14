@@ -125,6 +125,7 @@ QWidget *settingLabel(const QString &text,
     layout->setContentsMargins(0, 8, 0, 8);
     layout->setSpacing(5);
     auto *label = new QLabel(text, container);
+    label->setProperty("uiControlLabel", true);
     label->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
     label->setWordWrap(true);
     layout->addWidget(label);
@@ -133,11 +134,14 @@ QWidget *settingLabel(const QString &text,
     if (tip.hasTip && !tip.tip.isEmpty()) {
         auto *help = new ImmediateToolTipButton(container);
         help->setText(QStringLiteral("?"));
+        help->setProperty("uiHelpButton", true);
+        help->setFixedSize(kUiControlHeight, kUiControlHeight);
+        help->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
         help->setAutoRaise(true);
         help->setCursor(Qt::WhatsThisCursor);
         help->setToolTip(tip.tip);
         help->setAccessibleName(QStringLiteral("Help for %1").arg(text));
-        layout->addWidget(help);
+        layout->addWidget(help, 0, Qt::AlignVCenter);
     }
 
     return container;
@@ -424,6 +428,12 @@ SettingsDialog::SettingsDialog(UiTheme theme,
     layersBackgroundMode_->setCurrentIndex(
         backgroundModeIndex(previewBackgroundSettings_.layers.mode));
 
+    guidelineColorButton_ = new QPushButton(themePage.widget);
+    QObject::connect(guidelineColorButton_, &QPushButton::clicked,
+                     this, &SettingsDialog::chooseGuidelineColor);
+    addSettingRow(themePage, QStringLiteral("theme.guideline_color"),
+                  QStringLiteral("Guideline color"), guidelineColorButton_, tips);
+
     SettingsPage toolsPage = createSettingsPage(pages);
     const auto makeNudgeSpinBox = [toolsPage](double value) {
         auto *spin = new QDoubleSpinBox(toolsPage.widget);
@@ -457,11 +467,6 @@ SettingsDialog::SettingsDialog(UiTheme theme,
                   separateOpacityAndSkewToolsCheck_, tips);
 
     SettingsPage editorPage = createSettingsPage(pages);
-    guidelineColorButton_ = new QPushButton(editorPage.widget);
-    QObject::connect(guidelineColorButton_, &QPushButton::clicked,
-                     this, &SettingsDialog::chooseGuidelineColor);
-    addSettingRow(editorPage, QStringLiteral("editor.guideline_color"),
-                  QStringLiteral("Guideline color"), guidelineColorButton_, tips);
     visibilityBordersCheck_ = new QCheckBox(editorPage.widget);
     visibilityBordersCheck_->setChecked(behaviorSettings_.visibilityBordersEnabled);
     addSettingRow(editorPage, QStringLiteral("editor.visibility_borders"),

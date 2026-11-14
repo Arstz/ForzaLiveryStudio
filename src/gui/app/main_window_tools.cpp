@@ -27,8 +27,11 @@ public:
 
     QSize sizeHint() const override {
         const QSize content = widget() != nullptr ? widget()->sizeHint() : QSize();
+        const int scrollBarHeight = horizontalScrollBarPolicy() == Qt::ScrollBarAlwaysOff
+            ? 0 : horizontalScrollBar()->sizeHint().height();
+        const int height = content.height() + scrollBarHeight + 2 * frameWidth();
 
-        return QSize(std::max(kToolSettingsMinimumWidth, content.width()), content.height());
+        return QSize(std::max(kToolSettingsMinimumWidth, content.width()), height);
     }
     QSize minimumSizeHint() const override {
         return QSize(kToolSettingsMinimumWidth, sizeHint().height());
@@ -85,6 +88,7 @@ void MainWindow::setupToolSettings() {
     auto *scroll = new ToolSettingsScrollArea(toolSettings_, toolSettingsBar_);
     scroll->setObjectName(QStringLiteral("ToolSettingsPanel"));
     toolSettingsBar_->addWidget(scroll);
+    applyUiToolbarMetrics(*toolSettingsBar_);
     positionToolSettings();
     toolSettings_->optionChanged = [this](const QString &key, const QVariant &value) { setToolOption(key, value); };
     toolSettings_->editingFinished = [this]() { canvas_->setFocus(Qt::OtherFocusReason); };

@@ -634,7 +634,6 @@ void MainWindow::setupOptionsMenu() {
 void MainWindow::setupToolbar() {
     toolBar_ = new QToolBar(QStringLiteral("Tools"), this);
     toolBar_->setObjectName(QStringLiteral("MainToolBar"));
-    toolBar_->setIconSize(QSize(kToolbarIconExtent, kToolbarIconExtent));
     auto *toolGroup = new QActionGroup(toolBar_);
     toolGroup->setExclusive(true);
     auto addTool = [this](const QString &label, const QString &tool, const QString &iconName) {
@@ -680,10 +679,8 @@ void MainWindow::applyToolbarStyle(bool vertical) {
     if (toolBar_ == nullptr) {
         return;
     }
-    auto *textAction = findChild<QAction *>(QStringLiteral("place_text"));
-    auto *textButton = textAction != nullptr
-        ? qobject_cast<QToolButton *>(toolBar_->widgetForAction(textAction)) : nullptr;
     const Qt::ToolBarArea targetArea = vertical ? Qt::LeftToolBarArea : Qt::TopToolBarArea;
+    const int iconExtent = uiTextPixelSize(toolBar_->font());
 
     toolBar_->setAllowedAreas(targetArea);
     if (toolBarArea(toolBar_) != targetArea) {
@@ -691,10 +688,19 @@ void MainWindow::applyToolbarStyle(bool vertical) {
         positionToolSettings();
     }
     toolBar_->setToolButtonStyle(vertical ? Qt::ToolButtonIconOnly : Qt::ToolButtonTextBesideIcon);
-    if (textButton != nullptr) {
-        textButton->ensurePolished();
-        textButton->setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Fixed);
-        textButton->setMinimumWidth(textButton->sizeHint().width());
+    applyUiToolbarMetrics(*toolBar_);
+    for (QAction *action : toolBar_->actions()) {
+        auto *button = qobject_cast<QToolButton *>(toolBar_->widgetForAction(action));
+        if (button == nullptr) {
+            continue;
+        }
+        button->ensurePolished();
+        const int textWidth = button->fontMetrics().size(Qt::TextShowMnemonic, button->text()).width();
+        const int iconWidth = button->icon().isNull() ? 0 : iconExtent + kUiToolbarIconSpacing;
+        const int width = vertical ? kUiControlHeight
+            : textWidth + iconWidth + 2 * (kUiToolbarButtonPadding + kUiControlBorderWidth);
+
+        button->setFixedSize(width, kUiControlHeight);
     }
 }
 

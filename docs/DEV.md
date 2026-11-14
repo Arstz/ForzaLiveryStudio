@@ -114,6 +114,16 @@ the application entry point and links the UI library.
 
 ### GUI appearance
 
+On Windows with Qt 6.9 or newer, `title_menu_bar.*` places the main menus in the
+expanded title-bar area. Theme-painted window controls occupy the right corner;
+the application title remains available to the operating system. Caption glyphs
+use the theme foreground, and hover uses the shared selection colors. Native
+system commands remain enabled. Empty menu-bar space passes mouse input to the
+native title bar. Safe-area, screen, and style changes update the control geometry.
+Menu mnemonic underlines are hidden while keyboard shortcuts remain available.
+The application color scheme follows the active UI theme. Other platforms use
+the standard menu bar and window frame.
+
 `theme_manager.*` owns the theme registry, semantic UI colors, component color
 roles, control metrics, the Qt palette, and the shared stylesheet. The selector
 uses stable string IDs from `assets/themes.json`. Each definition supplies an
@@ -139,17 +149,36 @@ Canvas background preferences persist per theme under `ui/canvas/themes/<id>`.
 Existing theme selections and canvas preferences migrate to Mahogany themes.
 Custom widget painting uses the resolved theme roles.
 Panels, tabs, controls, and painted UI surfaces use square corners.
-Dock actions share a square button frame with one outline. Floating docks reserve
+Dock panels use borderless bodies, flat title actions, and one-pixel header
+separators. Floating docks reserve
 an edge margin for resizing, and title bars expose close and collapse controls.
 Theme changes refresh cached icons across dock titles and tab bars. Square action
 controls share explicit size constraints, and input editors share surface colors.
 Native control glyphs use theme foregrounds. Checkbox and button dimensions follow
-shared size roles. Resize dividers use plain surface fills, and sliders use square,
-outlined handles. Tool settings use compact editors, a constant padded row height,
+shared size roles. Body text uses the system font with a one-point increase;
+secondary text uses the system size. Fields, buttons, checkbox indicators,
+Settings help buttons, and dock tabs share a 27 px size. A common inset derived
+from font ascent, descent, and capital height centers visible text within each
+control. Embedded editors use their parent field's geometry. Vertical centering
+preserves horizontal text alignment. Embedded field action buttons use the
+field's geometry and text-sized icons. Toolbar icons
+match the font's pixel size; button widths follow text and icon metrics with
+shared padding. Icon-only toolbar buttons and Settings help buttons are square.
+Tool actions use a full selected frame; hover uses a lighter version of its fill
+and outline. Dock tabs show outlines on hover and use a fill for selection.
+Dock tabs use text-sized icons and keep selected and inactive labels aligned.
+Theme changes derive fonts from the system baseline. Guideline color is
+on the Theme settings page and retains its existing persisted preference.
+Resize dividers use surface fills with one-pixel separators, and sliders use square,
+outlined handles. Tool settings use the shared control size, a constant padded row height,
 and a movable horizontal toolbar that supports floating. Floating toolbar width
-follows active contents above a minimum width. Toolbar margins reserve space for
-bottom dividers.
-Tool settings and the status bar use secondary surfaces.
+follows active contents above a minimum width. Tool Settings reserves symmetric
+vertical padding and the horizontal scrollbar's height so controls fit in the
+viewport. Tool Settings shares the toolbar background role. Menu and toolbar
+edges use one-pixel separators from the Border color role, with layout space
+reserved in the toolbar contents for those separators. Toolbar stylesheet
+padding stays zero so the drag handle and action layout share the same origin.
+The status bar uses its own surface role.
 Dock headers indicate keyboard focus, and semantic widget states
 share theme-aware text and border colors. Swatch styling derives readable text from
 the displayed color. Canvas and preview background preferences remain persisted

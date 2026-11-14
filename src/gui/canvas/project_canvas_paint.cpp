@@ -550,8 +550,8 @@ void ProjectCanvas::drawRulersAndGuidelines(QPainter &painter) {
     painter.drawLine(QPointF(kRulerExtent - 0.5, 0.0), QPointF(kRulerExtent - 0.5, height()));
     painter.drawLine(QPointF(0.0, kRulerExtent - 0.5), QPointF(width(), kRulerExtent - 0.5));
 
-    QFont rulerFont = QFontDatabase::systemFont(QFontDatabase::FixedFont);
-    rulerFont.setPixelSize(10);
+    QFont rulerFont = uiSecondaryTextFont();
+    rulerFont.setFamily(QFontDatabase::systemFont(QFontDatabase::FixedFont).family());
     rulerFont.setHintingPreference(QFont::PreferFullHinting);
     painter.setFont(rulerFont);
     painter.setPen(rulerText);
