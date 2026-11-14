@@ -91,6 +91,7 @@ public:
 
 private:
     bool event(QEvent *event) override;
+    bool eventFilter(QObject *watched, QEvent *event) override;
     void showEvent(QShowEvent *event) override;
     void dragEnterEvent(QDragEnterEvent *event) override;
     void dragMoveEvent(QDragMoveEvent *event) override;
@@ -130,6 +131,7 @@ private:
     void showHeaderMetadataDock();
     void applyHeaderMetadata();
     void refreshHeaderMetadataWidget();
+    void scheduleLayoutSave();
     void saveLayout();
     bool restoreLayout();
     void resetLayout();
@@ -278,6 +280,7 @@ private:
     QAction *opacityToolAction_ = nullptr;
     QTimer *autosaveTimer_ = nullptr;
     QTimer *scratchTimer_ = nullptr;
+    QTimer *layoutSaveTimer_ = nullptr;
     HeaderMetadataWidget *headerMetadata_ = nullptr;
     QDockWidget *headerMetadataDock_ = nullptr;
     PropertyPanel *properties_ = nullptr;

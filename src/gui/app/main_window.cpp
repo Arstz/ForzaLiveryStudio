@@ -13,6 +13,7 @@ namespace {
 
 constexpr int kGeneratedFillElapsedIntervalMs = 250;
 constexpr int kScratchSaveIntervalMs = 60 * 1000;
+constexpr int kLayoutSaveDelayMs = 500;
 
 }
 
@@ -64,6 +65,18 @@ MainWindow::MainWindow(QWidget *parent)
     syncDockCollapseButtons();
 
     updateStatus();
+
+    layoutSaveTimer_ = new QTimer(this);
+    layoutSaveTimer_->setSingleShot(true);
+    layoutSaveTimer_->setInterval(kLayoutSaveDelayMs);
+    connect(layoutSaveTimer_, &QTimer::timeout, this, &MainWindow::saveLayout);
+    for (QDockWidget *dock : dockWidgets_) {
+        dock->installEventFilter(this);
+        connect(dock, &QDockWidget::dockLocationChanged, this, &MainWindow::scheduleLayoutSave);
+        connect(dock, &QDockWidget::topLevelChanged, this, &MainWindow::scheduleLayoutSave);
+    }
+    toolBar_->installEventFilter(this);
+    toolSettingsBar_->installEventFilter(this);
 }
 
 MainWindow::~MainWindow() {
@@ -72,10 +85,10 @@ MainWindow::~MainWindow() {
 
 void MainWindow::showEvent(QShowEvent *event) {
     QMainWindow::showEvent(event);
-    if (!defaultLayoutPending_) {
-        return;
+    if (defaultLayoutPending_) {
+        defaultLayoutPending_ = false;
+        QTimer::singleShot(0, this, &MainWindow::applyDefaultLayoutSizes);
     }
-    defaultLayoutPending_ = false;
-    QTimer::singleShot(0, this, &MainWindow::applyDefaultLayoutSizes);
+    QTimer::singleShot(0, this, &MainWindow::scheduleLayoutSave);
 }
 } // namespace gui

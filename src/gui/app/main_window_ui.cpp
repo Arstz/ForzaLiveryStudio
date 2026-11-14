@@ -764,10 +764,6 @@ void MainWindow::setupWindowMenu() {
         windowMenu->addAction(dock->toggleViewAction());
     }
     windowMenu->addSeparator();
-    auto *saveLayoutAction = windowMenu->addAction(QStringLiteral("Save &Layout"));
-    registerShortcutAction(saveLayoutAction, QStringLiteral("save_layout"), QStringLiteral("Save Layout"));
-    addAction(saveLayoutAction);
-    connect(saveLayoutAction, &QAction::triggered, this, [this]() { saveLayout(); });
     auto *resetLayoutAction = windowMenu->addAction(QStringLiteral("&Reset Layout"));
     registerShortcutAction(resetLayoutAction, QStringLiteral("reset_layout"), QStringLiteral("Reset Layout"));
     addAction(resetLayoutAction);
@@ -923,8 +919,6 @@ void MainWindow::refreshThemedIcons() {
 void MainWindow::applyBehaviorSettings(const BehaviorSettings &settings, bool save) {
     const BehaviorSettings previous = save ? loadBehaviorSettings() : BehaviorSettings{};
     const bool gameFoldersChanged = save && previous.gameFolders != settings.gameFolders;
-    const bool saveToolbarLayout = save
-        && previous.verticalToolbar != settings.verticalToolbar;
     if (treeModel_ != nullptr) {
         const bool previewSettingChanged = treeModel_->generatePreviewsWithTransformations()
             != settings.generatePreviewsWithTransformations;
@@ -980,9 +974,6 @@ void MainWindow::applyBehaviorSettings(const BehaviorSettings &settings, bool sa
     configureAutosaveTimer(settings);
     if (save) {
         saveBehaviorSettings(settings);
-        if (saveToolbarLayout) {
-            saveLayout();
-        }
     }
     if (gameFoldersChanged) maybeAutoLoadCarForProject(true);
     refreshToolSettings();
@@ -1057,6 +1048,7 @@ void MainWindow::restartApplication() {
     if (!projectJsonPath_.isEmpty()) {
         arguments.push_back(projectJsonPath_);
     }
+    saveLayout();
     if (!QProcess::startDetached(QCoreApplication::applicationFilePath(), arguments)) {
         QMessageBox::warning(
             this,
@@ -1275,6 +1267,12 @@ bool MainWindow::event(QEvent *event) {
     }
     const bool result = QMainWindow::event(event);
     switch (event->type()) {
+    case QEvent::LayoutRequest:
+    case QEvent::Move:
+    case QEvent::Resize:
+    case QEvent::WindowStateChange:
+        scheduleLayoutSave();
+        break;
     case QEvent::HoverMove:
         normalizeDockResizeCursor();
         break;
@@ -1287,6 +1285,21 @@ bool MainWindow::event(QEvent *event) {
         break;
     }
     return result;
+}
+
+bool MainWindow::eventFilter(QObject *watched, QEvent *event) {
+    switch (event->type()) {
+    case QEvent::Move:
+    case QEvent::Resize:
+    case QEvent::Show:
+    case QEvent::Hide:
+        scheduleLayoutSave();
+        break;
+    default:
+        break;
+    }
+
+    return QMainWindow::eventFilter(watched, event);
 }
 
 void MainWindow::normalizeDockResizeCursor() {

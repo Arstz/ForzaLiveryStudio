@@ -276,7 +276,6 @@ QKeySequence defaultShortcut(const QString &id) {
         {QStringLiteral("tool_lining"), QKeySequence(Qt::Key_L)},
         {QStringLiteral("tool_bucket"), QKeySequence(Qt::Key_B)},
         {QStringLiteral("place_text"), {}},
-        {QStringLiteral("save_layout"), {}},
         {QStringLiteral("reset_layout"), {}},
         {QStringLiteral("settings"), QKeySequence(Qt::CTRL | Qt::Key_K)},
     };

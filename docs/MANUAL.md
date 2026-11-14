@@ -8,7 +8,7 @@ build and developer notes see
 
 ## Getting started
 
-The prebuilt binaries should contain ForzaLiveryStudio.exe launch it and you will be presented with the main editor window. The window contais widgets (small windows) - those are draggable and dockable and detachable, try for yourself, arrange them the way you want and locate `Window->Save Layout` in menu bar at the top. This layout would be loaded on next launch if something breaks or you lose a widget do `Window->Reset Layout`.
+Launch ForzaLiveryStudio.exe to open the main editor window. Its panels can be dragged, docked, and detached. Arrange them as you prefer; the window layout saves automatically as it changes and loads on the next launch. Use `Window->Reset Layout` to restore default.
 
 ### Project
 

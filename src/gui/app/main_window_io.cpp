@@ -502,6 +502,7 @@ void MainWindow::dropEvent(QDropEvent *event) {
 
 void MainWindow::closeEvent(QCloseEvent *event) {
     if (restartRequested_ || confirmDiscardUnsavedChanges()) {
+        saveLayout();
         clearScratchCopy();
         event->accept();
     } else {
@@ -1391,11 +1392,21 @@ void MainWindow::applyHeaderMetadata() {
     statusBar()->showMessage(QStringLiteral("Header metadata updated"), 5000);
 }
 
+void MainWindow::scheduleLayoutSave() {
+    if (layoutSaveTimer_ == nullptr || !isVisible()) {
+        return;
+    }
+    layoutSaveTimer_->start();
+}
+
 void MainWindow::saveLayout() {
+    if (layoutSaveTimer_ != nullptr) {
+        layoutSaveTimer_->stop();
+    }
     QSettings settings;
     settings.setValue(QStringLiteral("layout/geometry"), saveGeometry());
     settings.setValue(QStringLiteral("layout/state"), saveState());
-    statusBar()->showMessage(QStringLiteral("Layout saved"), 5000);
+    settings.sync();
 }
 
 bool MainWindow::restoreLayout() {
@@ -1425,6 +1436,7 @@ void MainWindow::resetLayout() {
     settings.remove(QStringLiteral("layout/state"));
     settings.remove(QStringLiteral("layout/geometry"));
     settings.remove(QStringLiteral("ui/splitters/shapesSections"));
+    scheduleLayoutSave();
     statusBar()->showMessage(QStringLiteral("Layout reset to default"), 5000);
 }
 
