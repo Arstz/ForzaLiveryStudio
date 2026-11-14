@@ -2,6 +2,8 @@
 
 #include "theme_manager.h"
 
+#include <QAbstractNativeEventFilter>
+#include <QApplication>
 #include <QEvent>
 #include <QAbstractButton>
 #include <QHBoxLayout>
@@ -19,6 +21,7 @@
 #ifdef Q_OS_WIN
 #define NOMINMAX
 #include <windows.h>
+#include <windowsx.h>
 #endif
 
 namespace gui {
@@ -176,7 +179,7 @@ private:
     std::array<CaptionButton *, 3> buttons_;
 };
 
-class TitleMenuBar final : public QMenuBar {
+class TitleMenuBar final : public QMenuBar, private QAbstractNativeEventFilter {
 public:
     explicit TitleMenuBar(QMainWindow &window)
         : QMenuBar(&window)
@@ -186,10 +189,30 @@ public:
         setNativeMenuBar(false);
         setCornerWidget(controls_, Qt::TopRightCorner);
         window.installEventFilter(this);
+        QCoreApplication::instance()->installNativeEventFilter(this);
         updateCaptionMetrics();
     }
 
+    ~TitleMenuBar() override {
+        if (QCoreApplication::instance() != nullptr) {
+            QCoreApplication::instance()->removeNativeEventFilter(this);
+        }
+    }
+
 protected:
+    bool nativeEventFilter(const QByteArray &eventType, void *message, qintptr *result) override {
+        const auto *event = static_cast<const MSG *>(message);
+
+        if (eventType != QByteArrayLiteral("windows_generic_MSG") || nativeWindow_ == nullptr
+            || event->hwnd != nativeWindow_ || event->message != WM_NCHITTEST
+            || window_ == nullptr || frameWindow_ == nullptr) {
+            return false;
+        }
+        *result = hitTest(QPoint(GET_X_LPARAM(event->lParam), GET_Y_LPARAM(event->lParam)));
+
+        return true;
+    }
+
     bool event(QEvent *event) override {
         const bool result = QMenuBar::event(event);
 
@@ -240,6 +263,59 @@ protected:
     }
 
 private:
+    LRESULT hitTest(const QPoint &screenPosition) const {
+        POINT clientPosition{screenPosition.x(), screenPosition.y()};
+        RECT clientRect{};
+
+        if (ScreenToClient(nativeWindow_, &clientPosition) == FALSE
+            || GetClientRect(nativeWindow_, &clientRect) == FALSE
+            || PtInRect(&clientRect, clientPosition) == FALSE) {
+            return HTNOWHERE;
+        }
+        const QPoint menuPosition = mapFrom(window_.data(),
+            QPointF(clientPosition.x / frameWindow_->devicePixelRatio(),
+                clientPosition.y / frameWindow_->devicePixelRatio()).toPoint());
+        const UINT dpi = GetDpiForWindow(nativeWindow_);
+        const int border = IsZoomed(nativeWindow_) || window_->isFullScreen() ? 0
+            : GetSystemMetricsForDpi(SM_CXSIZEFRAME, dpi) + GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi);
+        const bool titleBar = isVisible() && rect().contains(menuPosition);
+        const bool left = clientPosition.x < border;
+        const bool right = clientPosition.x >= clientRect.right - border;
+        const bool top = clientPosition.y < border;
+        const bool bottom = clientPosition.y >= clientRect.bottom - border;
+
+        if (QWidget::mouseGrabber() != nullptr || QApplication::activePopupWidget() != nullptr
+            || (titleBar && (actionAt(menuPosition) != nullptr || childAt(menuPosition) != nullptr))) {
+            return HTCLIENT;
+        }
+        if (top && left) {
+            return HTTOPLEFT;
+        }
+        if (top && right) {
+            return HTTOPRIGHT;
+        }
+        if (bottom && left) {
+            return HTBOTTOMLEFT;
+        }
+        if (bottom && right) {
+            return HTBOTTOMRIGHT;
+        }
+        if (left) {
+            return HTLEFT;
+        }
+        if (right) {
+            return HTRIGHT;
+        }
+        if (top) {
+            return HTTOP;
+        }
+        if (bottom) {
+            return HTBOTTOM;
+        }
+
+        return titleBar ? HTCAPTION : HTCLIENT;
+    }
+
     void observeFrameWindow() {
         QWindow *handle = window_->windowHandle();
         if (frameWindow_ != handle) {
@@ -247,6 +323,7 @@ private:
                 disconnect(frameWindow_, nullptr, this, nullptr);
             }
             frameWindow_ = handle;
+            nativeWindow_ = handle != nullptr ? reinterpret_cast<HWND>(handle->winId()) : nullptr;
             if (handle != nullptr) {
                 enableSystemCommands(*handle);
                 connect(handle, &QWindow::safeAreaMarginsChanged, this, [this]() { updateCaptionMetrics(); });
@@ -285,6 +362,7 @@ private:
     QPointer<QMainWindow> window_;
     QPointer<QWindow> frameWindow_;
     CaptionControls *controls_;
+    HWND nativeWindow_ = nullptr;
     bool updating_ = false;
 };
 

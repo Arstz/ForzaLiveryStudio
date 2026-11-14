@@ -118,8 +118,11 @@ On Windows with Qt 6.9 or newer, `title_menu_bar.*` places the main menus in the
 expanded title-bar area. Theme-painted window controls occupy the right corner;
 the application title remains available to the operating system. Caption glyphs
 use the theme foreground, and hover uses the shared selection colors. Native
-system commands remain enabled. Empty menu-bar space passes mouse input to the
-native title bar. Safe-area, screen, and style changes update the control geometry.
+system commands remain enabled. A native hit-test filter routes menu actions
+and caption buttons through standard client input. Empty menu-bar space supplies
+the native drag and system-menu region, and window edges supply resize regions.
+Hit testing only classifies regions. Safe-area, screen, and style changes update
+the control geometry.
 Menu mnemonic underlines are hidden while keyboard shortcuts remain available.
 The application color scheme follows the active UI theme. Other platforms use
 the standard menu bar and window frame.
