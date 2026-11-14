@@ -40,6 +40,7 @@ int main(int argc, char **argv) {
         settings.sync();
         require(gui::loadBehaviorSettings().contourFillMode == gui::ContourFillMode::Analytic);
         require(!gui::loadBehaviorSettings().autoSavePenPaths);
+        require(!gui::loadBehaviorSettings().penColorAwareSnapping);
         require(!gui::loadBehaviorSettings().autoSaveLiningPaths);
         settings.setValue(QStringLiteral("ui/behavior/autoSavePaths"), true);
         settings.sync();
@@ -63,9 +64,11 @@ int main(int argc, char **argv) {
         for (bool enabled : {true, false}) {
             auto behavior = gui::loadBehaviorSettings();
             behavior.autoSavePenPaths = enabled;
+            behavior.penColorAwareSnapping = enabled;
             behavior.autoSaveLiningPaths = !enabled;
             gui::saveBehaviorSettings(behavior);
             require(gui::loadBehaviorSettings().autoSavePenPaths == enabled);
+            require(gui::loadBehaviorSettings().penColorAwareSnapping == enabled);
             require(gui::loadBehaviorSettings().autoSaveLiningPaths != enabled);
         }
         settings.setValue(QStringLiteral("ui/behavior/contourFillMode"), QStringLiteral("catalog"));

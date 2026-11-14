@@ -925,6 +925,7 @@ void MainWindow::applyBehaviorSettings(const BehaviorSettings &settings, bool sa
     if (canvas_ != nullptr) {
         canvas_->setMoveToolAutoSelect(settings.moveToolAutoSelect);
         canvas_->setAutomaticSnapping(settings.automaticSnapping);
+        canvas_->setPenColorAwareSnapping(settings.penColorAwareSnapping);
         canvas_->setPipetteAutoReturn(settings.pipetteAutoReturn);
         canvas_->setSelectionFlashEnabled(settings.selectionFlashEnabled);
         canvas_->setDisplayAnchorsDuringTransformDrag(settings.displayAnchorsDuringTransformDrag);

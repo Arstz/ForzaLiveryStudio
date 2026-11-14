@@ -327,6 +327,8 @@ qt_add_library(fls_editor_ui STATIC
     src/gui/canvas/project_canvas.cpp
     src/gui/canvas/project_canvas_bucket.cpp
     src/gui/canvas/project_canvas_pen.cpp
+    src/gui/canvas/color_edge_snap.cpp
+    src/gui/canvas/color_edge_snap.h
     src/gui/canvas/project_canvas_mesh.cpp
     src/gui/canvas/project_canvas.h
     src/gui/canvas/project_canvas_internal.h
@@ -543,6 +545,10 @@ if(FLS_BUILD_TESTS)
     target_include_directories(fls_selection_geometry_tests PRIVATE src/gui/canvas src/gui/widgets)
     target_link_libraries(fls_selection_geometry_tests PRIVATE Qt6::Core Qt6::Gui)
     add_test(NAME selection_geometry COMMAND fls_selection_geometry_tests)
+    add_executable(fls_color_edge_snap_tests tools/tests/color_edge_snap/main.cpp src/gui/canvas/color_edge_snap.cpp)
+    target_include_directories(fls_color_edge_snap_tests PRIVATE src/gui/canvas)
+    target_link_libraries(fls_color_edge_snap_tests PRIVATE Qt6::Core Qt6::Gui)
+    add_test(NAME color_edge_snap COMMAND fls_color_edge_snap_tests)
     add_executable(fls_gui_command_tests tools/tests/gui_command/main.cpp)
     add_executable(fls_mesh_edit_tests tools/tests/mesh_edit/main.cpp)
     target_link_libraries(fls_mesh_edit_tests PRIVATE fls_editor_ui)
@@ -577,6 +583,7 @@ if(FLS_BUILD_TESTS)
         endforeach()
     endif()
     add_test(NAME gui_commands COMMAND fls_gui_command_tests)
+    add_test(NAME pen_snapping_history COMMAND fls_gui_command_tests --pen-snapping-history)
     set_tests_properties(gui_commands PROPERTIES WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
     add_executable(fls_gui_startup_tests tools/tests/gui_startup/main.cpp)
     target_link_libraries(fls_gui_startup_tests PRIVATE fls_editor_ui)

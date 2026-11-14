@@ -1,5 +1,7 @@
 #include "project_canvas.h"
 
+#include "color_edge_snap.h"
+
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -10,6 +12,7 @@ namespace {
 constexpr int kCurveHitSamples = 32;
 constexpr double kPenHitCellSize = 32.0;
 constexpr double kPenAngleIntervalDegrees = 15.0;
+constexpr double kPenColorSnapRadius = 12.0;
 constexpr double kRadiansToDegrees =
     180.0 / 3.14159265358979323846;
 constexpr double kDegreesToRadians =
@@ -322,6 +325,28 @@ PenCurveHit ProjectCanvas::penCurveAtScreen(const QPointF &screenPoint) const {
     return best;
 }
 
+QPointF ProjectCanvas::colorSnappedPenPosition(const QPointF &worldPosition) const {
+    const QPointF screenPoint = worldToScreen(worldPosition);
+    const double padding = kPenColorSnapRadius + 1.0;
+    const QRectF screenRect(screenPoint - QPointF(padding, padding), QSizeF(padding * 2.0, padding * 2.0));
+    QTransform imageToScreen;
+
+    if (!options_.penColorAwareSnapping) {
+        return worldPosition;
+    }
+    const QImage image = const_cast<ProjectCanvas *>(this)->canvasPixels(screenRect, &imageToScreen);
+    const QPointF snapped = snapToColorEdge(image, imageToScreen, screenPoint, kPenColorSnapRadius);
+    const QVector<PenPoint> &points = pen_.cutoutClosed ? pen_.points : pen_.cutouts[pen_.activeCutout];
+
+    if (points.size() >= 3
+        && QLineF(screenPoint, worldToScreen(points.front().position)).length() > kPenCloseRadius
+        && QLineF(snapped, worldToScreen(points.front().position)).length() <= kPenCloseRadius) {
+        return worldPosition;
+    }
+
+    return screenToWorld(snapped);
+}
+
 QPointF ProjectCanvas::snappedPenPosition(
     const QPointF &worldPosition,
     Qt::KeyboardModifiers modifiers,
@@ -333,8 +358,7 @@ QPointF ProjectCanvas::snappedPenPosition(
     const QVector<PenPoint> &points = pen_.cutoutClosed
         ? pen_.points
         : pen_.cutouts[pen_.activeCutout];
-    if (!(modifiers & Qt::ShiftModifier)
-        || points.isEmpty()
+    if (points.isEmpty()
         || (pen_.closed && pen_.cutoutClosed)) {
         return worldPosition;
     }
@@ -356,7 +380,7 @@ QPointF ProjectCanvas::snappedPenPosition(
             std::numeric_limits<double>::quiet_NaN();
     }
     if (!(modifiers & Qt::ShiftModifier)) {
-        return worldPosition;
+        return colorSnappedPenPosition(worldPosition);
     }
 
     const QPointF delta =

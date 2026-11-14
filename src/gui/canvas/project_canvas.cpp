@@ -125,7 +125,7 @@ void ProjectCanvas::setProject(fls::Project *project) {
     guidelines_.rulerPressActive = false;
     guideImageCache_.clear();
     guideSvgRendererCache_.clear();
-    sectionCanvasCache_.clear();
+    invalidateCanvasImageCaches();
     camera_.reset();
     refitView();
     invalidateSceneCache();
@@ -237,13 +237,13 @@ void ProjectCanvas::invalidateSelectionCache() {
 
 void ProjectCanvas::invalidateSceneCache() {
     invalidateSelectionCache();
-    sectionCanvasCache_.clear();
+    invalidateCanvasImageCaches();
 }
 
 void ProjectCanvas::invalidateGuideImageCache() {
     guideImageCache_.clear();
     guideSvgRendererCache_.clear();
-    sectionCanvasCache_.clear();
+    invalidateCanvasImageCaches();
 }
 
 const fls::scene::Group *ProjectCanvas::sceneTree() const {
@@ -416,6 +416,17 @@ void ProjectCanvas::setAutomaticSnapping(bool enabled) {
     update();
 }
 
+void ProjectCanvas::setPenColorAwareSnapping(bool enabled) {
+    if (options_.penColorAwareSnapping == enabled) {
+        return;
+    }
+    options_.penColorAwareSnapping = enabled;
+    if (tool_ == QStringLiteral("pen")) {
+        refreshPenInteractionHint(mapFromGlobal(QCursor::pos()), QGuiApplication::keyboardModifiers());
+    }
+    update();
+}
+
 void ProjectCanvas::setPipetteAutoReturn(bool enabled) {
     options_.pipetteAutoReturn = enabled;
 }
@@ -479,7 +490,7 @@ void ProjectCanvas::setGuideLayersOnTop(bool enabled) {
         return;
     }
     options_.guideLayersOnTop = enabled;
-    sectionCanvasCache_.clear();
+    invalidateCanvasImageCaches();
     update();
 }
 
@@ -488,7 +499,7 @@ void ProjectCanvas::setGuideLayersVisible(bool visible) {
         return;
     }
     options_.guideLayersVisible = visible;
-    sectionCanvasCache_.clear();
+    invalidateCanvasImageCaches();
     update();
 }
 
@@ -778,7 +789,23 @@ void ProjectCanvas::refreshPathAfterHistory(PathInteraction &path) {
     if (&path == &pen_) {
         normalizePenPointOrder();
         validatePenInteraction();
-        refreshPenInteractionHint(cursorPoint, QGuiApplication::keyboardModifiers());
+        if (options_.penColorAwareSnapping) {
+            penSnapCanvasImage_ = {};
+            penSnapCanvasKey_.clear();
+            if (!penSnapRefreshPending_) {
+                penSnapRefreshPending_ = true;
+                QTimer::singleShot(0, this, [this]() {
+                    penSnapRefreshPending_ = false;
+                    if (tool_ != QStringLiteral("pen") || pen_.fillRunning) {
+                        return;
+                    }
+                    updateViewTransform();
+                    refreshPenInteractionHint(mapFromGlobal(QCursor::pos()), QGuiApplication::keyboardModifiers());
+                });
+            }
+        } else {
+            refreshPenInteractionHint(cursorPoint, QGuiApplication::keyboardModifiers());
+        }
     } else {
         validateLiningInteraction();
         if (liningWidthChangedCallback_ != nullptr) {

@@ -622,6 +622,16 @@ void ProjectCanvas::drawRulersAndGuidelines(QPainter &painter) {
     painter.restore();
 }
 
+void ProjectCanvas::drawCanvasReferenceOverlay(QPainter &painter) {
+    const QImage &carOverlay = carUnwrapOverlay_.image(
+        camera_.matrix(), size(), devicePixelRatioF(), carUnwrapVisible_, sectionWireframeVisible_);
+
+    if (!carOverlay.isNull()) {
+        painter.drawImage(QPointF(), carOverlay);
+    }
+    drawRegionOverlay(painter);
+}
+
 void ProjectCanvas::drawOverlay(QPainter &painter) {
     painter.save();
     painter.resetTransform();
@@ -630,13 +640,7 @@ void ProjectCanvas::drawOverlay(QPainter &painter) {
                                std::max(0.0, height() - kRulerExtent)));
     painter.setRenderHint(QPainter::Antialiasing, true);
 
-    const QImage &carOverlay = carUnwrapOverlay_.image(
-        camera_.matrix(), size(), devicePixelRatioF(), carUnwrapVisible_, sectionWireframeVisible_);
-    if (!carOverlay.isNull()) {
-        painter.drawImage(QPointF(), carOverlay);
-    }
-
-    drawRegionOverlay(painter);
+    drawCanvasReferenceOverlay(painter);
     drawBucketOverlay(painter);
     drawVisibilityBorders(painter);
 
@@ -898,12 +902,18 @@ QSharedPointer<QSvgRenderer> ProjectCanvas::guideSvgRenderer(
     return renderer;
 }
 
-QString ProjectCanvas::sectionCanvasCacheKey() const {
-    if (project_ == nullptr || state_ == nullptr || !project_->isLivery || state_->activeSectionId_.isEmpty() || size().isEmpty()) {
+void ProjectCanvas::invalidateCanvasImageCaches() {
+    sectionCanvasCache_.clear();
+    penSnapCanvasImage_ = {};
+    penSnapCanvasKey_.clear();
+}
+
+QString ProjectCanvas::canvasImageCacheKey() const {
+    if (project_ == nullptr || size().isEmpty()) {
         return {};
     }
     return QStringLiteral("%1|%2x%3|%4|%5,%6,%7,%8,%9,%10|%11|%12|%13")
-        .arg(state_->activeSectionId_)
+        .arg(state_ != nullptr ? state_->activeSectionId_ : QString())
         .arg(width())
         .arg(height())
         .arg(QString::number(devicePixelRatioF(), 'g', 12))
@@ -918,19 +928,60 @@ QString ProjectCanvas::sectionCanvasCacheKey() const {
         .arg(options_.guideLayersVisible ? 1 : 0);
 }
 
-void ProjectCanvas::storeSectionCanvasCache(const QString &key) {
-    if (key.isEmpty()) {
+QString ProjectCanvas::sectionCanvasCacheKey() const {
+    if (state_ == nullptr || project_ == nullptr || !project_->isLivery || state_->activeSectionId_.isEmpty()) {
+        return {};
+    }
+
+    return canvasImageCacheKey();
+}
+
+void ProjectCanvas::storeSectionCanvasCache(const QString &key, const QImage &image) {
+    constexpr int kSectionCanvasCacheCap = 16;
+
+    if (key.isEmpty() || image.isNull()) {
         return;
     }
-    QImage image = grabFramebuffer();
-    if (image.isNull()) {
-        return;
-    }
-    constexpr int SectionCanvasCacheCap = 16;
-    if (sectionCanvasCache_.size() >= SectionCanvasCacheCap) {
+    if (sectionCanvasCache_.size() >= kSectionCanvasCacheCap) {
         sectionCanvasCache_.clear();
     }
     sectionCanvasCache_.insert(key, image);
+}
+
+QImage ProjectCanvas::canvasPixels(const QRectF &screenRect, QTransform *imageToScreen) {
+    const QString key = canvasImageCacheKey();
+    const qreal dpr = devicePixelRatioF();
+    const QRectF contentRect(kRulerExtent, kRulerExtent, std::max(0.0, width() - kRulerExtent),
+                             std::max(0.0, height() - kRulerExtent));
+
+    if (penSnapRefreshPending_ || key.isEmpty() || !contentRect.intersects(screenRect) || !isValid()) {
+        return {};
+    }
+    if (penSnapCanvasKey_ != key || penSnapCanvasImage_.isNull()) {
+        grabFramebuffer();
+    }
+    if (penSnapCanvasKey_ != key || penSnapCanvasImage_.isNull()) {
+        return {};
+    }
+    const QRect pixelRect = QTransform::fromScale(dpr, dpr).mapRect(screenRect.intersected(contentRect))
+        .toAlignedRect().intersected(penSnapCanvasImage_.rect());
+    QImage image = penSnapCanvasImage_.copy(pixelRect);
+
+    if (image.isNull()) {
+        return {};
+    }
+    image.setDevicePixelRatio(dpr);
+    QPainter painter(&image);
+    painter.translate(-pixelRect.left() / dpr, -pixelRect.top() / dpr);
+    painter.setClipRect(contentRect);
+    painter.setRenderHint(QPainter::Antialiasing, true);
+    drawCanvasReferenceOverlay(painter);
+    painter.end();
+    if (imageToScreen != nullptr) {
+        *imageToScreen = QTransform(1.0 / dpr, 0.0, 0.0, 1.0 / dpr, pixelRect.left() / dpr, pixelRect.top() / dpr);
+    }
+
+    return image;
 }
 
 void ProjectCanvas::drawGuideLayers(QPainter &painter) {
@@ -1285,9 +1336,17 @@ void ProjectCanvas::paintGL() {
     const std::optional<double> flashProgress = selectionFlashProgress();
     const bool flashActive = flashProgress.has_value() && !flash_.layerIds.isEmpty();
     const QString sectionCacheKey = flashActive ? QString() : sectionCanvasCacheKey();
+    const QString snapCanvasKey = options_.penColorAwareSnapping && !penSnapRefreshPending_ && tool_ == QStringLiteral("pen")
+        ? canvasImageCacheKey() : QString();
+    const bool captureSnapCanvas = !snapCanvasKey.isEmpty()
+        && (penSnapCanvasKey_ != snapCanvasKey || penSnapCanvasImage_.isNull());
     if (!sectionCacheKey.isEmpty()) {
         const auto cached = sectionCanvasCache_.constFind(sectionCacheKey);
         if (cached != sectionCanvasCache_.constEnd()) {
+            if (captureSnapCanvas) {
+                penSnapCanvasImage_ = cached.value();
+                penSnapCanvasKey_ = snapCanvasKey;
+            }
             QPainter painter(this);
             painter.setRenderHint(QPainter::Antialiasing, true);
             painter.drawImage(rect(), cached.value());
@@ -1323,9 +1382,14 @@ void ProjectCanvas::paintGL() {
         drawGuideLayers(painter);
     }
 
-    if (!sectionCacheKey.isEmpty()) {
+    if (!sectionCacheKey.isEmpty() || captureSnapCanvas) {
         painter.end();
-        storeSectionCanvasCache(sectionCacheKey);
+        const QImage image = grabFramebuffer();
+        storeSectionCanvasCache(sectionCacheKey, image);
+        if (captureSnapCanvas && !image.isNull()) {
+            penSnapCanvasImage_ = image;
+            penSnapCanvasKey_ = snapCanvasKey;
+        }
         painter.begin(this);
         painter.setRenderHint(QPainter::Antialiasing, true);
     }

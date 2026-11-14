@@ -963,6 +963,43 @@ void liningCaps() {
     require(error.isEmpty() && contour.valid(), QString("Lining cap conversion: %1; contour: %2; loops: %3; crossings: %4").arg(error, contour.error).arg(loops.size()).arg(contour.crossings.size()));
 }
 
+void penSnappingHistory(Harness &h) {
+    gui::ProjectCanvas *canvas = nullptr;
+    for (QWidget *widget : h.window.findChildren<QWidget *>()) {
+        if (auto *found = dynamic_cast<gui::ProjectCanvas *>(widget)) canvas = found;
+    }
+    auto *check = h.window.findChild<QCheckBox *>("toolSettings.penColorAwareSnapping");
+    auto *toggle = h.window.findChild<QAction *>("toggle_pen_color_aware_snapping");
+    require(canvas && check && toggle, "Pen snapping controls are missing");
+    h.reset();
+    canvas->setTool("pen");
+    canvas->resize(1000, 600);
+    require(check->isEnabled(), "Pen snapping checkbox is disabled");
+    if (!check->isChecked()) check->click();
+    const auto verify = [&](const char *phase) {
+        require(check->isChecked() && toggle->isChecked() && gui::loadBehaviorSettings().penColorAwareSnapping,
+                QString("Pen snapping preference at %1: checkbox=%2, action=%3, saved=%4")
+                    .arg(phase).arg(check->isChecked()).arg(toggle->isChecked())
+                    .arg(gui::loadBehaviorSettings().penColorAwareSnapping));
+    };
+    verify("enable");
+    click(canvas, QPoint(200, 200));
+    click(canvas, QPoint(400, 200));
+    click(canvas, QPoint(350, 350));
+    h.trigger("undo");
+    verify("path undo");
+    h.trigger("redo");
+    verify("path redo");
+    h.trigger("save_pen_figure");
+    h.trigger("undo");
+    verify("saved path undo");
+    h.trigger("redo");
+    verify("saved path redo");
+    canvas->setTool("select");
+    canvas->setTool("pen");
+    verify("tool switch");
+}
+
 void toolSettingsControls(Harness &h) {
     gui::ProjectCanvas *canvas = nullptr;
     for (QWidget *widget : h.window.findChildren<QWidget *>()) {
@@ -1268,6 +1305,11 @@ int main(int argc, char **argv) {
     gui::applyUiTheme(application, gui::loadUiTheme());
     try {
         Harness harness;
+        if (argc == 2 && QString::fromLocal8Bit(argv[1]) == QStringLiteral("--pen-snapping-history")) {
+            penSnappingHistory(harness);
+            QTextStream(stdout) << "Pen snapping history checks passed\n";
+            return 0;
+        }
         if (argc == 3 && QString::fromLocal8Bit(argv[1]) == QStringLiteral("--profile-transforms")) {
             profileTransforms(harness, QString::fromLocal8Bit(argv[2]));
             return 0;
@@ -1284,6 +1326,7 @@ int main(int argc, char **argv) {
         liveRenderEntries(harness);
         cachedTransformDrags(harness);
         liningCaps();
+        penSnappingHistory(harness);
         toolSettingsControls(harness);
     } catch (const std::exception &error) {
         QTextStream(stderr) << error.what() << '\n';

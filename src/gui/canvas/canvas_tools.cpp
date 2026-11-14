@@ -595,6 +595,11 @@ bool PenTool::handleDoubleClick(QMouseEvent *event) {
         : c.pen_.points;
     const QPointF pointerWorld =
         c.screenToWorld(event->position());
+    if (c.options_.penColorAwareSnapping && points.size() == 1
+        && QLineF(event->position(), c.worldToScreen(points.front().position)).length() <= ProjectCanvas::kPenCloseRadius) {
+        event->accept();
+        return true;
+    }
     const bool completesSoftPoint =
         points.size() >= 2
         && points.back().kind

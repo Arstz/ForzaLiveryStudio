@@ -69,6 +69,7 @@ public:
     void setMoveToolAutoSelect(bool enabled);
     bool moveToolAutoSelect() const;
     void setAutomaticSnapping(bool enabled);
+    void setPenColorAwareSnapping(bool enabled);
     void setPipetteAutoReturn(bool enabled);
     void setSelectionFlashEnabled(bool enabled);
     bool selectionFlashEnabled() const;
@@ -420,6 +421,7 @@ private:
         bool transformRelativeMode = false;
         bool moveToolAutoSelect = false;
         bool automaticSnapping = kDefaultAutomaticSnapping;
+        bool penColorAwareSnapping = kDefaultPenColorAwareSnapping;
         bool pipetteAutoReturn = true;
         bool displayAnchorsDuringTransformDrag = true;
         bool separateSelectAndMarqueeTools = false;
@@ -510,6 +512,7 @@ private:
     void drawVisibilityBorders(QPainter &painter);
     void drawRulersAndGuidelines(QPainter &painter);
     void commitGuidelineDrag();
+    void drawCanvasReferenceOverlay(QPainter &painter);
     void drawOverlay(QPainter &painter);
     GuidelineOrientation rulerAt(const QPointF &point) const;
     int guidelineAtRuler(const QPointF &point, GuidelineOrientation orientation) const;
@@ -532,8 +535,11 @@ private:
     std::optional<QTransform> regionImageToWorldTransform() const;
     QImage guideImage(const fls::scene::GuideLayer &guide) const;
     QSharedPointer<QSvgRenderer> guideSvgRenderer(const fls::scene::GuideLayer &guide) const;
+    void invalidateCanvasImageCaches();
+    QString canvasImageCacheKey() const;
     QString sectionCanvasCacheKey() const;
-    void storeSectionCanvasCache(const QString &key);
+    void storeSectionCanvasCache(const QString &key, const QImage &image);
+    QImage canvasPixels(const QRectF &screenRect, QTransform *imageToScreen);
     void setPathFillRunning(PathInteraction &path, bool running, const QString &message);
     void cancelPathInteraction(PathInteraction &path, const std::function<void()> &cancelCallback);
     void discardPathInteraction(PathInteraction &path, const std::function<void()> &cancelCallback);
@@ -580,6 +586,7 @@ private:
     void appendPointEditHints(QStringList &lines, const QVector<PenPoint> &points,
                               int hoverPoint, const PenCurveHit &hoverCurve) const;
     PenCurveHit penCurveAtScreen(const QPointF &screenPoint) const;
+    QPointF colorSnappedPenPosition(const QPointF &worldPosition) const;
     QPointF snappedPenPosition(
         const QPointF &worldPosition,
         Qt::KeyboardModifiers modifiers,
@@ -689,6 +696,9 @@ private:
     mutable QHash<QString, QImage> guideImageCache_;
     mutable QHash<QString, QSharedPointer<QSvgRenderer>> guideSvgRendererCache_;
     mutable QHash<QString, QImage> sectionCanvasCache_;
+    QImage penSnapCanvasImage_;
+    QString penSnapCanvasKey_;
+    bool penSnapRefreshPending_ = false;
     std::optional<FlipCycleState> flipCycle_;
     CarUnwrapOverlayCache carUnwrapOverlay_;
     bool carUnwrapVisible_ = false;

@@ -77,12 +77,14 @@ enum class ContourFillMode {
 inline constexpr int kDefaultBucketTolerance = 16;
 inline constexpr double kDefaultLiningOutsideMargin = 0.5;
 inline constexpr bool kDefaultAutomaticSnapping = true;
+inline constexpr bool kDefaultPenColorAwareSnapping = false;
 
 struct BehaviorSettings {
     bool insertShapeWithLastSelectedColor = true;
     bool insertShapeWithLastSelectedScale = false;
     ContourFillMode contourFillMode = ContourFillMode::Analytic;
     bool autoSavePenPaths = false;
+    bool penColorAwareSnapping = kDefaultPenColorAwareSnapping;
     bool autoSaveLiningPaths = false;
     int bucketTolerance = kDefaultBucketTolerance;
     double liningWidth = fls::scene::kDefaultLiningWidth;

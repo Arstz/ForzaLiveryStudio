@@ -792,6 +792,7 @@ BehaviorSettings loadBehaviorSettings() {
     }
     const bool legacySavePaths = settings.value(QStringLiteral("ui/behavior/autoSavePaths"), false).toBool();
     result.autoSavePenPaths = settings.value(QStringLiteral("ui/behavior/autoSavePenPaths"), legacySavePaths).toBool();
+    result.penColorAwareSnapping = settings.value(QStringLiteral("ui/behavior/penColorAwareSnapping"), result.penColorAwareSnapping).toBool();
     result.autoSaveLiningPaths = settings.value(QStringLiteral("ui/behavior/autoSaveLiningPaths"), legacySavePaths).toBool();
     result.bucketTolerance = std::clamp(settings.value(QStringLiteral("ui/behavior/bucketTolerance"), result.bucketTolerance).toInt(), 0, 255);
     result.liningWidth = settings.value(QStringLiteral("ui/behavior/liningWidth"), result.liningWidth).toDouble();
@@ -874,6 +875,7 @@ void saveBehaviorSettings(const BehaviorSettings &settings) {
     qsettings.remove(QStringLiteral("ui/behavior/differentialContourFill"));
     qsettings.remove(QStringLiteral("ui/behavior/autoSavePaths"));
     qsettings.setValue(QStringLiteral("ui/behavior/autoSavePenPaths"), settings.autoSavePenPaths);
+    qsettings.setValue(QStringLiteral("ui/behavior/penColorAwareSnapping"), settings.penColorAwareSnapping);
     qsettings.setValue(QStringLiteral("ui/behavior/autoSaveLiningPaths"), settings.autoSaveLiningPaths);
     qsettings.remove(QStringLiteral("ui/behavior/liningFillMode"));
     qsettings.remove(QStringLiteral("ui/behavior/bucketRegionMode"));

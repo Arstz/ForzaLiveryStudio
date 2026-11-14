@@ -82,7 +82,7 @@ Click a layer to sample its color, will apply it to the current selection. You c
 
 ### Pen
 
-Pen tool will place a single hard point (red) to start a contour on left click. Subsequent left clicks will place a soft point (white) on single click or hard point on double click. Contour will be completed once you close it by clicking on starting point again. `Control` + left click inside a closed contour starts an interior cutout. A closed boundary can be further refined by adding point via `Control` + left click and removed via right click. To drag an existing point hold `Alt` and left click. Snapping to 15 degree interval can be achieved while `Shift` is held.
+Pen tool will place a single hard point (red) to start a contour on left click. Subsequent left clicks will place a soft point (white) on single click or hard point on double click. Contour will be completed once you close it by clicking on starting point again. `Control` + left click inside a closed contour starts an interior cutout. A closed boundary can be further refined by adding point via `Control` + left click and removed via right click. To drag an existing point hold `Alt` and left click. Snapping to 15 degree interval can be achieved while `Shift` is held. Enable `Tool Settings->Color-aware snapping` to snap new Pen anchors to nearby color boundaries in the  canvas.
 
 Choose Analytical or Compact from `Tool Settings->Mode`. Pen and Bucket use the selected mode. Compact uses opaque fills and asks how far shapes may extend outside the contour. Generated shapes can be kept with a warning if the result misses its quality targets.
 

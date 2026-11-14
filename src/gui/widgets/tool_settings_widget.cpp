@@ -32,6 +32,7 @@ ToolSettingsWidget::ToolSettingsWidget(QWidget *parent) : QWidget(parent) {
     addCheck(QStringLiteral("displayAnchorsDuringTransformDrag"), QStringLiteral("Show handles while dragging"), {QStringLiteral("transform")});
     addChoice(QStringLiteral("contourFillMode"), QStringLiteral("Mode"), {QStringLiteral("Analytical"), QStringLiteral("Compact")}, {QStringLiteral("pen")});
     addCheck(QStringLiteral("autoSavePenPaths"), QStringLiteral("Save Path"), {QStringLiteral("pen")});
+    addCheck(QStringLiteral("penColorAwareSnapping"), QStringLiteral("Color-aware snapping"), {QStringLiteral("pen")});
     addNumber(QStringLiteral("liningWidth"), QStringLiteral("Width"), 0.1, 256, 2, 0.5, {QStringLiteral("lining")});
     addNumber(QStringLiteral("liningOutsideMargin"), QStringLiteral("Outside margin"), 0, 200, 0, 5, {QStringLiteral("lining")}, QStringLiteral("%"));
     addCheck(QStringLiteral("autoSaveLiningPaths"), QStringLiteral("Save Path"), {QStringLiteral("lining")});
