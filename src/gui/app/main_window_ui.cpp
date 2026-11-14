@@ -472,10 +472,6 @@ void MainWindow::setupEditMenu() {
             statusBar()->showMessage(QStringLiteral("Draw a Pen or Lining path with at least two anchors in an open project"), 4000);
         }
     });
-    auto *newContour = editMenu->addAction(QStringLiteral("New Pen Contour"));
-    registerShortcutAction(newContour, QStringLiteral("new_pen_contour"), QStringLiteral("New Pen Contour"));
-    addAction(newContour);
-    bindEditorAction(newContour, QStringLiteral("new_pen_contour"), [this]() { canvas_->startNewPenContour(); });
 
     editMenu->addSeparator();
     auto *alignMenu = editMenu->addMenu(QStringLiteral("&Align"));
