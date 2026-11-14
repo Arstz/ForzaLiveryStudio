@@ -53,6 +53,7 @@ private:
     void resetAllShortcuts();
     void chooseCanvasColor();
     void chooseThemeColor();
+    void rebuildThemeColorGroups();
     void updateThemeColorControls();
     void previewThemeColors();
     void choosePreviewBackgroundColor(bool buffer);
@@ -71,7 +72,7 @@ private:
     QComboBox *themeCombo_ = nullptr;
     QComboBox *canvasMode_ = nullptr;
     QPushButton *canvasColorButton_ = nullptr;
-    QComboBox *themeColorRole_ = nullptr;
+    QComboBox *themeColorGroup_ = nullptr;
     QPushButton *themeColorButton_ = nullptr;
     QPushButton *resetThemeColorButton_ = nullptr;
     QPushButton *resetThemeColorsButton_ = nullptr;

@@ -673,7 +673,7 @@ const QVector<UiColorRole> &uiColorRoles() {
         {QStringLiteral("canvas"), QStringLiteral("Canvas background"), &UiColors::canvas, &UiColors::secondary},
         {QStringLiteral("preview"), QStringLiteral("Thumbnail background"), &UiColors::preview, &UiColors::secondary},
         {QStringLiteral("checkerboard"), QStringLiteral("Checkerboard alternate"), &UiColors::checkerboard, &UiColors::contrast},
-        {QStringLiteral("carPreview"), QStringLiteral("3D preview background"), &UiColors::carPreview, &UiColors::contrast},
+        {QStringLiteral("carPreview"), QStringLiteral("3D preview background"), &UiColors::carPreview, &UiColors::secondary},
         {QStringLiteral("rulerBackground"), QStringLiteral("Ruler background"), &UiColors::rulerBackground, &UiColors::secondary},
         {QStringLiteral("rulerDivider"), QStringLiteral("Ruler divider"), &UiColors::rulerDivider, &UiColors::border},
         {QStringLiteral("rulerText"), QStringLiteral("Ruler text"), &UiColors::rulerText, &UiColors::mutedText},

@@ -128,9 +128,13 @@ inherit semantic colors unless the definition or user supplies a color. Shared
 color overrides also update inherited component colors. Colors accept Qt color
 strings, including `#AARRGGBB` for alpha.
 
-Settings exposes per-theme color overrides, a color reset, and a theme color
-reset. Changes preview immediately; accepting saves them and canceling restores
-the previous colors and theme. Overrides persist under `ui/themeColors/<id>`.
+Settings groups UI parts by their resolved color, including alpha. Each palette
+entry shows a swatch and its main element's name, with other parts in the hover
+text. Editing an entry applies the
+color to all its parts; resetting restores each part's theme default. Groups
+refresh after color changes. The theme color reset clears all overrides for the
+selected theme. Changes preview immediately; accepting saves them and canceling
+restores the previous colors and theme. Overrides persist under `ui/themeColors/<id>`.
 Canvas background preferences persist per theme under `ui/canvas/themes/<id>`.
 Existing theme selections and canvas preferences migrate to Mahogany themes.
 Custom widget painting uses the resolved theme roles.

@@ -15,13 +15,13 @@
     "hasTip": true,
     "tip": "Canvas background for the selected theme."
   },
-  "theme.color_role": {
+  "theme.color_group": {
     "hasTip": true,
-    "tip": "Choose a shared UI color or a color for a specific UI part."
+    "tip": "Each color group is named after its main element. Hover over it to see the other parts that share its color. Editing the color updates the whole group."
   },
   "theme.color_override": {
     "hasTip": true,
-    "tip": "Override the selected color for this theme. Reset restores its theme default. Changes are previewed until Settings is accepted or canceled."
+    "tip": "Override the selected color group for this theme. Reset restores each part's theme default. Changes are previewed until Settings is accepted or canceled."
   },
   "theme.buffer_background": {
     "hasTip": true,

@@ -20,6 +20,35 @@ struct SettingTip {
 
 using SettingTips = QHash<QString, SettingTip>;
 
+constexpr int kThemeColorValueRole = Qt::UserRole + 1;
+constexpr int kThemeColorSwatchExtent = 16;
+
+struct ThemeColorGroup {
+    QColor color;
+    QStringList roles;
+    QStringList labels;
+};
+
+QVector<ThemeColorGroup> themeColorGroups(UiTheme theme) {
+    const UiColors colors = uiColors(theme);
+    QVector<ThemeColorGroup> groups;
+    QMap<QRgb, qsizetype> indexes;
+
+    for (const UiColorRole &role : uiColorRoles()) {
+        const QColor color = colors.*role.member;
+        const QRgb value = color.rgba();
+        if (!indexes.contains(value)) {
+            indexes.insert(value, groups.size());
+            groups.push_back({color, {}, {}});
+        }
+        ThemeColorGroup &group = groups[indexes.value(value)];
+        group.roles.push_back(role.id);
+        group.labels.push_back(role.label);
+    }
+
+    return groups;
+}
+
 class ImmediateToolTipButton final : public QToolButton {
 public:
     using QToolButton::QToolButton;
@@ -306,7 +335,7 @@ SettingsDialog::SettingsDialog(UiTheme theme,
         if (themeChangedCallback_) {
             themeChangedCallback_(selectedTheme());
         }
-        updateThemeColorControls();
+        rebuildThemeColorGroups();
         updateCanvasColorControls();
         updatePreviewBackgroundControls();
     });
@@ -345,14 +374,12 @@ SettingsDialog::SettingsDialog(UiTheme theme,
                       },
                       [this]() { chooseCanvasColor(); }), tips);
 
-    themeColorRole_ = new QComboBox(themePage.widget);
-    for (const UiColorRole &role : uiColorRoles()) {
-        themeColorRole_->addItem(role.label, role.id);
-    }
-    QObject::connect(themeColorRole_, &QComboBox::currentIndexChanged,
+    themeColorGroup_ = new QComboBox(themePage.widget);
+    themeColorGroup_->setIconSize(QSize(kThemeColorSwatchExtent, kThemeColorSwatchExtent));
+    QObject::connect(themeColorGroup_, &QComboBox::currentIndexChanged,
                      this, [this]() { updateThemeColorControls(); });
-    addSettingRow(themePage, QStringLiteral("theme.color_role"),
-                  QStringLiteral("UI color"), themeColorRole_, tips);
+    addSettingRow(themePage, QStringLiteral("theme.color_group"),
+                  QStringLiteral("UI color"), themeColorGroup_, tips);
     auto *colorRow = new QWidget(themePage.widget);
     auto *colorLayout = new QHBoxLayout(colorRow);
     colorLayout->setContentsMargins(0, 0, 0, 0);
@@ -364,7 +391,10 @@ SettingsDialog::SettingsDialog(UiTheme theme,
     colorLayout->addWidget(resetThemeColorsButton_);
     QObject::connect(themeColorButton_, &QPushButton::clicked, this, [this]() { chooseThemeColor(); });
     QObject::connect(resetThemeColorButton_, &QPushButton::clicked, this, [this]() {
-        themeColorOverrides_[selectedTheme()].remove(themeColorRole_->currentData().toString());
+        const QStringList roles = themeColorGroup_->currentData().toStringList();
+        for (const QString &role : roles) {
+            themeColorOverrides_[selectedTheme()].remove(role);
+        }
         previewThemeColors();
     });
     QObject::connect(resetThemeColorsButton_, &QPushButton::clicked, this, [this]() {
@@ -373,7 +403,7 @@ SettingsDialog::SettingsDialog(UiTheme theme,
     });
     addSettingRow(themePage, QStringLiteral("theme.color_override"),
                   QStringLiteral("Color override"), colorRow, tips);
-    updateThemeColorControls();
+    rebuildThemeColorGroups();
 
     addSettingRow(themePage, QStringLiteral("theme.buffer_background"),
                   QStringLiteral("Buffer background"),
@@ -685,28 +715,65 @@ void SettingsDialog::chooseCanvasColor() {
 }
 
 void SettingsDialog::chooseThemeColor() {
-    const UiColorRole &role = uiColorRoles().at(themeColorRole_->currentIndex());
-    const QColor current = uiColors(selectedTheme()).*role.member;
-    const QColor picked = QColorDialog::getColor(current, this, role.label, QColorDialog::ShowAlphaChannel);
+    const QStringList roles = themeColorGroup_->currentData().toStringList();
+    const QColor current = themeColorGroup_->currentData(kThemeColorValueRole).value<QColor>();
+    const QColor picked = QColorDialog::getColor(
+        current, this, QStringLiteral("UI Color"), QColorDialog::ShowAlphaChannel);
 
     if (!picked.isValid()) {
         return;
     }
-    themeColorOverrides_[selectedTheme()].insert(role.id, picked);
+    for (const QString &role : roles) {
+        themeColorOverrides_[selectedTheme()].insert(role, picked);
+    }
     previewThemeColors();
+}
+
+void SettingsDialog::rebuildThemeColorGroups() {
+    const QString selectedRole = themeColorGroup_->currentData().toStringList().value(0);
+    const QVector<ThemeColorGroup> groups = themeColorGroups(selectedTheme());
+    const UiColors colors = uiColors(selectedTheme());
+    const QSignalBlocker blocker(themeColorGroup_);
+    int selectedIndex = 0;
+
+    themeColorGroup_->clear();
+    for (const ThemeColorGroup &group : groups) {
+        const QString label = group.labels.front();
+        const QString tooltip = group.labels.mid(1).join(QStringLiteral(", "));
+        QPixmap swatch(kThemeColorSwatchExtent, kThemeColorSwatchExtent);
+        const int index = themeColorGroup_->count();
+
+        swatch.fill(group.color);
+        QPainter painter(&swatch);
+        painter.setPen(colors.border);
+        painter.drawRect(swatch.rect().adjusted(0, 0, -1, -1));
+        painter.end();
+        themeColorGroup_->addItem(QIcon(swatch), label, group.roles);
+        themeColorGroup_->setItemData(index, group.color, kThemeColorValueRole);
+        themeColorGroup_->setItemData(index, tooltip, Qt::ToolTipRole);
+        if (group.roles.contains(selectedRole)) {
+            selectedIndex = index;
+        }
+    }
+    themeColorGroup_->setCurrentIndex(selectedIndex);
+    updateThemeColorControls();
 }
 
 void SettingsDialog::updateThemeColorControls() {
     if (themeColorButton_ == nullptr) {
         return;
     }
-    const UiColorRole &role = uiColorRoles().at(themeColorRole_->currentIndex());
+    const QStringList roles = themeColorGroup_->currentData().toStringList();
     const QMap<QString, QColor> overrides = themeColorOverrides_.value(selectedTheme());
-    const QColor color = uiColors(selectedTheme()).*role.member;
+    const QColor color = themeColorGroup_->currentData(kThemeColorValueRole).value<QColor>();
+    const bool custom = std::any_of(roles.cbegin(), roles.cend(), [&](const QString &role) {
+        return overrides.contains(role);
+    });
 
     updateColorButton(themeColorButton_, color, true);
     themeColorButton_->setText(color.name(QColor::HexArgb).toUpper());
-    resetThemeColorButton_->setEnabled(overrides.contains(role.id));
+    themeColorGroup_->setToolTip(themeColorGroup_->currentData(Qt::ToolTipRole).toString());
+    resetThemeColorButton_->setEnabled(custom);
     resetThemeColorsButton_->setEnabled(!overrides.isEmpty());
 }
 
@@ -715,7 +782,7 @@ void SettingsDialog::previewThemeColors() {
     if (themeChangedCallback_) {
         themeChangedCallback_(selectedTheme());
     }
-    updateThemeColorControls();
+    rebuildThemeColorGroups();
     updateCanvasColorControls();
     updatePreviewBackgroundControls();
 }
