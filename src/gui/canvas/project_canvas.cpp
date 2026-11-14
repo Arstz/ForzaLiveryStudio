@@ -2,6 +2,7 @@
 #include "thin_fit.h"
 #include "contour_leeway.h"
 #include "contour_transform.h"
+#include "system_integration.h"
 
 #include "project_canvas_internal.h"
 
@@ -83,6 +84,7 @@ ProjectCanvas::ProjectCanvas(QWidget *parent)
     format.setProfile(QSurfaceFormat::CoreProfile);
     format.setDepthBufferSize(0);
     setFormat(format);
+    configureNativeRenderSurface(*this);
     setMinimumSize(320, 240);
     setAutoFillBackground(false);
     setMouseTracking(true);

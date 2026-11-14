@@ -9,6 +9,7 @@
 #include "paint_database.h"
 #include "paint_color_popup.h"
 #include "scene_view.h"
+#include "system_integration.h"
 #include "theme_manager.h"
 #include "zip_extract.h"
 
@@ -1118,6 +1119,8 @@ CarPreviewWidget::CarPreviewWidget(QWidget *parent)
     format.setAlphaBufferSize(8);
     format.setSamples(4);
     setFormat(format);
+    configureNativeRenderSurface(*this);
+    nativeRenderHost_ = window();
     setFocusPolicy(Qt::StrongFocus);
 
     referenceNote_ = new QLabel(QStringLiteral("Only for reference, ingame render may differ"), this);
@@ -1806,6 +1809,23 @@ void CarPreviewWidget::markLiverySectionsDirty(const QVector<QString> &nodeIds) 
     liveLiveryFullDirty_ = false;
     liveryDirty_ = true;
     update();
+}
+
+bool CarPreviewWidget::event(QEvent *event) {
+#if defined(Q_OS_WIN) && QT_VERSION >= QT_VERSION_CHECK(6, 9, 0)
+    if (event->type() == QEvent::Hide) {
+        QEvent changing(QEvent::WindowAboutToChangeInternal);
+
+        QOpenGLWidget::event(&changing);
+    } else if (event->type() == QEvent::Show && nativeRenderHost_ != window()) {
+        nativeRenderHost_ = window();
+        destroy(false, false);
+        create();
+        update();
+    }
+#endif
+
+    return QOpenGLWidget::event(event);
 }
 
 void CarPreviewWidget::initializeGL() {

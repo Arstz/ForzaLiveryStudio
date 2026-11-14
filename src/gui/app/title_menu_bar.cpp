@@ -31,6 +31,7 @@ namespace gui {
 namespace {
 
 constexpr int kDefaultCaptionHeight = 32;
+constexpr int kDesktopFrameInset = 1;
 constexpr int kCaptionLogoExtent = 16;
 constexpr int kCaptionMenuHorizontalPadding = 8;
 constexpr double kCaptionButtonWidthRatio = 1.5;
@@ -66,17 +67,23 @@ private:
     QPointer<QMainWindow> window_;
 };
 
-void enableSystemCommands(QWindow &window) {
-    const HWND handle = reinterpret_cast<HWND>(window.winId());
-    const LONG_PTR style = GetWindowLongPtrW(handle, GWL_STYLE);
-    const LONG_PTR systemStyle = style | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_MAXIMIZEBOX;
+void calculateClientArea(const MSG &event, bool openGLSurface, qintptr *result) {
+    RECT *client = event.wParam != FALSE
+        ? &reinterpret_cast<NCCALCSIZE_PARAMS *>(event.lParam)->rgrc[0]
+        : reinterpret_cast<RECT *>(event.lParam);
+    const RECT frame = *client;
+    const LONG_PTR style = GetWindowLongPtrW(event.hwnd, GWL_STYLE);
+    const bool caption = (style & WS_CAPTION) == WS_CAPTION;
+    const bool desktopFrame = openGLSurface && (IsZoomed(event.hwnd) || !caption);
 
-    if (style != systemStyle) {
-        SetWindowLongPtrW(handle, GWL_STYLE, systemStyle);
-        SetWindowPos(handle, nullptr, 0, 0, 0, 0,
-            SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+    DefWindowProcW(event.hwnd, event.message, event.wParam, event.lParam);
+    if (caption) {
+        client->top = frame.top + client->left - frame.left;
     }
-    EnableMenuItem(GetSystemMenu(handle, FALSE), SC_CLOSE, MF_BYCOMMAND | MF_ENABLED);
+    if (desktopFrame) {
+        InflateRect(client, -kDesktopFrameInset, -kDesktopFrameInset);
+    }
+    *result = 0;
 }
 
 class CaptionButton final : public QAbstractButton {
@@ -241,13 +248,23 @@ protected:
         const auto *event = static_cast<const MSG *>(message);
 
         if (eventType != QByteArrayLiteral("windows_generic_MSG") || nativeWindow_ == nullptr
-            || event->hwnd != nativeWindow_ || event->message != WM_NCHITTEST
+            || event->hwnd != nativeWindow_
             || window_ == nullptr || frameWindow_ == nullptr) {
             return false;
         }
-        *result = hitTest(QPoint(GET_X_LPARAM(event->lParam), GET_Y_LPARAM(event->lParam)));
+        if (event->message == WM_NCCALCSIZE) {
+            const QSurface::SurfaceType surface = frameWindow_->surfaceType();
+            const bool openGLSurface = surface == QSurface::OpenGLSurface || surface == QSurface::RasterGLSurface;
 
-        return true;
+            calculateClientArea(*event, openGLSurface, result);
+
+            return true;
+        }
+        if (event->message != WM_NCHITTEST) {
+            return false;
+        }
+
+        return hitTest(QPoint(GET_X_LPARAM(event->lParam), GET_Y_LPARAM(event->lParam)), result);
     }
 
     bool event(QEvent *event) override {
@@ -303,71 +320,48 @@ protected:
     }
 
 private:
-    LRESULT hitTest(const QPoint &screenPosition) const {
+    bool hitTest(const QPoint &screenPosition, qintptr *result) const {
         POINT clientPosition{screenPosition.x(), screenPosition.y()};
         RECT clientRect{};
 
         if (ScreenToClient(nativeWindow_, &clientPosition) == FALSE
             || GetClientRect(nativeWindow_, &clientRect) == FALSE
             || PtInRect(&clientRect, clientPosition) == FALSE) {
-            return HTNOWHERE;
+            return false;
         }
         const QPoint menuPosition = mapFrom(window_.data(),
             QPointF(clientPosition.x / frameWindow_->devicePixelRatio(),
                 clientPosition.y / frameWindow_->devicePixelRatio()).toPoint());
-        const UINT dpi = GetDpiForWindow(nativeWindow_);
-        const int border = IsZoomed(nativeWindow_) || window_->isFullScreen() ? 0
-            : GetSystemMetricsForDpi(SM_CXSIZEFRAME, dpi) + GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi);
         const bool titleBar = isVisible() && rect().contains(menuPosition);
-        const bool left = clientPosition.x < border;
-        const bool right = clientPosition.x >= clientRect.right - border;
-        const bool top = clientPosition.y < border;
-        const bool bottom = clientPosition.y >= clientRect.bottom - border;
 
         if (QWidget::mouseGrabber() != nullptr || QApplication::activePopupWidget() != nullptr
             || (titleBar && (actionAt(menuPosition) != nullptr || childAt(menuPosition) != nullptr))) {
-            return HTCLIENT;
-        }
-        if (top && left) {
-            return HTTOPLEFT;
-        }
-        if (top && right) {
-            return HTTOPRIGHT;
-        }
-        if (bottom && left) {
-            return HTBOTTOMLEFT;
-        }
-        if (bottom && right) {
-            return HTBOTTOMRIGHT;
-        }
-        if (left) {
-            return HTLEFT;
-        }
-        if (right) {
-            return HTRIGHT;
-        }
-        if (top) {
-            return HTTOP;
-        }
-        if (bottom) {
-            return HTBOTTOM;
+            *result = HTCLIENT;
+        } else {
+            *result = titleBar ? HTCAPTION : HTCLIENT;
         }
 
-        return titleBar ? HTCAPTION : HTCLIENT;
+        return true;
     }
 
     void observeFrameWindow() {
         QWindow *handle = window_->windowHandle();
+        const HWND nativeWindow = handle != nullptr ? reinterpret_cast<HWND>(handle->winId()) : nullptr;
+
         if (frameWindow_ != handle) {
             if (frameWindow_ != nullptr) {
                 disconnect(frameWindow_, nullptr, this, nullptr);
             }
             frameWindow_ = handle;
-            nativeWindow_ = handle != nullptr ? reinterpret_cast<HWND>(handle->winId()) : nullptr;
             if (handle != nullptr) {
-                enableSystemCommands(*handle);
-                connect(handle, &QWindow::safeAreaMarginsChanged, this, [this]() { updateCaptionMetrics(); });
                 connect(handle, &QWindow::screenChanged, this, [this]() { updateCaptionMetrics(); });
+            }
+        }
+        if (nativeWindow_ != nativeWindow) {
+            nativeWindow_ = nativeWindow;
+            if (nativeWindow_ != nullptr) {
+                SetWindowPos(nativeWindow_, nullptr, 0, 0, 0, 0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
             }
         }
     }
@@ -382,9 +376,7 @@ private:
         const QFont menuFont = uiTextFont();
         const QFontMetrics menuMetrics(menuFont, this);
         const QMargins textMargins = uiTextInsets(menuFont);
-        const int safeCaptionHeight = frameWindow_ != nullptr ? frameWindow_->safeAreaMargins().top() : 0;
-        const int captionHeight = std::max(kUiControlHeight,
-            safeCaptionHeight > 0 ? safeCaptionHeight : kDefaultCaptionHeight);
+        const int captionHeight = std::max(kUiControlHeight, kDefaultCaptionHeight);
         const int menuPadding = std::max(0, captionHeight - 2 * kUiHighlightMargin - menuMetrics.height());
         const int menuTopPadding = std::clamp(
             (menuPadding + textMargins.top() - textMargins.bottom()) / 2, 0, menuPadding);
@@ -420,12 +412,11 @@ private:
 
 QMenuBar *createTitleMenuBar(QMainWindow &window) {
 #if defined(Q_OS_WIN) && QT_VERSION >= QT_VERSION_CHECK(6, 9, 0)
-    const Qt::WindowFlags nativeCaption = Qt::WindowTitleHint | Qt::WindowMinMaxButtonsHint
-        | Qt::WindowCloseButtonHint | Qt::WindowContextHelpButtonHint;
+    const Qt::WindowFlags nativeCaption = Qt::WindowTitleHint | Qt::WindowSystemMenuHint
+        | Qt::WindowMinMaxButtonsHint | Qt::WindowCloseButtonHint;
 
-    window.setWindowFlags((window.windowFlags() & ~nativeCaption) | Qt::CustomizeWindowHint
-        | Qt::WindowSystemMenuHint | Qt::ExpandedClientAreaHint | Qt::NoTitleBarBackgroundHint);
-    window.setAttribute(Qt::WA_ContentsMarginsRespectsSafeArea, false);
+    window.setWindowFlags((window.windowFlags() & ~(Qt::ExpandedClientAreaHint | Qt::NoTitleBarBackgroundHint
+        | Qt::WindowContextHelpButtonHint)) | Qt::CustomizeWindowHint | nativeCaption);
 
     return new TitleMenuBar(window);
 #else

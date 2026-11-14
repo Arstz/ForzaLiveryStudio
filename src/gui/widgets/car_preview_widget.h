@@ -77,6 +77,7 @@ Q_SIGNALS:
     void unwrapOverlayChanged();
 
 protected:
+    bool event(QEvent *event) override;
     void initializeGL() override;
     void resizeGL(int w, int h) override;
     void paintGL() override;
@@ -130,6 +131,7 @@ private:
 
     fls::Project *project_ = nullptr;
     QPointer<EditorState> state_;
+    QPointer<QWidget> nativeRenderHost_;
     QPointer<PaintColorPopup> paintPopup_;
 
     fls::CarModel model_;
