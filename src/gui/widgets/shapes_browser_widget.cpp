@@ -117,14 +117,14 @@ TilePaintLayout paintTileFrame(QPainter &painter, const QWidget &tile, bool hove
                             kPreviewSize.width(), kPreviewSize.height());
 
     painter.setRenderHint(QPainter::Antialiasing, true);
-    painter.setPen(QPen(hovered ? colors.activeStroke : colors.stroke, 1));
+    painter.setPen(hovered ? Qt::NoPen : QPen(colors.stroke, kUiControlBorderWidth));
     painter.setBrush(hovered ? colors.hover : colors.base);
     painter.drawRoundedRect(tileRect.adjusted(0, 0, -1, -1), kUiCornerRadius, kUiCornerRadius);
     painter.setPen(Qt::NoPen);
     painter.setBrush(colors.previewBase);
     painter.drawRoundedRect(previewRect, kUiCornerRadius, kUiCornerRadius);
 
-    return {previewRect, colors.label};
+    return {previewRect, hovered ? colors.hoverLabel : colors.label};
 }
 
 QSettings settings() {

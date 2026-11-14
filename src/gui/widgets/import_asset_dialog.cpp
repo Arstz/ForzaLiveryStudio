@@ -431,8 +431,7 @@ private:
 
         painter->save();
         painter->setRenderHint(QPainter::Antialiasing, true);
-        painter->setPen(QPen(
-            hovered || selected ? colors.activeStroke : colors.stroke, 1));
+        painter->setPen(hovered || selected ? Qt::NoPen : QPen(colors.stroke, kUiControlBorderWidth));
         painter->setBrush(selected ? uiColors(currentUiTheme()).selection
                                   : hovered ? colors.hover : colors.base);
         painter->drawRoundedRect(tileRect.adjusted(0, 0, -1, -1), kUiCornerRadius, kUiCornerRadius);
@@ -461,7 +460,7 @@ private:
         const QStringList lines =
             index.data(Qt::DisplayRole).toString().split(QLatin1Char('\n'));
         const QFontMetrics metrics(painter->font());
-        painter->setPen(colors.label);
+        painter->setPen(hovered || selected ? colors.hoverLabel : colors.label);
         if (!lines.isEmpty()) {
             const QString title =
                 metrics.elidedText(

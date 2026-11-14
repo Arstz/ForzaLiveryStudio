@@ -7,6 +7,7 @@
 #include <QBrush>
 #include <QPalette>
 #include <QMap>
+#include <QMargins>
 #include <QSize>
 #include <QString>
 #include <QVector>
@@ -21,7 +22,8 @@ namespace gui {
 using UiTheme = QString;
 inline const UiTheme kDefaultUiTheme = QStringLiteral("mahogany-dark");
 
-inline constexpr int kUiCornerRadius = 0;
+inline constexpr int kUiCornerRadius = 5;
+inline constexpr int kUiHighlightMargin = 1;
 inline constexpr int kUiControlHeight = 27;
 inline constexpr int kUiControlBorderWidth = 1;
 inline constexpr int kUiToolbarButtonPadding = 3;
@@ -95,6 +97,7 @@ UiColors uiColors(UiTheme theme);
 QFont uiTextFont();
 QFont uiSecondaryTextFont();
 int uiTextPixelSize(const QFont &font);
+QMargins uiTextInsets(const QFont &font);
 QColor uiSelectionHoverColor(const QColor &color);
 void applyUiToolbarMetrics(QToolBar &toolbar);
 QIcon uiAddIcon();

@@ -116,13 +116,15 @@ the application entry point and links the UI library.
 
 On Windows with Qt 6.9 or newer, `title_menu_bar.*` places the main menus in the
 expanded title-bar area. Theme-painted window controls occupy the right corner;
-the application title remains available to the operating system. Caption glyphs
+the application logo precedes the menus, and the title remains available to the
+operating system. Caption glyphs
 use the theme foreground, and hover uses the shared selection colors. Native
 system commands remain enabled. A native hit-test filter routes menu actions
 and caption buttons through standard client input. Empty menu-bar space supplies
 the native drag and system-menu region, and window edges supply resize regions.
 Hit testing only classifies regions. Safe-area, screen, and style changes update
-the control geometry.
+the control geometry. Menu padding uses font metrics to center text within the
+caption row.
 Menu mnemonic underlines are hidden while keyboard shortcuts remain available.
 The application color scheme follows the active UI theme. Other platforms use
 the standard menu bar and window frame.
@@ -151,7 +153,7 @@ restores the previous colors and theme. Overrides persist under `ui/themeColors/
 Canvas background preferences persist per theme under `ui/canvas/themes/<id>`.
 Existing theme selections and canvas preferences migrate to Mahogany themes.
 Custom widget painting uses the resolved theme roles.
-Panels, tabs, controls, and painted UI surfaces use square corners.
+Interactive controls and their highlights use a shared 5 px corner radius.
 Dock panels use borderless bodies, flat title actions, and one-pixel header
 separators. Floating docks reserve
 an edge margin for resizing, and title bars expose close and collapse controls.
@@ -167,20 +169,25 @@ preserves horizontal text alignment. Embedded field action buttons use the
 field's geometry and text-sized icons. Toolbar icons
 match the font's pixel size; button widths follow text and icon metrics with
 shared padding. Icon-only toolbar buttons and Settings help buttons are square.
-Tool actions use a full selected frame; hover uses a lighter version of its fill
-and outline. Dock tabs show outlines on hover and use a fill for selection.
+Hover highlights use the shared lighter selection fill without an outline.
+Selected controls use the selection fill. Toolbar controls, dock tabs, dock
+title actions, menus, and caption controls leave a one-pixel visual gap beside
+separator lines. Caption controls retain their full mouse targets.
 Dock tabs use text-sized icons and keep selected and inactive labels aligned.
 Theme changes derive fonts from the system baseline. Guideline color is
 on the Theme settings page and retains its existing persisted preference.
-Resize dividers use surface fills with one-pixel separators, and sliders use square,
-outlined handles. Tool settings use the shared control size, a constant padded row height,
+Resize dividers fill the full grab region with their theme color. Tool settings use
+the shared control size, a constant padded row height,
 and a movable horizontal toolbar that supports floating. Floating toolbar width
 follows active contents above a minimum width. Tool Settings reserves symmetric
 vertical padding and the horizontal scrollbar's height so controls fit in the
 viewport. Tool Settings shares the toolbar background role. Menu and toolbar
-edges use one-pixel separators from the Border color role, with layout space
+edges, Tool Settings, dock tabs, and widget titles use one-pixel separators from
+the Border color role, with layout space
 reserved in the toolbar contents for those separators. Toolbar stylesheet
 padding stays zero so the drag handle and action layout share the same origin.
+`theme_toolbar.*` reapplies layout margins after show, orientation, font, and
+style changes so separator spacing follows the active layout.
 The status bar uses its own surface role.
 Dock headers indicate keyboard focus, and semantic widget states
 share theme-aware text and border colors. Swatch styling derives readable text from

@@ -1,6 +1,7 @@
 #include "main_window.h"
 
 #include "main_window_internal.h"
+#include "theme_toolbar.h"
 
 #include "car_preview_widget.h"
 #include "clipboard_buffer_widget.h"
@@ -632,7 +633,7 @@ void MainWindow::setupOptionsMenu() {
 }
 
 void MainWindow::setupToolbar() {
-    toolBar_ = new QToolBar(QStringLiteral("Tools"), this);
+    toolBar_ = new ThemeToolBar(QStringLiteral("Tools"), this);
     toolBar_->setObjectName(QStringLiteral("MainToolBar"));
     auto *toolGroup = new QActionGroup(toolBar_);
     toolGroup->setExclusive(true);
