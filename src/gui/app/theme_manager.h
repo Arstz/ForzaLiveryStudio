@@ -10,6 +10,7 @@
 #include <QString>
 
 class QApplication;
+class QIcon;
 class QWidget;
 
 namespace gui {
@@ -26,6 +27,9 @@ inline constexpr int kUiHeaderHeight = 30;
 inline constexpr int kUiSpacing = 6;
 inline constexpr int kUiMargin = 10;
 inline constexpr int kUiSplitterWidth = 4;
+inline constexpr int kUiActionGlyphExtent = 10;
+inline constexpr int kUiActionIconExtent = 12;
+inline constexpr double kUiActionGlyphStrokeWidth = 1.5;
 
 struct UiColors {
     QColor main;
@@ -45,6 +49,7 @@ struct UiColors {
 };
 
 UiColors uiColors(UiTheme theme);
+QIcon uiAddIcon();
 QString colorSwatchStyle(const QColor &color);
 void setUiState(QWidget *widget, const QString &state);
 

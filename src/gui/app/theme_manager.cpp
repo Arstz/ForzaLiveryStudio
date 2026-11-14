@@ -24,8 +24,6 @@ UiTheme currentTheme = UiTheme::Dark;
 constexpr double kGlyphStrokeWidth = 1.5;
 constexpr double kCheckStrokeWidth = 2.0;
 constexpr int kMenuIconExtent = 16;
-constexpr int kResizeGripSpacing = 4;
-constexpr int kResizeGripInset = 1;
 constexpr int kLightResizeHandleFactor = 105;
 constexpr int kSliderGrooveExtent = 6;
 constexpr int kSliderHandleExtent = 14;
@@ -44,24 +42,11 @@ void drawResizeHandle(QPainter &painter, const QStyleOption &option) {
     const QColor background = currentUiTheme() == UiTheme::Light
         ? colors.main.lighter(kLightResizeHandleFactor) : colors.contrast;
     const QRect area = option.rect;
-    const QPoint center = area.center();
-    const bool vertical = area.height() > area.width();
     const bool hovered = option.state.testFlag(QStyle::State_MouseOver);
     const bool pressed = option.state.testFlag(QStyle::State_Sunken);
 
     painter.save();
     painter.fillRect(area, hovered || pressed ? colors.accent : background);
-    painter.setRenderHint(QPainter::Antialiasing, false);
-    painter.setPen(pressed ? colors.focus : colors.text);
-    for (const int offset : {-kResizeGripSpacing, 0, kResizeGripSpacing}) {
-        if (vertical) {
-            painter.drawLine(area.left() + kResizeGripInset, center.y() + offset,
-                             area.right() - kResizeGripInset, center.y() + offset);
-        } else {
-            painter.drawLine(center.x() + offset, area.top() + kResizeGripInset,
-                             center.x() + offset, area.bottom() - kResizeGripInset);
-        }
-    }
     painter.restore();
 }
 
@@ -171,6 +156,20 @@ void drawClose(QPainter &painter, const QRect &area, const QColor &color) {
     painter.restore();
 }
 
+void drawAdd(QPainter &painter, const QRect &area, const QColor &color) {
+    const double scale = static_cast<double>(std::min(area.width(), area.height())) / kUiActionIconExtent;
+    const double halfExtent = kUiActionGlyphExtent / 2.0;
+
+    painter.save();
+    painter.setRenderHint(QPainter::Antialiasing);
+    painter.translate(QRectF(area).center());
+    painter.scale(scale, scale);
+    painter.setPen(QPen(color, kUiActionGlyphStrokeWidth, Qt::SolidLine, Qt::RoundCap));
+    painter.drawLine(QPointF(-halfExtent, 0), QPointF(halfExtent, 0));
+    painter.drawLine(QPointF(0, -halfExtent), QPointF(0, halfExtent));
+    painter.restore();
+}
+
 std::optional<Qt::ArrowType> standardArrow(QStyle::StandardPixmap icon, Qt::LayoutDirection direction) {
     switch (icon) {
     case QStyle::SP_ArrowUp: return Qt::UpArrow;
@@ -187,12 +186,15 @@ std::optional<Qt::ArrowType> standardArrow(QStyle::StandardPixmap icon, Qt::Layo
     }
 }
 
+enum class ChromeAction { Close, Add };
+
 class ChromeIconEngine final : public QIconEngine {
 public:
-    explicit ChromeIconEngine(std::optional<Qt::ArrowType> direction) : direction_(direction) {}
+    explicit ChromeIconEngine(std::optional<Qt::ArrowType> direction, ChromeAction action = ChromeAction::Close)
+        : direction_(direction), action_(action) {}
 
     QIconEngine *clone() const override {
-        return new ChromeIconEngine(direction_);
+        return new ChromeIconEngine(direction_, action_);
     }
 
     void paint(QPainter *painter, const QRect &rect, QIcon::Mode mode, QIcon::State) override {
@@ -201,6 +203,8 @@ public:
 
         if (direction_.has_value()) {
             drawArrow(*painter, rect, *direction_, foreground);
+        } else if (action_ == ChromeAction::Add) {
+            drawAdd(*painter, rect, foreground);
         } else {
             drawClose(*painter, rect, foreground);
         }
@@ -217,6 +221,7 @@ public:
 
 private:
     std::optional<Qt::ArrowType> direction_;
+    ChromeAction action_;
 };
 
 void drawCheckBox(QPainter &painter, const QStyleOption &option) {
@@ -258,6 +263,9 @@ public:
         std::optional<Qt::ArrowType> direction;
 
         switch (element) {
+        case PE_FrameDockWidget:
+            painter->fillRect(option->rect, colors.secondary);
+            return;
         case PE_IndicatorDockWidgetResizeHandle:
             drawResizeHandle(*painter, *option);
             return;
@@ -354,6 +362,7 @@ public:
             return kUiControlHeight;
         case PM_SplitterWidth:
         case PM_DockWidgetSeparatorExtent:
+        case PM_DockWidgetFrameWidth:
             return kUiSplitterWidth;
         case PM_LayoutLeftMargin:
         case PM_LayoutTopMargin:
@@ -375,7 +384,7 @@ QString themeStyleSheet(UiTheme theme) {
         QWidget { color: @text; }
         QWidget:disabled { color: @disabled; }
         QMainWindow, QDialog { background: @main; color: @text; }
-        QDockWidget { color: @text; border: none; }
+        QDockWidget { color: @text; }
         QWidget#dockHeader {
             background: @secondary; border: 1px solid @border;
             border-top-left-radius: @radiuspx; border-top-right-radius: @radiuspx;
@@ -438,6 +447,10 @@ QString themeStyleSheet(UiTheme theme) {
         }
         QLineEdit, QComboBox, QAbstractSpinBox { min-height: @fieldHeightpx; }
         QComboBox, QAbstractSpinBox { padding-right: 22px; }
+        QAbstractSpinBox[uiCompact="true"], QComboBox[uiCompact="true"] {
+            min-height: @compactFieldpx; max-height: @compactFieldpx;
+            padding-top: 0; padding-bottom: 0;
+        }
         QLineEdit:hover, QComboBox:hover, QAbstractSpinBox:hover { border-color: @focus; }
         QLineEdit:focus, QComboBox:focus, QTextEdit:focus,
         QPlainTextEdit:focus, QAbstractSpinBox:focus { border-color: @focus; }
@@ -491,10 +504,13 @@ QString themeStyleSheet(UiTheme theme) {
         QScrollBar::add-page, QScrollBar::sub-page { background: transparent; }
         QSlider:horizontal { min-height: @controlHeightpx; }
         QSlider:vertical { min-width: @controlHeightpx; }
-        QToolBar { background: @main; border: none; spacing: @spacingpx; padding: 3px; }
-        QToolBar#ToolSettingsBar { margin: 0; padding: 0; spacing: 0; }
-        QScrollArea#ToolSettingsPanel, QWidget#ToolSettings { background: @main; margin: 0; padding: 0; }
-        QStatusBar { background: @main; color: @muted; }
+        QToolBar { background: @main; border: none; border-bottom: 1px solid @border; spacing: @spacingpx; padding: 3px; }
+        QToolBar#ToolSettingsBar { background: @secondary; margin: 0; padding: 1px; spacing: 0; }
+        QScrollArea#ToolSettingsPanel, QWidget#ToolSettings { background: @secondary; margin: 0; padding: 0; }
+        QScrollArea#ToolSettingsPanel > QWidget { background: @secondary; }
+        QScrollArea#ToolSettingsPanel QScrollBar:horizontal { height: @scrollExtentpx; }
+        QScrollArea#ToolSettingsPanel QScrollBar::handle:horizontal { margin: 0; }
+        QStatusBar { background: @secondary; color: @muted; }
         QStatusBar::item { border: none; }
         QMenuBar { background: @main; color: @text; }
         QMenuBar::item { padding: 5px 8px; border-radius: @radiuspx; background: transparent; }
@@ -582,6 +598,8 @@ QString themeStyleSheet(UiTheme theme) {
     sheet.replace(QStringLiteral("@fieldHeight"), QString::number(kUiControlHeight - 8));
     sheet.replace(QStringLiteral("@controlHeight"), QString::number(kUiControlHeight));
     sheet.replace(QStringLiteral("@compactControl"), QString::number(kUiCompactControlExtent));
+    sheet.replace(QStringLiteral("@compactField"), QString::number(kUiCompactControlExtent - 2));
+    sheet.replace(QStringLiteral("@scrollExtent"), QString::number(kUiSplitterWidth));
     sheet.replace(QStringLiteral("@dockExtent"), QString::number(kUiCompactControlExtent - 2));
     sheet.replace(QStringLiteral("@squareExtent"), QString::number(kUiControlHeight - 2));
     sheet.replace(QStringLiteral("@menuIcon"), QString::number(kMenuIconExtent));
@@ -654,6 +672,10 @@ UiColors uiColors(UiTheme theme) {
         .error = QColor(QStringLiteral("#e4a3aa")),
         .guide = QColor(QStringLiteral("#514637")),
     };
+}
+
+QIcon uiAddIcon() {
+    return QIcon(new ChromeIconEngine(std::nullopt, ChromeAction::Add));
 }
 
 QString colorSwatchStyle(const QColor &color) {

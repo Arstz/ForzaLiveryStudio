@@ -15,10 +15,8 @@ constexpr const char *kDockIconLabelProperty = "flsDockIconLabel";
 constexpr const char *kDockTitleLayoutProperty = "flsDockTitleLayout";
 constexpr int kDockIconExtent = 16;
 constexpr int kDockTitleVerticalMargin = 3;
-constexpr int kDockGlyphInset = 6;
-constexpr double kDockGlyphStrokeWidth = 1.5;
 
-enum class DockGlyph { Close, PopOut, Left, Right, Up, Down };
+enum class DockGlyph { Close, Left, Right, Up, Down };
 
 class DockTitleButton final : public QToolButton {
 public:
@@ -53,23 +51,20 @@ protected:
         QStyleOptionToolButton option;
         QPainter painter(this);
         const UiColors colors = uiColors(currentUiTheme());
-        const QRectF glyphArea = QRectF(rect()).adjusted(
-            kDockGlyphInset, kDockGlyphInset, -kDockGlyphInset, -kDockGlyphInset);
+        QRectF glyphArea(QPointF(), QSizeF(kUiActionGlyphExtent, kUiActionGlyphExtent));
 
+        glyphArea.moveCenter(QRectF(rect()).center());
         initStyleOption(&option);
         option.icon = QIcon();
         option.text.clear();
         style()->drawComplexControl(QStyle::CC_ToolButton, &option, &painter, this);
         painter.setRenderHint(QPainter::Antialiasing);
         painter.setPen(QPen(isEnabled() ? colors.text : colors.disabledText,
-                            kDockGlyphStrokeWidth, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+                            kUiActionGlyphStrokeWidth, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
         painter.setBrush(Qt::NoBrush);
         if (glyph_ == DockGlyph::Close) {
             painter.drawLine(glyphArea.topLeft(), glyphArea.bottomRight());
             painter.drawLine(glyphArea.bottomLeft(), glyphArea.topRight());
-        } else if (glyph_ == DockGlyph::PopOut) {
-            painter.drawLine(glyphArea.bottomLeft(), glyphArea.topRight());
-            painter.drawPolyline(QPolygonF{glyphArea.topLeft(), glyphArea.topRight(), glyphArea.bottomRight()});
         } else {
             QTransform transform;
             const QPolygonF chevron{QPointF(-0.25, -0.4), QPointF(0.25, 0.0), QPointF(-0.25, 0.4)};
@@ -134,12 +129,6 @@ void setDockTitleIcon(QDockWidget *dock, const QString &iconName) {
         titleBar->style()->polish(titleBar);
         titleBar->update();
     });
-
-    auto *floatButton = new DockTitleButton(titleBar, DockGlyph::PopOut, QStringLiteral("Float"));
-    QObject::connect(floatButton, &QToolButton::clicked, dock, [dock]() {
-        dock->setFloating(!dock->isFloating());
-    });
-    layout->addWidget(floatButton);
 
     auto *closeButton = new DockTitleButton(titleBar, DockGlyph::Close, QStringLiteral("Close"));
     QObject::connect(closeButton, &QToolButton::clicked, dock, &QDockWidget::hide);

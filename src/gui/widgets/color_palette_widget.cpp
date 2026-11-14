@@ -38,7 +38,9 @@ ColorPaletteWidget::ColorPaletteWidget(QWidget *parent)
     grid_->setContentsMargins(6, 6, 6, 6);
     grid_->setSpacing(6);
 
-    addButton_ = new QPushButton(QStringLiteral("+"), this);
+    addButton_ = new QPushButton(this);
+    addButton_->setIcon(uiAddIcon());
+    addButton_->setIconSize(QSize(kUiActionIconExtent, kUiActionIconExtent));
     addButton_->setObjectName(QStringLiteral("saveSwatchButton"));
     addButton_->setProperty("uiSquareButton", true);
     addButton_->setFixedSize(kSwatchSize, kSwatchSize);

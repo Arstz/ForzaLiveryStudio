@@ -16,8 +16,9 @@ constexpr int kSliderWidth = 60;
 
 ToolSettingsWidget::ToolSettingsWidget(QWidget *parent) : QWidget(parent) {
     setObjectName(QStringLiteral("ToolSettings"));
+    setAttribute(Qt::WA_StyledBackground, true);
     layout_ = new QHBoxLayout(this);
-    layout_->setContentsMargins(kFieldSpacing, 0, kFieldSpacing, 0);
+    layout_->setContentsMargins(kFieldSpacing, kFieldSpacing, kFieldSpacing, kFieldSpacing);
     layout_->setSpacing(kOptionSpacing);
     addNumber(QStringLiteral("bucketTolerance"), QStringLiteral("Tolerance"), 0, 255, 0, 1, {QStringLiteral("bucket")});
     addCheck(QStringLiteral("moveToolAutoSelect"), QStringLiteral("Auto Select"), {QStringLiteral("move")});
@@ -42,14 +43,9 @@ ToolSettingsWidget::ToolSettingsWidget(QWidget *parent) : QWidget(parent) {
 QSize ToolSettingsWidget::sizeHint() const {
     QSize size = QWidget::sizeHint();
     const auto margins = layout_->contentsMargins();
-    int height = 0;
+    int height = kUiControlHeight;
     for (auto it = tools_.cbegin(); it != tools_.cend(); ++it) {
-        if (!it.key()->isHidden()) {
-            height = std::max(height, it.key()->sizeHint().height());
-        }
-    }
-    if (height > 0) {
-        height = std::max(height, kUiControlHeight);
+        height = std::max(height, it.key()->sizeHint().height());
     }
     size.setHeight(height + margins.top() + margins.bottom());
 
@@ -135,6 +131,7 @@ void ToolSettingsWidget::addChoice(const QString &key, const QString &text, cons
     row->setSpacing(kFieldSpacing);
     row->addWidget(new QLabel(text, container));
     auto *choice = new QComboBox(container);
+    choice->setProperty("uiCompact", true);
     choice->addItems(choices);
     choice->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
     choice->setFocusPolicy(Qt::NoFocus);
@@ -164,6 +161,7 @@ void ToolSettingsWidget::addNumber(const QString &key, const QString &text, doub
     slider->setFixedWidth(kSliderWidth);
     slider->setFocusPolicy(Qt::NoFocus);
     slider->installEventFilter(this);
+    number->setProperty("uiCompact", true);
     number->setDecimals(decimals);
     number->setRange(minimum, maximum);
     number->setSingleStep(step);

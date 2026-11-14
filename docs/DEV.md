@@ -118,12 +118,18 @@ and the shared stylesheet. Light mode uses cream and blush surfaces with sage
 accents and rose-gray preview contrast. Dark mode pairs charcoal surfaces with
 muted versions of those colors. Custom widget painting uses the same color roles.
 Panels, tabs, controls, and painted UI surfaces use square corners.
-Dock actions share a square button frame with one outline.
+Dock actions share a square button frame with one outline. Floating docks reserve
+an edge margin for resizing, and title bars expose close and collapse controls.
 Theme changes refresh cached icons across dock titles and tab bars. Square action
 controls share explicit size constraints, and input editors share surface colors.
 Native control glyphs use theme foregrounds. Checkbox and button dimensions follow
-shared size roles. Resize dividers expose centered grips, and sliders use square,
-outlined handles. Dock headers indicate keyboard focus, and semantic widget states
+shared size roles. Resize dividers use plain surface fills, and sliders use square,
+outlined handles. Tool settings use compact editors, a constant padded row height,
+and a movable horizontal toolbar that supports floating. Floating toolbar width
+follows active contents above a minimum width. Toolbar margins reserve space for
+bottom dividers.
+Tool settings and the status bar use secondary surfaces.
+Dock headers indicate keyboard focus, and semantic widget states
 share theme-aware text and border colors. Swatch styling derives readable text from
 the displayed color. Canvas and preview background preferences remain persisted
 through the theme settings.

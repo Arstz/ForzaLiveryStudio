@@ -1,10 +1,13 @@
 #include "main_window.h"
 #include "tool_settings_widget.h"
 
+#include <algorithm>
 #include <array>
 
 namespace gui {
 namespace {
+
+constexpr int kToolSettingsMinimumWidth = 240;
 
 class ToolSettingsScrollArea final : public QScrollArea {
 public:
@@ -14,32 +17,38 @@ public:
         setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
         setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
         setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        setMinimumWidth(kToolSettingsMinimumWidth);
         setWidget(controls);
         controls->installEventFilter(this);
-        horizontalScrollBar()->installEventFilter(this);
-        connect(horizontalScrollBar(), &QScrollBar::rangeChanged, this, [this]() { updateGeometry(); });
+        if (auto *toolbar = qobject_cast<QToolBar *>(parent)) {
+            connect(toolbar, &QToolBar::topLevelChanged, this, [this]() { updateToolbarGeometry(); });
+        }
     }
 
     QSize sizeHint() const override {
-        if (widget() == nullptr) return QSize(0, 0);
-        const auto *bar = horizontalScrollBar();
-        const int scrollHeight = bar->isVisible() ? bar->sizeHint().height() : 0;
+        const QSize content = widget() != nullptr ? widget()->sizeHint() : QSize();
 
-        return QSize(0, widget()->sizeHint().height() + scrollHeight);
+        return QSize(std::max(kToolSettingsMinimumWidth, content.width()), content.height());
     }
-    QSize minimumSizeHint() const override { return sizeHint(); }
+    QSize minimumSizeHint() const override {
+        return QSize(kToolSettingsMinimumWidth, sizeHint().height());
+    }
 
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override {
         const bool handled = QScrollArea::eventFilter(watched, event);
-        if (watched == widget() && event->type() == QEvent::LayoutRequest) updateGeometry();
-        if (watched == horizontalScrollBar()
-            && (event->type() == QEvent::Show || event->type() == QEvent::Hide
-                || event->type() == QEvent::StyleChange)) {
-            updateGeometry();
-        }
+        if (watched == widget() && event->type() == QEvent::LayoutRequest) updateToolbarGeometry();
 
         return handled;
+    }
+
+private:
+    void updateToolbarGeometry() {
+        updateGeometry();
+        if (auto *toolbar = qobject_cast<QToolBar *>(parentWidget()); toolbar != nullptr && toolbar->isFloating()) {
+            toolbar->layout()->activate();
+            toolbar->resize(toolbar->sizeHint());
+        }
     }
 };
 
@@ -67,9 +76,9 @@ const auto kToolFlags = std::to_array<ToolFlag>({
 void MainWindow::setupToolSettings() {
     toolSettingsBar_ = new QToolBar(QStringLiteral("Tool Settings"), this);
     toolSettingsBar_->setObjectName(QStringLiteral("ToolSettingsBar"));
-    toolSettingsBar_->setAllowedAreas(Qt::TopToolBarArea);
-    toolSettingsBar_->setMovable(false);
-    toolSettingsBar_->setFloatable(false);
+    toolSettingsBar_->setAllowedAreas(Qt::TopToolBarArea | Qt::BottomToolBarArea);
+    toolSettingsBar_->setMovable(true);
+    toolSettingsBar_->setFloatable(true);
     toolSettingsBar_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     toolSettings_ = new ToolSettingsWidget;
     auto *scroll = new ToolSettingsScrollArea(toolSettings_, toolSettingsBar_);
@@ -117,15 +126,13 @@ void MainWindow::setupToolOptionShortcuts() {
 }
 
 void MainWindow::positionToolSettings() {
-    if (toolSettingsBar_ == nullptr) return;
-    if (toolBarArea(toolSettingsBar_) == Qt::TopToolBarArea
-            && (toolBarArea(toolBar_) != Qt::TopToolBarArea || toolBarBreak(toolSettingsBar_))) {
-        toolSettingsBar_->show();
+    if (toolSettingsBar_ == nullptr || toolSettingsBar_->isFloating()
+        || toolBarArea(toolSettingsBar_) != Qt::NoToolBarArea) {
         return;
     }
-    removeToolBarBreak(toolSettingsBar_);
-    removeToolBar(toolSettingsBar_);
-    addToolBarBreak(Qt::TopToolBarArea);
+    if (toolBarArea(toolBar_) == Qt::TopToolBarArea) {
+        addToolBarBreak(Qt::TopToolBarArea);
+    }
     addToolBar(Qt::TopToolBarArea, toolSettingsBar_);
     toolSettingsBar_->show();
 }
