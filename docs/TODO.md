@@ -14,7 +14,6 @@ Medium changes:
     -Wire back LOD and Parts, unify with PAINT MENU in 3D preview
 
 Big changes:
-    -Color aware point snapping for Pen contours
     -Add support for xb360 titles (.liv)
 
 Manual tasks:

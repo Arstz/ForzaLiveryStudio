@@ -595,7 +595,11 @@ if(FLS_BUILD_TESTS)
     add_executable(fls_gui_startup_tests tools/tests/gui_startup/main.cpp)
     target_link_libraries(fls_gui_startup_tests PRIVATE fls_editor_ui)
     add_test(NAME gui_startup COMMAND fls_gui_startup_tests)
-    set_tests_properties(gui_startup PROPERTIES WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+    add_test(NAME dock_layout COMMAND fls_gui_startup_tests --dock-layout)
+    set_tests_properties(gui_startup dock_layout PROPERTIES WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+    if(WIN32)
+        set_tests_properties(dock_layout PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=windows")
+    endif()
     add_executable(fls_editor_selection_tests
         ${fls_editor_state_moc}
         tools/tests/editor_selection/main.cpp

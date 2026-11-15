@@ -1426,9 +1426,20 @@ bool MainWindow::restoreLayout() {
 }
 
 void MainWindow::resetLayout() {
+    const QSize availableSize = screen()->availableGeometry().size();
+
+#if defined(Q_OS_WIN) && QT_VERSION >= QT_VERSION_CHECK(6, 9, 0)
+    for (QDockWidget *dock : dockWidgets_) {
+        dock->setAttribute(Qt::WA_ContentsMarginsRespectsSafeArea, false);
+    }
+#endif
     if (!defaultLayoutState_.isEmpty()) {
         restoreState(defaultLayoutState_);
         positionToolSettings();
+        layout()->activate();
+        if (width() > availableSize.width() || height() > availableSize.height()) {
+            showMaximized();
+        }
         applyDefaultLayoutSizes();
         syncDockCollapseButtons();
     }

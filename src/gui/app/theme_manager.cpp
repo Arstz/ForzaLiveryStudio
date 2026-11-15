@@ -42,6 +42,7 @@ QMap<UiTheme, UiColors> resolvedColors;
 constexpr double kGlyphStrokeWidth = 1.5;
 constexpr double kCheckStrokeWidth = 2.0;
 constexpr int kMenuIconExtent = 16;
+constexpr int kMenuIconPadding = 6;
 constexpr int kSliderGrooveExtent = 6;
 constexpr int kSliderHandleExtent = 14;
 constexpr int kSliderHandleThickness = 20;
@@ -618,7 +619,10 @@ QString themeStyleSheet(UiTheme theme) {
             color: @text; background: @secondary; border: 1px solid @border;
             border-radius: @radiuspx; padding: 2px;
         }
-        QMenu::item { padding: 3px 6px; margin: 0; border-radius: @radiuspx; }
+        QMenu::item { padding: 3px @menuItemPaddingpx; margin: 0; border-radius: @radiuspx; }
+        QMenu::icon, QMenu::indicator {
+            subcontrol-origin: padding; subcontrol-position: left center; left: @menuIconPaddingpx;
+        }
         QMenu::indicator { width: @menuIconpx; height: @menuIconpx; }
         QMenu::item:selected { color: @selectedText; background: @highlightFill; }
         QMenu::item:disabled { color: @disabled; }
@@ -652,13 +656,13 @@ QString themeStyleSheet(UiTheme theme) {
         QTabBar::tab:hover { color: @selectedText; background: @highlightFill; border-color: transparent; }
         QTabBar QToolButton { min-height: 0; min-width: 0; margin: 0; padding: 0; }
         QMainWindow > QTabBar {
-            background: @secondary; border: none; border-bottom: @separatorExtentpx solid @border;
+            background: @secondary; border: none; border-top: @separatorExtentpx solid @border;
             margin: 0; padding: 0;
         }
         QMainWindow > QTabBar::tab {
             color: @text; background: transparent; border-color: transparent;
             border-radius: @radiuspx;
-            margin: @highlightMarginpx @highlightMarginpx @highlightBottompx @highlightMarginpx;
+            margin: @highlightBottompx @highlightMarginpx @highlightMarginpx @highlightMarginpx;
             padding: @baselineTopInsetpx @spacingpx @baselineBottomInsetpx @spacingpx;
         }
         QMainWindow > QTabBar::tab:top, QMainWindow > QTabBar::tab:bottom {
@@ -742,6 +746,8 @@ QString themeStyleSheet(UiTheme theme) {
     sheet.replace(QStringLiteral("@scrollExtent"), QString::number(kUiSplitterWidth));
     sheet.replace(QStringLiteral("@dockExtent"), QString::number(kUiControlHeight - 2 * kUiControlBorderWidth));
     sheet.replace(QStringLiteral("@squareExtent"), QString::number(kUiControlHeight - 2 * kUiControlBorderWidth));
+    sheet.replace(QStringLiteral("@menuItemPadding"), QString::number(2 * kMenuIconPadding));
+    sheet.replace(QStringLiteral("@menuIconPadding"), QString::number(kMenuIconPadding));
     sheet.replace(QStringLiteral("@menuIcon"), QString::number(kMenuIconExtent));
     sheet.replace(QStringLiteral("@spacing"), QString::number(kUiSpacing));
     sheet.replace(QStringLiteral("@smallFontSize"), secondaryFont.pointSizeF() > 0

@@ -152,6 +152,11 @@ QDockWidget *MainWindow::addPanelDock(const QString &title, const QString &objec
                                       bool scrollable) {
     auto *dock = new QDockWidget(title, this);
     dock->setObjectName(objectName);
+#if defined(Q_OS_WIN) && QT_VERSION >= QT_VERSION_CHECK(6, 9, 0)
+    connect(dock, &QDockWidget::topLevelChanged, dock, [dock](bool) {
+        dock->setAttribute(Qt::WA_ContentsMarginsRespectsSafeArea, false);
+    });
+#endif
     setDockTitleIcon(dock, iconName);
     installDockAreaCollapseButton(dock, area);
     auto *body = new QFrame(dock);
@@ -300,7 +305,7 @@ void MainWindow::setupDocks() {
         QStringLiteral("3D Preview: Cycle Debug Mode"), {}, false, carPreview_);
     connect(cycleDebugAction, &QAction::triggered, carPreview_, &CarPreviewWidget::cycleDebugMode);
     carPreviewDock_ = addPanelDock(QStringLiteral("3D Preview"), QStringLiteral("CarPreviewDock"),
-                                   QStringLiteral("WidgetProject.xpm"), Qt::RightDockWidgetArea, carPreview_);
+                                   QStringLiteral("ImportCar.xpm"), Qt::RightDockWidgetArea, carPreview_);
     tabifyDockWidget(layersDock, carPreviewDock_);
     layersDock->raise();
 }

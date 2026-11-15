@@ -111,6 +111,50 @@ void saveLegacyMaximizedLayout() {
     QSettings().setValue("layout/geometry", legacy.saveGeometry());
 }
 
+void verifyDockLayout(gui::MainWindow &window) {
+    constexpr int kDockCycles = 8;
+    const QList<QDockWidget *> docks{window.findChild<QDockWidget *>("HeaderMetadataDock"),
+                                    window.findChild<QDockWidget *>("ProjectDock"),
+                                    window.findChild<QDockWidget *>("BufferDock")};
+    const QSize minimum = window.minimumSizeHint();
+    const QSize available = window.screen()->availableGeometry().size();
+    auto *reset = window.findChild<QAction *>("reset_layout");
+
+    require(reset != nullptr && !docks.contains(nullptr), "Dock layout controls are missing");
+    for (QDockWidget *dock : window.findChildren<QDockWidget *>()) dock->setAttribute(Qt::WA_DontShowOnScreen);
+    window.setDockOptions(window.dockOptions() & ~QMainWindow::AnimatedDocks);
+    for (int iteration = 0; iteration < kDockCycles; ++iteration) {
+        for (QDockWidget *dock : docks) {
+            QDockWidget *anchor = dock == docks.front() ? docks[1] : docks.front();
+            dock->setFloating(true);
+            QApplication::processEvents();
+            dock->setFloating(false);
+            window.tabifyDockWidget(anchor, dock);
+            QApplication::processEvents();
+            window.splitDockWidget(anchor, dock, Qt::Horizontal);
+            QApplication::processEvents();
+            window.tabifyDockWidget(anchor, dock);
+            QApplication::processEvents();
+            require(window.minimumSizeHint().width() <= minimum.width()
+                    && window.minimumSizeHint().height() <= minimum.height(),
+                    "Regrouping docks inflates the minimum window size");
+        }
+        reset->trigger();
+        QApplication::processEvents();
+        require(window.minimumSizeHint() == minimum, "Dock grouping changes the minimum window size after reset");
+    }
+    window.showNormal();
+    window.resize(available * 2);
+#if defined(Q_OS_WIN) && QT_VERSION >= QT_VERSION_CHECK(6, 9, 0)
+    docks[1]->setAttribute(Qt::WA_ContentsMarginsRespectsSafeArea, true);
+#endif
+    reset->trigger();
+    QApplication::processEvents();
+    require(window.minimumSizeHint() == minimum, "Reset Layout retains inflated dock constraints");
+    require(window.isMaximized() || (window.width() <= available.width() && window.height() <= available.height()),
+            "Reset Layout leaves the window larger than the screen");
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -134,6 +178,21 @@ int main(int argc, char **argv) {
     QSettings().setValue("ui/behavior/autoSavePenPaths", false);
     QSettings().setValue("ui/behavior/autoSaveLiningPaths", false);
     try {
+    if (application.arguments().contains("--dock-layout")) {
+        for (const auto &definition : gui::uiThemes()) {
+            gui::applyUiTheme(application, definition.id);
+            gui::saveUiTheme(definition.id);
+            QSettings().remove("layout");
+            gui::MainWindow window;
+            const auto hideBeforeDestruction = qScopeGuard([&]() { window.hide(); });
+            window.setAttribute(Qt::WA_DontShowOnScreen);
+            window.show();
+            QApplication::processEvents();
+            verifyDockLayout(window);
+        }
+        QTextStream(stdout) << "Dock layout passed\n";
+        return 0;
+    }
     for (const auto &definition : gui::uiThemes()) {
         const auto theme = definition.id;
         gui::applyUiTheme(application, theme);

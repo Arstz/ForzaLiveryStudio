@@ -35,11 +35,10 @@
       "mutedText": "#6e5b54",
       "disabledText": "#8b7770",
       "hover": "#e9dfd5",
-      "selection": "#cfdad4",
+      "selection": "#bfcec4",
       "warning": "#885d25",
       "error": "#a34950",
-      "guide": "#ead5b4",
-      "resizeHandle": "#ffe7c2"
+      "guide": "#ead5b4"
     }
   },
   {
@@ -57,17 +56,10 @@
       "mutedText": "#b9bec8",
       "disabledText": "#80848a",
       "hover": "#2e3036",
-      "selection": "#487eb0",
+      "selection": "#3b658d",
       "warning": "#f0b34a",
       "error": "#eb4e4e",
-      "guide": "#413624",
-      "selectedText": "#ffffff",
-      "buttonBackground": "#2b2d32",
-      "tooltipBackground": "#2e3036",
-      "rulerBackground": "#26282c",
-      "rulerDivider": "#53575e",
-      "rulerText": "#d8dbe0",
-      "editorBackground": "#18191c"
+      "guide": "#413624"
     }
   },
   {
@@ -85,16 +77,10 @@
       "mutedText": "#5a5f68",
       "disabledText": "#80848a",
       "hover": "#e5e7ea",
-      "selection": "#2a82da",
+      "selection": "#b8d5f1",
       "warning": "#885d25",
       "error": "#a34950",
-      "guide": "#ead5b4",
-      "selectedText": "#ffffff",
-      "buttonBackground": "#eef0f3",
-      "rulerBackground": "#e5e7ea",
-      "rulerDivider": "#979ba2",
-      "rulerText": "#2d3035",
-      "editorBackground": "#ffffff"
+      "guide": "#ead5b4"
     }
   }
 ]

@@ -179,6 +179,9 @@ Selected controls use the selection fill. Toolbar controls, dock tabs, dock
 title actions, menus, and caption controls leave a one-pixel visual gap beside
 separator lines. Caption controls retain their full mouse targets.
 Dock tabs use text-sized icons and keep selected and inactive labels aligned.
+Dock content insets follow the editor layout across floating and tabbed states.
+Reset Layout restores the default dock arrangement and fits oversized windows
+to the active screen.
 Theme changes derive fonts from the system baseline. Guideline color is
 on the Theme settings page and retains its existing persisted preference.
 Resize dividers fill the full grab region with their theme color. Tool settings use

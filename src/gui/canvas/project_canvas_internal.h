@@ -28,7 +28,7 @@ constexpr double kScaleGrabOutside = 12.0;
 constexpr double kRotateCornerReach = 131.0;
 constexpr double kSkewHandleOffset = 30.0;
 constexpr double kClickDragThreshold = 5.0;
-constexpr double kRulerExtent = 28.0;
+constexpr double kRulerExtent = 30.0;
 constexpr double kGuidelineHitRadius = 5.0;
 
 constexpr qint64 kSelectionFlashDurationMs = 750;
