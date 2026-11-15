@@ -1,7 +1,6 @@
 #include "main_window.h"
 
 #include "main_window_internal.h"
-#include "system_integration.h"
 #include "theme_toolbar.h"
 
 #include "car_preview_widget.h"
@@ -152,9 +151,6 @@ QDockWidget *MainWindow::addPanelDock(const QString &title, const QString &objec
                                       const QString &iconName, Qt::DockWidgetArea area, QWidget *content,
                                       bool scrollable) {
     auto *dock = new QDockWidget(title, this);
-    if (content->testAttribute(Qt::WA_NativeWindow)) {
-        configureNativeRenderSurface(*dock);
-    }
     dock->setObjectName(objectName);
     setDockTitleIcon(dock, iconName);
     installDockAreaCollapseButton(dock, area);

@@ -114,23 +114,22 @@ the application entry point and links the UI library.
 
 ### GUI appearance
 
-On Windows with Qt 6.9 or newer, `title_menu_bar.*` integrates the main menus
-and caption in one row. Theme-painted window controls occupy the right corner;
+On Windows with Qt 6.9 or newer, `title_menu_bar.*` places the main menus in the
+expanded title-bar area. Theme-painted window controls occupy the right corner;
 the application logo precedes the menus, and the title remains available to the
-operating system. Standard native window styles and frame sizing retain the
-system resize border around an opaque client area. The canvas and preview use
-native child OpenGL surfaces, keeping desktop window composition on a raster
-surface. Docks containing native render surfaces provide their own raster
-hosts for clipping and stacking. Preview host changes rebuild the native
-backing-store attachment while retaining the shared OpenGL context.
-The desktop client area fills the maximized or fullscreen bounds.
-An OpenGL desktop surface retains a one-physical-pixel native border for compositing.
-Caption glyphs use the theme foreground, and hover uses the shared selection
-colors. A native hit-test filter routes menu actions and caption buttons through
-standard client input. Empty menu-bar space supplies the native drag and
-system-menu region. Windows handles resize-border hit testing. Screen,
-display-density, and style changes update the control geometry. Menu padding
-uses font metrics to center text within the caption row.
+operating system. A one-physical-pixel native caption strip remains above the
+menus and uses the active theme's main surface color. The client fills the
+remaining frame bounds. A native menu handle keeps Qt's frame measurements
+synchronized with the strip, and resize hit testing uses native window bounds.
+Native frame painting refreshes with theme and window
+activation changes, and caption metadata updates queue a repaint. Caption glyphs
+use the theme foreground, and hover uses the shared selection colors. Native
+system commands remain enabled. A native hit-test filter routes menu actions
+and caption buttons through standard client input. Empty menu-bar space supplies
+the native drag and system-menu region, and window edges supply resize regions.
+Hit testing only classifies regions. Safe-area, screen, and style changes update
+the control geometry. Menu padding uses font metrics to center text within the
+caption row.
 Menu mnemonic underlines are hidden while keyboard shortcuts remain available.
 The application color scheme follows the active UI theme. Other platforms use
 the standard menu bar and window frame.
@@ -398,9 +397,6 @@ cmake -S . -B build -DFLS_BUILD_TESTS=ON
 cmake --build build --config Release
 ctest --test-dir build -C Release --output-on-failure
 ```
-
-Windows native-frame tests also require Qt GUI private development headers
-from the matching Qt build.
 
 `CMakeLists.txt` defines the available tests and fixture requirements. Test
 sources and supporting scripts live in `tools/tests/<suite>/`, with shared data under

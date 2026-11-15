@@ -27,7 +27,6 @@ bool setProjectFileAssociationEnabled(bool enabled,
                                       SystemIconSet iconSet,
                                       QString *error = nullptr);
 void configureSystemIntegration(QApplication &app);
-void configureNativeRenderSurface(QWidget &widget);
 void applySystemWindowIcon(QWidget &window);
 void warnIfPowerSavingGpuPreference(QWidget &parent);
 void offerProjectFileAssociation(QWidget &parent);

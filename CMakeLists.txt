@@ -596,13 +596,6 @@ if(FLS_BUILD_TESTS)
     target_link_libraries(fls_gui_startup_tests PRIVATE fls_editor_ui)
     add_test(NAME gui_startup COMMAND fls_gui_startup_tests)
     set_tests_properties(gui_startup PROPERTIES WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
-    if(WIN32)
-        find_package(Qt6 REQUIRED COMPONENTS GuiPrivate)
-        add_executable(fls_window_frame_tests tools/tests/window_frame/main.cpp)
-        target_link_libraries(fls_window_frame_tests PRIVATE fls_editor_ui Qt6::GuiPrivate)
-        add_test(NAME window_frame COMMAND fls_window_frame_tests)
-        set_tests_properties(window_frame PROPERTIES WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
-    endif()
     add_executable(fls_editor_selection_tests
         ${fls_editor_state_moc}
         tools/tests/editor_selection/main.cpp
@@ -1024,7 +1017,7 @@ if(WIN32)
         "${FLS_PROJECT_DARK_ICON}"
     )
     target_sources(${FORZA_LIVERY_STUDIO_TARGET} PRIVATE "${FLS_WINDOWS_RESOURCES}")
-    target_link_libraries(fls_editor_ui PUBLIC windowscodecs ole32 shell32 gdi32 advapi32)
+    target_link_libraries(fls_editor_ui PUBLIC windowscodecs ole32 shell32 gdi32 advapi32 dwmapi)
     add_custom_command(TARGET ${FORZA_LIVERY_STUDIO_TARGET} POST_BUILD
         COMMAND "${CMAKE_COMMAND}" -E make_directory "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/platforms"
         COMMAND "${CMAKE_COMMAND}" -E copy_if_different

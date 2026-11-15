@@ -341,16 +341,6 @@ void configureSystemIntegration(QApplication &app) {
     }
 }
 
-void configureNativeRenderSurface(QWidget &widget) {
-#if defined(Q_OS_WIN) && QT_VERSION >= QT_VERSION_CHECK(6, 9, 0)
-    QCoreApplication::setAttribute(Qt::AA_DontCreateNativeWidgetSiblings);
-    widget.setAttribute(Qt::WA_DontCreateNativeAncestors);
-    widget.setAttribute(Qt::WA_NativeWindow);
-#else
-    Q_UNUSED(widget);
-#endif
-}
-
 void applySystemWindowIcon(QWidget &window) {
     window.setWindowIcon(QApplication::windowIcon());
 
