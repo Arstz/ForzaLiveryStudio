@@ -43,6 +43,7 @@ constexpr double kGlyphStrokeWidth = 1.5;
 constexpr double kCheckStrokeWidth = 2.0;
 constexpr int kMenuIconExtent = 16;
 constexpr int kMenuIconPadding = 6;
+constexpr int kDockTabExtent = 32;
 constexpr int kSliderGrooveExtent = 6;
 constexpr int kSliderHandleExtent = 14;
 constexpr int kSliderHandleThickness = 20;
@@ -439,6 +440,8 @@ QString themeStyleSheet(UiTheme theme) {
     const int textBottomInset = textMargins.bottom();
     const int textInsets = textTopInset + textBottomInset;
     const int controlContent = kUiControlHeight - 2 * kUiControlBorderWidth - textInsets;
+    const int dockTabContent = kDockTabExtent
+        - 2 * (kUiControlBorderWidth + kUiHighlightMargin) - textInsets;
     QString sheet = QStringLiteral(R"(
         QWidget { color: @text; }
         QWidget:disabled { color: @disabled; }
@@ -608,6 +611,7 @@ QString themeStyleSheet(UiTheme theme) {
         QScrollArea#ToolSettingsPanel QScrollBar:horizontal { background: @toolbarBackground; height: @scrollExtentpx; }
         QScrollArea#ToolSettingsPanel QScrollBar::handle:horizontal { margin: 0; }
         QStatusBar { background: @statusBackground; color: @muted; }
+        QStatusBar#CanvasStatusBar { border-top: @separatorExtentpx solid @border; }
         QStatusBar::item { border: none; }
         QMenuBar { background: @main; color: @text; border-bottom: @separatorExtentpx solid @border; }
         QMenuBar::item {
@@ -635,6 +639,8 @@ QString themeStyleSheet(UiTheme theme) {
             border: 1px solid @border; border-radius: @radiuspx; margin-top: 12px; padding-top: 8px;
         }
         QGroupBox::title { color: @text; subcontrol-origin: margin; left: 8px; padding: 0 4px; }
+    )");
+    sheet += QStringLiteral(R"(
         QTabWidget::pane { border: 1px solid @border; border-radius: 0; }
         QTabBar::tab {
             color: @text; background: @secondary; border: 1px solid @border;
@@ -666,10 +672,10 @@ QString themeStyleSheet(UiTheme theme) {
             padding: @baselineTopInsetpx @spacingpx @baselineBottomInsetpx @spacingpx;
         }
         QMainWindow > QTabBar::tab:top, QMainWindow > QTabBar::tab:bottom {
-            min-height: @inputContentpx; max-height: @inputContentpx;
+            min-height: @dockTabContentHeightpx; max-height: @dockTabContentHeightpx;
         }
         QMainWindow > QTabBar::tab:left, QMainWindow > QTabBar::tab:right {
-            min-width: @inputContentpx; max-width: @inputContentpx;
+            min-width: @dockTabContentWidthpx; max-width: @dockTabContentWidthpx;
             padding: @spacingpx @baselineBottomInsetpx @spacingpx @baselineTopInsetpx;
         }
         QMainWindow > QTabBar::tab:selected { color: @selectedText; background: @selection; border-color: transparent; }
@@ -734,6 +740,8 @@ QString themeStyleSheet(UiTheme theme) {
     sheet.replace(QStringLiteral("@controlHeight"), QString::number(kUiControlHeight));
     sheet.replace(QStringLiteral("@controlContent"), QString::number(controlContent));
     sheet.replace(QStringLiteral("@inputContent"), QString::number(controlContent));
+    sheet.replace(QStringLiteral("@dockTabContentHeight"), QString::number(dockTabContent - kUiControlBorderWidth));
+    sheet.replace(QStringLiteral("@dockTabContentWidth"), QString::number(dockTabContent));
     sheet.replace(QStringLiteral("@checkExtent"), QString::number(kUiControlHeight));
     sheet.replace(QStringLiteral("@checkRowContent"), QString::number(kUiControlHeight - textInsets));
     sheet.replace(QStringLiteral("@baselineTopInset"), QString::number(textTopInset));
@@ -1216,6 +1224,8 @@ BehaviorSettings loadBehaviorSettings() {
         QStringLiteral("ui/behavior/selectShapesByBoundingBox"), result.selectShapesByBoundingBox).toBool();
     result.showSelectedShapeOutlines = settings.value(
         QStringLiteral("ui/behavior/showSelectedShapeOutlines"), result.showSelectedShapeOutlines).toBool();
+    result.hoverShapeOutline = settings.value(
+        QStringLiteral("ui/behavior/hoverShapeOutline"), result.hoverShapeOutline).toBool();
     result.separateOpacityAndSkewTools = settings.value(
         QStringLiteral("ui/behavior/separateOpacityAndSkewTools"),
         result.separateOpacityAndSkewTools).toBool();
@@ -1288,6 +1298,7 @@ void saveBehaviorSettings(const BehaviorSettings &settings) {
     qsettings.setValue(QStringLiteral("ui/behavior/separateSelectAndMarqueeTools"), settings.separateSelectAndMarqueeTools);
     qsettings.setValue(QStringLiteral("ui/behavior/selectShapesByBoundingBox"), settings.selectShapesByBoundingBox);
     qsettings.setValue(QStringLiteral("ui/behavior/showSelectedShapeOutlines"), settings.showSelectedShapeOutlines);
+    qsettings.setValue(QStringLiteral("ui/behavior/hoverShapeOutline"), settings.hoverShapeOutline);
     qsettings.setValue(QStringLiteral("ui/behavior/separateOpacityAndSkewTools"),
                        settings.separateOpacityAndSkewTools);
 }

@@ -129,6 +129,7 @@ inline constexpr int kDefaultBucketTolerance = 16;
 inline constexpr double kDefaultLiningOutsideMargin = 0.5;
 inline constexpr bool kDefaultAutomaticSnapping = true;
 inline constexpr bool kDefaultPenColorAwareSnapping = false;
+inline constexpr bool kDefaultHoverShapeOutline = true;
 
 struct BehaviorSettings {
     bool insertShapeWithLastSelectedColor = true;
@@ -167,6 +168,7 @@ struct BehaviorSettings {
     bool separateSelectAndMarqueeTools = false;
     bool selectShapesByBoundingBox = false;
     bool showSelectedShapeOutlines = true;
+    bool hoverShapeOutline = kDefaultHoverShapeOutline;
     bool separateOpacityAndSkewTools = false;
 };
 

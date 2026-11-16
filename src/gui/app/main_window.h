@@ -93,6 +93,7 @@ private:
     bool event(QEvent *event) override;
     bool eventFilter(QObject *watched, QEvent *event) override;
     void showEvent(QShowEvent *event) override;
+    void paintEvent(QPaintEvent *event) override;
     void dragEnterEvent(QDragEnterEvent *event) override;
     void dragMoveEvent(QDragMoveEvent *event) override;
     void dropEvent(QDropEvent *event) override;
@@ -212,6 +213,7 @@ private:
     bool copySelectionToClipboard();
     void executeSelectionCommand(EditorCommandType type, bool flatten = false);
     bool ensureProjectForInsertion();
+    static QString defaultShapeLayerName(quint16 shapeId);
     void insertShapeLayer(std::unique_ptr<fls::scene::Shape> layer);
     bool loadImportedProject(const std::function<fls::Project()> &load,
                              const QString &statusMessage,
@@ -225,6 +227,8 @@ private:
     ExternalDropKind classifyExternalDropPath(const QString &path) const;
     bool handleExternalDropUrls(const QList<QUrl> &urls);
     QStringList idsForIndex(const QModelIndex &index) const;
+    void scheduleLayoutRepaint();
+    void repaintLayout();
     void normalizeDockResizeCursor();
     void clearDockResizeCursorOverride();
     void installDockAreaCollapseButton(QDockWidget *dock, Qt::DockWidgetArea fallbackArea);
@@ -261,6 +265,7 @@ private:
     EditorState *state_ = nullptr;
     KeyBindingRouter *keyBindings_ = nullptr;
     ProjectCanvas *canvas_ = nullptr;
+    QStatusBar *canvasStatusBar_ = nullptr;
     ClipboardBufferWidget *clipboardWidget_ = nullptr;
     ColorPaletteWidget *colorPalette_ = nullptr;
     ShapesBrowserWidget *shapesBrowser_ = nullptr;
@@ -292,6 +297,8 @@ private:
     QByteArray defaultLayoutState_;
     std::unique_ptr<QLockFile> scratchLock_;
     bool defaultLayoutPending_ = false;
+    bool layoutInitialized_ = false;
+    bool layoutRepaintPending_ = false;
     bool syncingSelection_ = false;
     bool updatingSelectionFromTree_ = false;
     bool loadingProperties_ = false;

@@ -77,6 +77,7 @@ public:
     void setSeparateSelectAndMarqueeTools(bool enabled);
     void setSelectShapesByBoundingBox(bool enabled);
     void setShowSelectedShapeOutlines(bool enabled);
+    void setHoverShapeOutline(bool enabled);
     void setSeparateOpacityAndSkewTools(bool enabled);
     void setGuideLayersVisible(bool visible);
     void setGuideLayersOnTop(bool enabled);
@@ -427,6 +428,7 @@ private:
         bool separateSelectAndMarqueeTools = false;
         bool selectShapesByBoundingBox = false;
         bool showSelectedShapeOutlines = true;
+        bool hoverShapeOutline = kDefaultHoverShapeOutline;
         bool separateOpacityAndSkewTools = false;
         bool guideLayersVisible = true;
         bool guideLayersOnTop = true;

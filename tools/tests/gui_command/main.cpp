@@ -1253,7 +1253,7 @@ void toolSettingsControls(Harness &h) {
     auto *settingsBar = h.window.findChild<QToolBar *>("ToolSettingsBar");
     require(canvas && panel && toolbar && settingsBar, "Tool Settings strip is missing");
     require(!settingsBar->isHidden(), "Tool Settings was hidden while positioning its row");
-    require(h.window.centralWidget() == canvas && h.window.toolBarArea(settingsBar) == Qt::TopToolBarArea
+    require(h.window.centralWidget() == canvas->parentWidget() && h.window.toolBarArea(settingsBar) == Qt::TopToolBarArea
             && h.window.toolBarBreak(settingsBar), "Tool Settings must occupy a full window row below the toolbar");
     require(panel->minimumSizeHint().width() == 0 && panel->sizePolicy().horizontalPolicy() == QSizePolicy::Expanding,
             "Tool Settings must fill its row independently of the controls' width");

@@ -341,7 +341,7 @@ void MainWindow::exportProjectSvgDialog() {
             throw std::runtime_error(file.errorString().toStdString());
         }
         rememberImportDirectory(path, QStringLiteral("exportSvg"));
-        statusBar()->showMessage(QStringLiteral("Exported %1").arg(path), 5000);
+        canvasStatusBar_->showMessage(QStringLiteral("Exported %1").arg(path), 5000);
     } catch (const std::exception &exception) {
         QMessageBox::critical(this, QStringLiteral("SVG export failed"), QString::fromUtf8(exception.what()));
     }

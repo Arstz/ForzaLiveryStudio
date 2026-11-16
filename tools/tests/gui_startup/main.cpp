@@ -35,7 +35,7 @@ void enter(QWidget *widget) {
 }
 
 void verifyToolSettings(gui::MainWindow &window) {
-    auto *canvas = dynamic_cast<gui::ProjectCanvas *>(window.centralWidget());
+    auto *canvas = dynamic_cast<gui::ProjectCanvas *>(window.findChild<QWidget *>("ProjectCanvas"));
     auto *toolbar = window.findChild<QToolBar *>("ToolSettingsBar");
     require(canvas && toolbar, "Canvas or Tool Settings is missing");
     const QSize rowSize = toolbar->size();

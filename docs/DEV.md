@@ -114,22 +114,39 @@ the application entry point and links the UI library.
 
 ### GUI appearance
 
-On Windows with Qt 6.9 or newer, `title_menu_bar.*` places the main menus in the
-expanded title-bar area. Theme-painted window controls occupy the right corner;
-the application logo precedes the menus, and the title remains available to the
-operating system. A one-physical-pixel native caption strip remains above the
-menus and uses the active theme's main surface color. The client fills the
-remaining frame bounds. A native menu handle keeps Qt's frame measurements
-synchronized with the strip, and resize hit testing uses native window bounds.
-Native frame painting refreshes with theme and window
-activation changes, and caption metadata updates queue a repaint. Caption glyphs
-use the theme foreground, and hover uses the shared selection colors. Native
-system commands remain enabled. A native hit-test filter routes menu actions
-and caption buttons through standard client input. Empty menu-bar space supplies
-the native drag and system-menu region, and window edges supply resize regions.
-Hit testing only classifies regions. Safe-area, screen, and style changes update
-the control geometry. Menu padding uses font metrics to center text within the
-caption row.
+On Windows, `title_menu_bar.*` integrates the main menus with the caption through
+WinAPI client-area calculation. The frame retains native side and bottom resize
+borders, and Qt measures the frame using the native border geometry. DWM owns
+frame painting, with native surface, text, and dark-mode attributes following
+the application theme. Frame colors refresh with theme and activation changes.
+Native frame configuration runs once when the main native handle is assigned,
+before Qt creates its native child windows. Client-area calculation follows the
+current native styles during window state transitions. Native activation updates
+preserve custom caption painting.
+Resize borders retain hit-test priority.
+Theme-painted window controls occupy the right corner; the application logo
+precedes the menus, and the title remains available to the operating system.
+Caption glyphs use the theme foreground, and hover uses the shared selection
+colors. Native system commands remain enabled. A native hit-test filter routes
+menu actions and caption buttons through standard client input. Empty menu-bar
+space supplies the native drag and system-menu region, and window edges supply
+resize regions. Hit testing only classifies regions. Screen, font, and style
+changes update the control geometry. Menu padding uses font metrics to center
+text within the caption row.
+The canvas container and OpenGL dock bodies use native child windows on Windows.
+Render hosts become native after their OpenGL widget subtrees are assembled so
+Qt selects OpenGL surfaces during window-wrapper creation. OpenGL composition
+belongs to those render hosts, while the main window uses raster presentation.
+Native ancestor windows provide clipping and coordinate inheritance for render
+hosts through dock reparenting. Geometry, dock activation, visibility, and
+native-surface exposure changes schedule a shared repaint of the visible widget
+tree. Repainting starts after UI initialization and runs at low event priority
+after pending layout work. The repaint pass activates layouts, synchronizes
+native child bounds with Qt layout coordinates in physical pixels, invalidates
+visible widgets, and flushes the backing store together. Native bounds are
+measured through WinAPI and corrected when they differ from the layout. Surface
+observers follow native-window recreation and track exposure transitions. Native
+client-area resizing requests a complete redraw.
 Menu mnemonic underlines are hidden while keyboard shortcuts remain available.
 The application color scheme follows the active UI theme. Other platforms use
 the standard menu bar and window frame.
@@ -160,14 +177,20 @@ Existing theme selections and canvas preferences migrate to Mahogany themes.
 Custom widget painting uses the resolved theme roles.
 Interactive controls and their highlights use a shared 5 px corner radius.
 Dock panels use borderless bodies, flat title actions, and one-pixel header
-separators. Floating docks reserve
-an edge margin for resizing, and title bars expose close and collapse controls.
+separators. Dock surfaces explicitly paint the panel background. Folded dock
+areas paint their exposed space with the same background and their inner gap
+with the shared resize-divider color and extent. Painting spans the dock layout
+along each area's orientation and follows dock-corner ownership. These
+separators are static decoration. Floating docks
+reserve an edge margin for resizing, and title bars expose close and collapse
+controls.
 Theme changes refresh cached icons across dock titles and tab bars. Square action
 controls share explicit size constraints, and input editors share surface colors.
 Native control glyphs use theme foregrounds. Checkbox and button dimensions follow
 shared size roles. Body text uses the system font with a one-point increase;
 secondary text uses the system size. Fields, buttons, checkbox indicators,
-Settings help buttons, and dock tabs share a 27 px size. A common inset derived
+and Settings help buttons share a 27 px size. Dock tabs occupy 32 px including
+their border and highlight spacing. A common inset derived
 from font ascent, descent, and capital height centers visible text within each
 control. Embedded editors use their parent field's geometry. Vertical centering
 preserves horizontal text alignment. Embedded field action buttons use the
@@ -180,8 +203,8 @@ title actions, menus, and caption controls leave a one-pixel visual gap beside
 separator lines. Caption controls retain their full mouse targets.
 Dock tabs use text-sized icons and keep selected and inactive labels aligned.
 Dock content insets follow the editor layout across floating and tabbed states.
-Reset Layout restores the default dock arrangement and fits oversized windows
-to the active screen.
+Reset Layout unfolds dock areas, clears their saved collapse state, restores
+the default dock arrangement, and fits oversized windows to the active screen.
 Theme changes derive fonts from the system baseline. Guideline color is
 on the Theme settings page and retains its existing persisted preference.
 Resize dividers fill the full grab region with their theme color. Tool settings use
@@ -196,7 +219,8 @@ reserved in the toolbar contents for those separators. Toolbar stylesheet
 padding stays zero so the drag handle and action layout share the same origin.
 `theme_toolbar.*` reapplies layout margins after show, orientation, font, and
 style changes so separator spacing follows the active layout.
-The status bar uses its own surface role.
+The status bar uses its own surface role and occupies a fixed 32 px row directly
+below the 2D canvas inside the central editor area.
 Dock headers indicate keyboard focus, and semantic widget states
 share theme-aware text and border colors. Swatch styling derives readable text from
 the displayed color. Canvas and preview background preferences remain persisted
@@ -221,6 +245,9 @@ in place. Drag targets retain their starting local and parent frames throughout
 the gesture. Selection bounds use cached world transforms, and the canvas shares
 one selection-box calculation between property controls and painting until the
 selection or geometry changes.
+
+The persisted Hover shape outline option controls canvas hover outlines and is
+enabled by default. Selected-shape outlines have their own setting.
 
 The headless GUI command harness accepts `--profile-transforms <report.json>`
 to measure CPU input processing with snapping disabled. Rendering time is

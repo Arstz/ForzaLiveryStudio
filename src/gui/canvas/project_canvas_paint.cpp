@@ -633,6 +633,8 @@ void ProjectCanvas::drawCanvasReferenceOverlay(QPainter &painter) {
 }
 
 void ProjectCanvas::drawOverlay(QPainter &painter) {
+    const bool showHoverOutline = options_.hoverShapeOutline && !hoverBody_.isEmpty();
+
     painter.save();
     painter.resetTransform();
     painter.setClipRect(QRectF(kRulerExtent, kRulerExtent,
@@ -655,13 +657,13 @@ void ProjectCanvas::drawOverlay(QPainter &painter) {
         const QSet<QString> selected = state_->selectedLayerIds();
         if (!selected.isEmpty()) {
             for (const HitEntry &entry : hitEntries()) {
-                if (selected.contains(entry.layerId) && entry.layerId != hoverLayerId_) {
+                if (selected.contains(entry.layerId) && (!showHoverOutline || entry.layerId != hoverLayerId_)) {
                     drawShapeOutline(entry.screenBody);
                 }
             }
         }
     }
-    if (!hoverBody_.isEmpty()) {
+    if (showHoverOutline) {
         drawShapeOutline(hoverBody_);
     }
 

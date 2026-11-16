@@ -28,15 +28,13 @@
 
 namespace gui {
 
-#if defined(Q_OS_WIN) && QT_VERSION >= QT_VERSION_CHECK(6, 9, 0)
+#ifdef Q_OS_WIN
 namespace {
 
 constexpr int kDefaultCaptionHeight = 32;
-constexpr int kNativeCaptionHeight = 1;
 constexpr int kCaptionLogoExtent = 16;
 constexpr int kCaptionMenuHorizontalPadding = 8;
-constexpr UINT kWmNcUahDrawCaption = 174;
-constexpr UINT kWmNcUahDrawFrame = 175;
+constexpr LPARAM kSuppressNonClientRepaint = -1;
 constexpr double kCaptionButtonWidthRatio = 1.5;
 constexpr double kRestoreOffset = 3.0;
 
@@ -70,83 +68,53 @@ private:
     QPointer<QMainWindow> window_;
 };
 
-void ensureNativeFrameMenu(HWND window) {
-    if (GetMenu(window) != nullptr) {
+void applyNativeFrameTheme(HWND window) {
+    if (window == nullptr) {
         return;
     }
-    HMENU menu = CreateMenu();
-    if (menu != nullptr && SetMenu(window, menu) == FALSE) {
-        DestroyMenu(menu);
-    }
+    const UiTheme theme = currentUiTheme();
+    const UiColors colors = uiColors(theme);
+    const COLORREF surface = RGB(colors.main.red(), colors.main.green(), colors.main.blue());
+    const COLORREF text = RGB(colors.text.red(), colors.text.green(), colors.text.blue());
+    const BOOL dark = isDarkTheme(theme);
+
+    DwmSetWindowAttribute(window, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark, sizeof(dark));
+    DwmSetWindowAttribute(window, DWMWA_BORDER_COLOR, &surface, sizeof(surface));
+    DwmSetWindowAttribute(window, DWMWA_CAPTION_COLOR, &surface, sizeof(surface));
+    DwmSetWindowAttribute(window, DWMWA_TEXT_COLOR, &text, sizeof(text));
 }
 
-void enableSystemCommands(QWindow &window) {
-    const HWND handle = reinterpret_cast<HWND>(window.winId());
-    const LONG_PTR style = GetWindowLongPtrW(handle, GWL_STYLE);
-    const LONG_PTR systemStyle = style | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_MAXIMIZEBOX;
-    const DWMNCRENDERINGPOLICY renderingPolicy = DWMNCRP_DISABLED;
+void configureNativeFrame(HWND window) {
+    const LONG_PTR style = GetWindowLongPtrW(window, GWL_STYLE);
+    const LONG_PTR frameStyle = style | WS_CAPTION | WS_THICKFRAME | WS_SYSMENU
+        | WS_MINIMIZEBOX | WS_MAXIMIZEBOX;
+    const DWMNCRENDERINGPOLICY renderingPolicy = DWMNCRP_ENABLED;
+    const MARGINS margins{};
 
-    ensureNativeFrameMenu(handle);
-    DwmSetWindowAttribute(handle, DWMWA_NCRENDERING_POLICY, &renderingPolicy, sizeof(renderingPolicy));
-    if (style != systemStyle) {
-        SetWindowLongPtrW(handle, GWL_STYLE, systemStyle);
-        SetWindowPos(handle, nullptr, 0, 0, 0, 0,
-            SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+    if (style != frameStyle) {
+        SetWindowLongPtrW(window, GWL_STYLE, frameStyle);
     }
-    EnableMenuItem(GetSystemMenu(handle, FALSE), SC_CLOSE, MF_BYCOMMAND | MF_ENABLED);
+    DwmSetWindowAttribute(window, DWMWA_NCRENDERING_POLICY, &renderingPolicy, sizeof(renderingPolicy));
+    DwmExtendFrameIntoClientArea(window, &margins);
+    applyNativeFrameTheme(window);
+    EnableMenuItem(GetSystemMenu(window, FALSE), SC_CLOSE, MF_BYCOMMAND | MF_ENABLED);
+    SetWindowPos(window, nullptr, 0, 0, 0, 0,
+        SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
 }
 
-void calculateNativeCaption(const MSG &event, qintptr *result) {
+void calculateNativeClientArea(const MSG &event, qintptr *result) {
     RECT *client = event.wParam != FALSE
         ? &reinterpret_cast<NCCALCSIZE_PARAMS *>(event.lParam)->rgrc[0]
         : reinterpret_cast<RECT *>(event.lParam);
     const RECT frame = *client;
-    const bool maximized = IsZoomed(event.hwnd);
+    const LONG_PTR style = GetWindowLongPtrW(event.hwnd, GWL_STYLE);
+    const bool caption = (style & WS_CAPTION) == WS_CAPTION;
 
-    if (maximized) {
-        DefWindowProcW(event.hwnd, event.message, event.wParam, event.lParam);
+    DefWindowProcW(event.hwnd, event.message, event.wParam, event.lParam);
+    if (caption) {
+        client->top = frame.top + (IsZoomed(event.hwnd) ? client->left - frame.left : 0);
     }
-    client->top = frame.top + (maximized ? client->left - frame.left : 0) + kNativeCaptionHeight;
-    *result = 0;
-}
-
-LRESULT updateNativeCaption(const MSG &event) {
-    const bool redrawEnabled = (GetWindowLongPtrW(event.hwnd, GWL_STYLE) & WS_VISIBLE) != 0;
-
-    if (redrawEnabled) {
-        DefWindowProcW(event.hwnd, WM_SETREDRAW, FALSE, 0);
-    }
-    const LRESULT result = DefWindowProcW(event.hwnd, event.message, event.wParam, event.lParam);
-
-    if (redrawEnabled) {
-        DefWindowProcW(event.hwnd, WM_SETREDRAW, TRUE, 0);
-        RedrawWindow(event.hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_FRAME | RDW_ALLCHILDREN);
-    }
-
-    return result;
-}
-
-void paintNativeCaption(HWND window) {
-    RECT frame{};
-    RECT client{};
-    POINT clientOrigin{};
-    const QColor color = uiColors(currentUiTheme()).main;
-
-    if (window == nullptr || IsIconic(window) || GetWindowRect(window, &frame) == FALSE
-        || GetClientRect(window, &client) == FALSE || ClientToScreen(window, &clientOrigin) == FALSE) {
-        return;
-    }
-    OffsetRect(&client, clientOrigin.x - frame.left, clientOrigin.y - frame.top);
-    OffsetRect(&frame, -frame.left, -frame.top);
-    HDC context = GetWindowDC(window);
-    if (context == nullptr) {
-        return;
-    }
-    HBRUSH brush = CreateSolidBrush(RGB(color.red(), color.green(), color.blue()));
-    ExcludeClipRect(context, client.left, client.top, client.right, client.bottom);
-    FillRect(context, &frame, brush);
-    DeleteObject(brush);
-    ReleaseDC(window, context);
+    *result = event.wParam != FALSE ? WVR_REDRAW : 0;
 }
 
 class CaptionButton final : public QAbstractButton {
@@ -292,7 +260,6 @@ public:
         , logo_(new CaptionLogo(window, this))
         , controls_(new CaptionControls(window, this)) {
         setObjectName(QStringLiteral("WindowTitleMenu"));
-        setNativeMenuBar(false);
         setCornerWidget(logo_, Qt::TopLeftCorner);
         setCornerWidget(controls_, Qt::TopRightCorner);
         window.installEventFilter(this);
@@ -317,23 +284,10 @@ protected:
         }
         switch (event->message) {
         case WM_NCCALCSIZE:
-            calculateNativeCaption(*event, result);
-            break;
-        case WM_NCPAINT:
-        case kWmNcUahDrawCaption:
-        case kWmNcUahDrawFrame:
-            paintNativeCaption(nativeWindow_);
-            *result = 0;
+            calculateNativeClientArea(*event, result);
             break;
         case WM_NCACTIVATE:
-            *result = IsIconic(nativeWindow_)
-                ? DefWindowProcW(event->hwnd, event->message, event->wParam, event->lParam) : TRUE;
-            paintNativeCaption(nativeWindow_);
-            break;
-        case WM_SETICON:
-        case WM_SETTEXT:
-            *result = updateNativeCaption(*event);
-            paintNativeCaption(nativeWindow_);
+            *result = DefWindowProcW(event->hwnd, event->message, event->wParam, kSuppressNonClientRepaint);
             break;
         case WM_NCHITTEST:
             *result = hitTest(QPoint(GET_X_LPARAM(event->lParam), GET_Y_LPARAM(event->lParam)));
@@ -355,7 +309,7 @@ protected:
             updateCaptionMetrics();
             break;
         case QEvent::PaletteChange:
-            paintNativeCaption(nativeWindow_);
+            applyNativeFrameTheme(nativeWindow_);
             break;
         default:
             break;
@@ -370,11 +324,16 @@ protected:
             case QEvent::WindowIconChange:
                 logo_->update();
                 break;
+            case QEvent::WindowActivate:
+            case QEvent::WindowDeactivate:
+                applyNativeFrameTheme(nativeWindow_);
+                break;
             case QEvent::WinIdChange:
             case QEvent::Show:
             case QEvent::WindowStateChange:
                 updateCaptionMetrics();
                 controls_->updateWindowState();
+                initializeNativeFrame();
                 break;
             default:
                 break;
@@ -414,7 +373,7 @@ private:
             QPointF(clientPosition.x / frameWindow_->devicePixelRatio(),
                 clientPosition.y / frameWindow_->devicePixelRatio()).toPoint());
         const UINT dpi = GetDpiForWindow(nativeWindow_);
-        const bool resizable = !IsZoomed(nativeWindow_) && !window_->isFullScreen()
+        const bool resizable = !IsZoomed(nativeWindow_)
             && (GetWindowLongPtrW(nativeWindow_, GWL_STYLE) & WS_THICKFRAME) != 0;
         const int borderWidth = !resizable ? 0
             : GetSystemMetricsForDpi(SM_CXSIZEFRAME, dpi) + GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi);
@@ -426,9 +385,6 @@ private:
         const bool top = screenPosition.y() < frame.top + borderHeight;
         const bool bottom = screenPosition.y() >= frame.bottom - borderHeight;
 
-        if (QWidget::mouseGrabber() != nullptr || QApplication::activePopupWidget() != nullptr) {
-            return HTCLIENT;
-        }
         if (top && left) {
             return HTTOPLEFT;
         }
@@ -454,6 +410,9 @@ private:
             return HTBOTTOM;
         }
 
+        if (QWidget::mouseGrabber() != nullptr || QApplication::activePopupWidget() != nullptr) {
+            return HTCLIENT;
+        }
         if (titleBar && (actionAt(menuPosition) != nullptr || childAt(menuPosition) != nullptr)) {
             return HTCLIENT;
         }
@@ -472,16 +431,22 @@ private:
             }
             frameWindow_ = handle;
             if (handle != nullptr) {
-                connect(handle, &QWindow::safeAreaMarginsChanged, this, [this]() { updateCaptionMetrics(); });
                 connect(handle, &QWindow::screenChanged, this, [this]() { updateCaptionMetrics(); });
             }
         }
         if (nativeWindow_ != nativeWindow) {
             nativeWindow_ = nativeWindow;
-            if (nativeWindow_ != nullptr) {
-                enableSystemCommands(*handle);
-            }
+            configuredWindow_ = nullptr;
         }
+    }
+
+    void initializeNativeFrame() {
+        if (nativeWindow_ == nullptr || configuredWindow_ == nativeWindow_ || window_ == nullptr
+            || window_->isMinimized() || window_->isFullScreen()) {
+            return;
+        }
+        configuredWindow_ = nativeWindow_;
+        configureNativeFrame(nativeWindow_);
     }
 
     void updateCaptionMetrics() {
@@ -494,9 +459,7 @@ private:
         const QFont menuFont = uiTextFont();
         const QFontMetrics menuMetrics(menuFont, this);
         const QMargins textMargins = uiTextInsets(menuFont);
-        const int safeCaptionHeight = frameWindow_ != nullptr ? frameWindow_->safeAreaMargins().top() : 0;
-        const int captionHeight = std::max(kUiControlHeight,
-            safeCaptionHeight > 0 ? safeCaptionHeight : kDefaultCaptionHeight);
+        const int captionHeight = std::max(kUiControlHeight, kDefaultCaptionHeight);
         const int menuPadding = std::max(0, captionHeight - 2 * kUiHighlightMargin - menuMetrics.height());
         const int menuTopPadding = std::clamp(
             (menuPadding + textMargins.top() - textMargins.bottom()) / 2, 0, menuPadding);
@@ -517,7 +480,7 @@ private:
         if (styleSheet() != sheet) {
             setStyleSheet(sheet);
         }
-        paintNativeCaption(nativeWindow_);
+        applyNativeFrameTheme(nativeWindow_);
     }
 
     QPointer<QMainWindow> window_;
@@ -525,6 +488,7 @@ private:
     CaptionLogo *logo_;
     CaptionControls *controls_;
     HWND nativeWindow_ = nullptr;
+    HWND configuredWindow_ = nullptr;
     bool updating_ = false;
 };
 
@@ -532,14 +496,7 @@ private:
 #endif
 
 QMenuBar *createTitleMenuBar(QMainWindow &window) {
-#if defined(Q_OS_WIN) && QT_VERSION >= QT_VERSION_CHECK(6, 9, 0)
-    const Qt::WindowFlags nativeCaption = Qt::WindowTitleHint | Qt::WindowMinMaxButtonsHint
-        | Qt::WindowCloseButtonHint | Qt::WindowContextHelpButtonHint;
-
-    window.setWindowFlags((window.windowFlags() & ~nativeCaption) | Qt::CustomizeWindowHint
-        | Qt::WindowSystemMenuHint | Qt::ExpandedClientAreaHint | Qt::NoTitleBarBackgroundHint);
-    window.setAttribute(Qt::WA_ContentsMarginsRespectsSafeArea, false);
-
+#ifdef Q_OS_WIN
     return new TitleMenuBar(window);
 #else
     return new QMenuBar(&window);

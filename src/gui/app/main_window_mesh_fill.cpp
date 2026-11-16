@@ -3,7 +3,6 @@
 #include "main_window_internal.h"
 #include "mesh_fill.h"
 #include "matrix_math.h"
-#include "shape_registry.h"
 
 namespace gui {
 
@@ -34,7 +33,7 @@ void MainWindow::startMeshFill(const QString &meshId) {
         || (generatedFillCancel_ != nullptr && generatedFillTool_ == QStringLiteral("mesh"))) return;
     for (const fls::scene::Layer *node = mesh; node != nullptr; node = node->parent()) {
         if (!node->visible || node->opacity < 1.0) {
-            statusBar()->showMessage(QStringLiteral("Mesh filling requires opaque visible mesh and parent layers"), 5000);
+            canvasStatusBar_->showMessage(QStringLiteral("Mesh filling requires opaque visible mesh and parent layers"), 5000);
 
             return;
         }
@@ -43,7 +42,7 @@ void MainWindow::startMeshFill(const QString &meshId) {
     request.mesh = mesh->data;
     request.primitives = canvas_->compactFillPrimitives(&error);
     if (request.primitives.isEmpty()) {
-        statusBar()->showMessage(QStringLiteral("Mesh fill failed: %1").arg(error), 5000);
+        canvasStatusBar_->showMessage(QStringLiteral("Mesh fill failed: %1").arg(error), 5000);
 
         return;
     }
@@ -59,7 +58,7 @@ void MainWindow::startMeshFill(const QString &meshId) {
     generatedFillProgress_->setToolTip(QStringLiteral("Escape stops filling and keeps the generated shapes."));
     refreshGeneratedFillElapsedTime();
     canvas_->setMeshFillSourceId(meshId);
-    statusBar()->showMessage(QStringLiteral("Filling mesh. Press Escape to stop and keep generated shapes."));
+    canvasStatusBar_->showMessage(QStringLiteral("Filling mesh. Press Escape to stop and keep generated shapes."));
     auto *task = QRunnable::create([guard, generation, meshId, token, request = std::move(request)]() {
         auto result = fillMesh(request, [token]() { return token->load(std::memory_order_relaxed); },
             [guard, generation](const MeshFillProgress &progress) {
@@ -78,7 +77,7 @@ void MainWindow::startMeshFill(const QString &meshId) {
 void MainWindow::stopMeshFill() {
     if (generatedFillTool_ != QStringLiteral("mesh") || generatedFillCancel_ == nullptr) return;
     if (!generatedFillCancel_->exchange(true, std::memory_order_relaxed)) {
-        statusBar()->showMessage(QStringLiteral("Stopping mesh fill; keeping generated shapes…"));
+        canvasStatusBar_->showMessage(QStringLiteral("Stopping mesh fill; keeping generated shapes…"));
     }
 }
 
@@ -93,7 +92,7 @@ void MainWindow::finishMeshFill(quint64 generation, const QString &meshId, MeshF
     QFile log(QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("mesh_fill_latest.json")));
     if (log.open(QIODevice::WriteOnly | QIODevice::Truncate)) log.write(QJsonDocument(result.diagnostics).toJson(QJsonDocument::Indented));
     if (source == nullptr || result.shapeCount == 0) {
-        statusBar()->showMessage(result.stopped ? QStringLiteral("Mesh fill stopped; no shapes generated")
+        canvasStatusBar_->showMessage(result.stopped ? QStringLiteral("Mesh fill stopped; no shapes generated")
             : QStringLiteral("Mesh fill failed: %1").arg(result.error.isEmpty() ? QStringLiteral("no shapes generated") : result.error), 6000);
         clearGeneratedFillState();
 
@@ -111,7 +110,7 @@ void MainWindow::finishMeshFill(quint64 generation, const QString &meshId, MeshF
         for (const auto &placement : layer->placements) {
             auto shape = std::make_unique<fls::scene::Shape>();
             shape->id = QStringLiteral("layer_%1").arg(QUuid::createUuid().toString(QUuid::WithoutBraces));
-            shape->name = fls::detail::shapeName(static_cast<quint16>(placement.shapeId));
+            shape->name = defaultShapeLayerName(static_cast<quint16>(placement.shapeId));
             shape->setVectorShape(static_cast<quint16>(placement.shapeId));
             shape->transform = placementTransform(placement.transform);
             shape->color = {static_cast<quint8>(layer->color.blue()), static_cast<quint8>(layer->color.green()),
@@ -132,7 +131,7 @@ void MainWindow::finishMeshFill(quint64 generation, const QString &meshId, MeshF
         : result.stopped ? QStringLiteral("Mesh fill stopped; kept %1 shapes").arg(result.shapeCount)
         : QStringLiteral("Filled mesh with %1 shapes").arg(result.shapeCount);
     clearGeneratedFillState();
-    statusBar()->showMessage(message, 8000);
+    canvasStatusBar_->showMessage(message, 8000);
     canvas_->setFocus();
 }
 

@@ -383,6 +383,14 @@ void ProjectCanvas::setShowSelectedShapeOutlines(bool enabled) {
     update();
 }
 
+void ProjectCanvas::setHoverShapeOutline(bool enabled) {
+    if (options_.hoverShapeOutline == enabled) {
+        return;
+    }
+    options_.hoverShapeOutline = enabled;
+    update();
+}
+
 void ProjectCanvas::setSeparateOpacityAndSkewTools(bool enabled) {
     if (options_.separateOpacityAndSkewTools == enabled) {
         return;

@@ -88,12 +88,12 @@ void MainWindow::loadCarModel(const QString &path, bool automatic, const QString
             if (!modelGame.isEmpty()) break;
         }
     }
-    statusBar()->showMessage(QStringLiteral("Loading car model: %1").arg(QFileInfo(path).fileName()));
+    canvasStatusBar_->showMessage(QStringLiteral("Loading car model: %1").arg(QFileInfo(path).fileName()));
     carPreview_->loadCarAsync(path, [this, path, automatic, duration](bool loaded, const QString &error) {
         if (!loaded) {
             const QString fallback = automatic ? QStringLiteral("Failed to auto-load car model")
                                                : QStringLiteral("Failed to load car model");
-            statusBar()->showMessage(error.isEmpty() ? fallback : error, duration);
+            canvasStatusBar_->showMessage(error.isEmpty() ? fallback : error, duration);
             return;
         }
         if (carPreviewDock_ != nullptr) {
@@ -101,7 +101,7 @@ void MainWindow::loadCarModel(const QString &path, bool automatic, const QString
             carPreviewDock_->raise();
         }
         updateCarUnwrapOverlay();
-        statusBar()->showMessage(
+        canvasStatusBar_->showMessage(
             (automatic ? QStringLiteral("Auto-loaded car model: %1") : QStringLiteral("Loaded car model: %1"))
                 .arg(QFileInfo(path).fileName()), duration);
     }, modelGame);
@@ -161,7 +161,7 @@ void MainWindow::maybeAutoLoadCarForProject(bool replaceLoadedModel) {
     }
 
     if (source.path.isEmpty()) {
-        statusBar()->showMessage(
+        canvasStatusBar_->showMessage(
             QStringLiteral("No car model matching \"%1\" found in the configured game folders").arg(modelCode), 4000);
         return;
     }
@@ -513,7 +513,7 @@ bool MainWindow::copySelectionToClipboard() {
     command.entries = state_->selectionEntries();
     QString error;
     if (!state_->executeCommand(command, &error)) {
-        statusBar()->showMessage(error, 3000);
+        canvasStatusBar_->showMessage(error, 3000);
         return false;
     }
 
@@ -579,7 +579,7 @@ void MainWindow::setTargetCarDialog() {
     state_->setModified(true);
     updateStatus();
     refreshHeaderMetadataWidget();
-    statusBar()->showMessage(
+    canvasStatusBar_->showMessage(
         QStringLiteral("Target car set to %1").arg(sharedCarRegistry().displayName(carId)), 5000);
     maybeAutoLoadCarForProject(true);
 }

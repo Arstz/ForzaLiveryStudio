@@ -169,7 +169,7 @@ void partialPolygonRepair() {
 void windowFill() {
     MainWindow window;
     auto *state = window.findChild<EditorState *>();
-    auto *canvas = dynamic_cast<ProjectCanvas *>(window.centralWidget());
+    auto *canvas = dynamic_cast<ProjectCanvas *>(window.findChild<QWidget *>("ProjectCanvas"));
     auto *progress = window.findChild<QProgressBar *>("GeneratedFillProgress");
     require(state && canvas && progress, "missing mesh fill GUI components");
     fls::Project project;

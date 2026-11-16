@@ -22,12 +22,93 @@
 #include <array>
 #include <optional>
 
+#ifdef Q_OS_WIN
+#define NOMINMAX
+#include <windows.h>
+#endif
+
 namespace gui {
 
 using namespace mw_detail;
 
+namespace {
+
+constexpr int kCanvasStatusBarHeight = 32;
+constexpr const char *kSurfaceExposedProperty = "flsSurfaceExposed";
+const auto kLayoutRepaintEvent = static_cast<QEvent::Type>(QEvent::registerEventType());
+
+void synchronizeNativeChildGeometry(QWidget &owner) {
+#ifdef Q_OS_WIN
+    for (QWidget *widget : owner.findChildren<QWidget *>()) {
+        QWidget *nativeParent = widget->nativeParentWidget();
+
+        if (!widget->isVisible() || widget->isWindow() || widget->internalWinId() == 0
+            || nativeParent == nullptr) {
+            continue;
+        }
+        const QPoint position = widget->mapTo(nativeParent, QPoint());
+        const QSize size = widget->size();
+        const HWND handle = reinterpret_cast<HWND>(widget->internalWinId());
+        const HWND parentHandle = reinterpret_cast<HWND>(nativeParent->internalWinId());
+        const qreal scale = nativeParent->devicePixelRatioF();
+        const QRect expected(qRound(position.x() * scale), qRound(position.y() * scale),
+            qRound(size.width() * scale), qRound(size.height() * scale));
+        RECT actual{};
+
+        if (GetParent(handle) != parentHandle || GetWindowRect(handle, &actual) == FALSE) {
+            continue;
+        }
+        MapWindowPoints(nullptr, parentHandle, reinterpret_cast<POINT *>(&actual), 2);
+        if (actual.left != expected.x() || actual.top != expected.y()
+            || actual.right - actual.left != expected.width()
+            || actual.bottom - actual.top != expected.height()) {
+            SetWindowPos(handle, nullptr, expected.x(), expected.y(), expected.width(), expected.height(),
+                SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOCOPYBITS);
+        }
+    }
+#else
+    Q_UNUSED(owner);
+#endif
+}
+
+void observeWidgetSurface(QWidget &widget, QObject &observer) {
+#ifdef Q_OS_WIN
+    if (QWindow *surface = widget.windowHandle()) {
+        surface->installEventFilter(&observer);
+    }
+#else
+    Q_UNUSED(widget);
+    Q_UNUSED(observer);
+#endif
+}
+
+void configureNativeRenderHost(QWidget &widget) {
+#ifdef Q_OS_WIN
+    QWidget *owner = widget.window();
+
+    widget.setAttribute(Qt::WA_NativeWindow);
+    widget.installEventFilter(owner);
+    observeWidgetSurface(widget, *owner);
+    observeWidgetSurface(*owner, *owner);
+#else
+    Q_UNUSED(widget);
+#endif
+}
+
+}
+
 void MainWindow::setupCanvas() {
-    canvas_ = new ProjectCanvas(this);
+    auto *canvasContainer = new QWidget(this);
+    auto *canvasLayout = new QVBoxLayout(canvasContainer);
+    canvasLayout->setContentsMargins(0, 0, 0, 0);
+    canvasLayout->setSpacing(0);
+    canvasStatusBar_ = new QStatusBar(canvasContainer);
+    canvasStatusBar_->setObjectName(QStringLiteral("CanvasStatusBar"));
+    canvasStatusBar_->setFixedHeight(kCanvasStatusBarHeight);
+    canvasStatusBar_->setSizeGripEnabled(false);
+    canvas_ = new ProjectCanvas(canvasContainer);
+    canvas_->setObjectName(QStringLiteral("ProjectCanvas"));
+    canvasContainer->setFocusProxy(canvas_);
     canvas_->setEditorState(state_);
     canvas_->setPathProjectRequestedCallback([this]() { return ensureProjectForInsertion(); });
     canvas_->setTransformRelativeMode(loadTransformModeSettings().relativeMode);
@@ -35,7 +116,7 @@ void MainWindow::setupCanvas() {
     canvas_->setBucketTolerance(loadBehaviorSettings().bucketTolerance);
     QString geometryError;
     if (!canvas_->loadGeometry(&geometryError)) {
-        statusBar()->showMessage(geometryError);
+        canvasStatusBar_->showMessage(geometryError);
     }
     canvas_->setPenFillRequestedCallback(
         [this](const QVector<PenLoop> &loops,
@@ -55,20 +136,20 @@ void MainWindow::setupCanvas() {
         startLiningFill(points, width, fillColor);
     });
     canvas_->setLiningFillCancelCallback([this]() { cancelGeneratedFill(); });
-    generatedFillProgress_ = new QProgressBar(statusBar());
+    generatedFillProgress_ = new QProgressBar(canvasStatusBar_);
     generatedFillProgress_->setObjectName(QStringLiteral("GeneratedFillProgress"));
     generatedFillProgress_->setTextVisible(true);
     generatedFillProgress_->setMinimumWidth(260);
     generatedFillProgress_->setMaximumWidth(380);
     generatedFillProgress_->hide();
-    statusBar()->addPermanentWidget(generatedFillProgress_);
-    regionFillProgress_ = new QProgressBar(statusBar());
+    canvasStatusBar_->addPermanentWidget(generatedFillProgress_);
+    regionFillProgress_ = new QProgressBar(canvasStatusBar_);
     regionFillProgress_->setTextVisible(true);
     regionFillProgress_->setFormat(QStringLiteral("Fill Regions %v/%m"));
     regionFillProgress_->setMinimumWidth(190);
     regionFillProgress_->setMaximumWidth(280);
     regionFillProgress_->hide();
-    statusBar()->addPermanentWidget(regionFillProgress_);
+    canvasStatusBar_->addPermanentWidget(regionFillProgress_);
     keyBindings_->registerInteraction(
         KeyInteraction::CancelActiveFill, this, KeyBindingRouter::Scope::Window,
         [this](KeyInteraction, KeyEventPhase phase, bool) {
@@ -106,7 +187,10 @@ void MainWindow::setupCanvas() {
                 return canvas_->handleKeyBinding(command, phase, autoRepeat);
             }, {}, 0, interaction == KeyInteraction::CanvasPan);
     }
-    setCentralWidget(canvas_);
+    canvasLayout->addWidget(canvas_, 1);
+    canvasLayout->addWidget(canvasStatusBar_);
+    setCentralWidget(canvasContainer);
+    configureNativeRenderHost(*canvasContainer);
 }
 
 void MainWindow::setupTreeView() {
@@ -150,7 +234,7 @@ void MainWindow::setupTreeView() {
 QDockWidget *MainWindow::addPanelDock(const QString &title, const QString &objectName,
                                       const QString &iconName, Qt::DockWidgetArea area, QWidget *content,
                                       bool scrollable) {
-    auto *dock = new QDockWidget(title, this);
+    auto *dock = createPanelDock(title, this);
     dock->setObjectName(objectName);
 #if defined(Q_OS_WIN) && QT_VERSION >= QT_VERSION_CHECK(6, 9, 0)
     connect(dock, &QDockWidget::topLevelChanged, dock, [dock](bool) {
@@ -175,6 +259,9 @@ QDockWidget *MainWindow::addPanelDock(const QString &title, const QString &objec
         bodyLayout->addWidget(content);
     }
     dock->setWidget(body);
+    if (qobject_cast<QOpenGLWidget *>(content) != nullptr) {
+        configureNativeRenderHost(*body);
+    }
     addDockWidget(area, dock);
     dockWidgets_.push_back(dock);
     return dock;
@@ -268,9 +355,9 @@ void MainWindow::setupDocks() {
                                                 static_cast<quint8>(color.alpha())});
         }
         if (colorPalette_ != nullptr && colorPalette_->addColor(color)) {
-            statusBar()->showMessage(QStringLiteral("Added picked color to swatches"), 1500);
+            canvasStatusBar_->showMessage(QStringLiteral("Added picked color to swatches"), 1500);
         } else {
-            statusBar()->showMessage(QStringLiteral("Picked color already in swatches"), 1500);
+            canvasStatusBar_->showMessage(QStringLiteral("Picked color already in swatches"), 1500);
         }
     });
     auto *paletteDock = addPanelDock(QStringLiteral("Swatches"), QStringLiteral("SwatchesDock"),
@@ -312,7 +399,7 @@ void MainWindow::setupDocks() {
 
 void MainWindow::connectEditorStateSignals() {
     connect(state_, &EditorState::commandRejected, this, [this](EditorCommandType, const QString &reason) {
-        statusBar()->showMessage(reason, 3000);
+        canvasStatusBar_->showMessage(reason, 3000);
     });
     connect(state_, &EditorState::selectionChanged, this, [this]() {
         updateLastSelectedShapeDefaults();
@@ -473,9 +560,9 @@ void MainWindow::setupEditMenu() {
     addAction(saveContour);
     bindEditorAction(saveContour, QStringLiteral("save_pen_figure"), [this]() {
         if (canvas_->savePathFigure()) {
-            statusBar()->showMessage(QStringLiteral("Contour figure saved in Layers"), 2500);
+            canvasStatusBar_->showMessage(QStringLiteral("Contour figure saved in Layers"), 2500);
         } else {
-            statusBar()->showMessage(QStringLiteral("Draw a Pen or Lining path with at least two anchors in an open project"), 4000);
+            canvasStatusBar_->showMessage(QStringLiteral("Draw a Pen or Lining path with at least two anchors in an open project"), 4000);
         }
     });
 
@@ -512,13 +599,13 @@ void MainWindow::setupEditMenu() {
 
 void MainWindow::alignSelection(ProjectCanvas::AlignEdge edge) {
     if (canvas_ == nullptr || !canvas_->alignSelection(edge)) {
-        statusBar()->showMessage(QStringLiteral("Select two or more layers or groups to align"), 2500);
+        canvasStatusBar_->showMessage(QStringLiteral("Select two or more layers or groups to align"), 2500);
     }
 }
 
 void MainWindow::distributeSelection(ProjectCanvas::DistributeAxis axis) {
     if (canvas_ == nullptr || !canvas_->distributeSelection(axis)) {
-        statusBar()->showMessage(QStringLiteral("Select three or more layers or groups to distribute"), 2500);
+        canvasStatusBar_->showMessage(QStringLiteral("Select three or more layers or groups to distribute"), 2500);
     }
 }
 
@@ -585,6 +672,8 @@ void MainWindow::setupOptionsMenu() {
     addBehaviorOption(optionsMenu, QStringLiteral("Use Last Selected Color for New Shapes"), QStringLiteral("toggle_insert_last_color"), &BehaviorSettings::insertShapeWithLastSelectedColor);
     addBehaviorOption(optionsMenu, QStringLiteral("Use Last Selected Shape Scale for New Shapes"), QStringLiteral("toggle_insert_last_scale"), &BehaviorSettings::insertShapeWithLastSelectedScale);
     addBehaviorOption(optionsMenu, QStringLiteral("Show Property Debug"), QStringLiteral("toggle_property_debug"), &BehaviorSettings::showPropertyDebug);
+    addBehaviorOption(optionsMenu, QStringLiteral("Hover shape outline"), QStringLiteral("toggle_hover_shape_outline"),
+                      &BehaviorSettings::hoverShapeOutline);
 
     QMenu *guidesMenu = optionsMenu->addMenu(QStringLiteral("&Guides"));
     addBehaviorOption(guidesMenu, QStringLiteral("Show Guidelines"), QStringLiteral("show_guidelines"),
@@ -618,7 +707,8 @@ void MainWindow::setupOptionsMenu() {
         }
     });
 
-    sectionWireframeAction_ = optionsMenu->addAction(
+    QMenu *wireframeMenu = optionsMenu->addMenu(QStringLiteral("&Wireframe"));
+    sectionWireframeAction_ = wireframeMenu->addAction(
         QStringLiteral("Show Section Wireframe"));
     sectionWireframeAction_->setCheckable(true);
     sectionWireframeAction_->setChecked(false);
@@ -627,14 +717,27 @@ void MainWindow::setupOptionsMenu() {
         sectionWireframeAction_, QStringLiteral("toggle_section_wireframe"),
         QStringLiteral("Show Section Wireframe"));
     addAction(sectionWireframeAction_);
-    connect(sectionWireframeAction_, &QAction::toggled, this, [this](bool checked) {
+    QAction *wireframeCanvasOnlyAction = wireframeMenu->addAction(
+        QStringLiteral("Wireframe in 2D canvas only"));
+    wireframeCanvasOnlyAction->setCheckable(true);
+    registerShortcutAction(
+        wireframeCanvasOnlyAction, QStringLiteral("toggle_wireframe_canvas_only"),
+        QStringLiteral("Wireframe in 2D canvas only"));
+    addAction(wireframeCanvasOnlyAction);
+
+    auto applyWireframeVisibility = [this, wireframeCanvasOnlyAction]() {
+        const bool visible = sectionWireframeAction_->isChecked();
+
         if (canvas_ != nullptr) {
-            canvas_->setSectionWireframeVisible(checked);
+            canvas_->setSectionWireframeVisible(visible);
         }
         if (carPreview_ != nullptr) {
-            carPreview_->setSectionWireframeVisible(checked);
+            carPreview_->setSectionWireframeVisible(
+                visible && !wireframeCanvasOnlyAction->isChecked());
         }
-    });
+    };
+    connect(sectionWireframeAction_, &QAction::toggled, this, applyWireframeVisibility);
+    connect(wireframeCanvasOnlyAction, &QAction::toggled, this, applyWireframeVisibility);
 }
 
 void MainWindow::setupToolbar() {
@@ -942,6 +1045,7 @@ void MainWindow::applyBehaviorSettings(const BehaviorSettings &settings, bool sa
         canvas_->setSeparateSelectAndMarqueeTools(settings.separateSelectAndMarqueeTools);
         canvas_->setSelectShapesByBoundingBox(settings.selectShapesByBoundingBox);
         canvas_->setShowSelectedShapeOutlines(settings.showSelectedShapeOutlines);
+        canvas_->setHoverShapeOutline(settings.hoverShapeOutline);
         canvas_->setSeparateOpacityAndSkewTools(settings.separateOpacityAndSkewTools);
         canvas_->setGuideLayersVisible(settings.guideLayersVisible);
         canvas_->setGuideLayersOnTop(settings.guideLayersOnTop);
@@ -1040,7 +1144,7 @@ void MainWindow::showSettingsDialog() {
 
 void MainWindow::restartApplication() {
     if (!confirmDiscardUnsavedChanges()) {
-        statusBar()->showMessage(
+        canvasStatusBar_->showMessage(
             QStringLiteral("The icon change will be applied on the next launch"), 5000);
         return;
     }
@@ -1253,6 +1357,7 @@ void MainWindow::toggleDockAreaCollapsed(Qt::DockWidgetArea area, QDockWidget *a
             control.collapsed = true;
             configureDockAreaCollapseButton(anchorButton, area, true);
         }
+        update();
         return;
     }
 
@@ -1263,15 +1368,30 @@ void MainWindow::toggleDockAreaCollapsed(Qt::DockWidgetArea area, QDockWidget *a
 }
 
 bool MainWindow::event(QEvent *event) {
+    if (event->type() == kLayoutRepaintEvent) {
+        repaintLayout();
+
+        return true;
+    }
     if (event->type() == QEvent::WindowDeactivate && canvas_ != nullptr) {
         canvas_->cancelActiveInput();
     }
     const bool result = QMainWindow::event(event);
     switch (event->type()) {
+    case QEvent::WinIdChange:
+        observeWidgetSurface(*this, *this);
+        scheduleLayoutRepaint();
+        break;
+    case QEvent::Show:
+        scheduleLayoutRepaint();
+        break;
     case QEvent::LayoutRequest:
-    case QEvent::Move:
     case QEvent::Resize:
     case QEvent::WindowStateChange:
+        scheduleLayoutRepaint();
+        scheduleLayoutSave();
+        break;
+    case QEvent::Move:
         scheduleLayoutSave();
         break;
     case QEvent::HoverMove:
@@ -1289,11 +1409,51 @@ bool MainWindow::event(QEvent *event) {
 }
 
 bool MainWindow::eventFilter(QObject *watched, QEvent *event) {
+    if (auto *surface = qobject_cast<QWindow *>(watched)) {
+        switch (event->type()) {
+        case QEvent::Expose: {
+            const bool exposed = surface->isExposed();
+            const bool previouslyExposed = surface->property(kSurfaceExposedProperty).toBool();
+
+            surface->setProperty(kSurfaceExposedProperty, exposed);
+            if (exposed && !previouslyExposed) {
+                scheduleLayoutRepaint();
+            }
+            break;
+        }
+        case QEvent::PlatformSurface:
+            if (static_cast<QPlatformSurfaceEvent *>(event)->surfaceEventType()
+                == QPlatformSurfaceEvent::SurfaceCreated) {
+                surface->setProperty(kSurfaceExposedProperty, false);
+            }
+            break;
+        case QEvent::Show:
+        case QEvent::Resize:
+        case QEvent::WindowStateChange:
+            scheduleLayoutRepaint();
+            break;
+        default:
+            break;
+        }
+
+        return QMainWindow::eventFilter(watched, event);
+    }
     switch (event->type()) {
+    case QEvent::WinIdChange:
+        if (auto *widget = qobject_cast<QWidget *>(watched)) {
+            observeWidgetSurface(*widget, *this);
+        }
+        scheduleLayoutRepaint();
+        break;
+    case QEvent::ZOrderChange:
+    case QEvent::WindowStateChange:
+        scheduleLayoutRepaint();
+        break;
     case QEvent::Move:
     case QEvent::Resize:
     case QEvent::Show:
     case QEvent::Hide:
+        scheduleLayoutRepaint();
         scheduleLayoutSave();
         break;
     default:
@@ -1301,6 +1461,45 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event) {
     }
 
     return QMainWindow::eventFilter(watched, event);
+}
+
+void MainWindow::scheduleLayoutRepaint() {
+#ifdef Q_OS_WIN
+    if (!layoutInitialized_ || layoutRepaintPending_ || !isVisible() || isMinimized()) {
+        return;
+    }
+    layoutRepaintPending_ = true;
+    QCoreApplication::postEvent(this, new QEvent(kLayoutRepaintEvent), Qt::LowEventPriority);
+#endif
+}
+
+void MainWindow::repaintLayout() {
+    layoutRepaintPending_ = false;
+    if (!layoutInitialized_ || !isVisible() || isMinimized()) {
+        return;
+    }
+    const QScopedValueRollback<bool> guard(layoutRepaintPending_, true);
+
+    if (layout() != nullptr) {
+        layout()->activate();
+    }
+    for (QDockWidget *dock : dockWidgets_) {
+        if (dock->isFloating() && dock->isVisible() && dock->layout() != nullptr) {
+            dock->layout()->activate();
+        }
+    }
+    synchronizeNativeChildGeometry(*this);
+    for (QWidget *widget : findChildren<QWidget *>()) {
+        if (widget->isVisible()) {
+            widget->update();
+        }
+    }
+    repaint();
+    for (QDockWidget *dock : dockWidgets_) {
+        if (dock->isFloating() && dock->isVisible()) {
+            dock->repaint();
+        }
+    }
 }
 
 void MainWindow::normalizeDockResizeCursor() {

@@ -17,6 +17,21 @@ constexpr int kDockIconExtent = 16;
 
 enum class DockGlyph { Close, Left, Right, Up, Down };
 
+class PanelDock final : public QDockWidget {
+public:
+    using QDockWidget::QDockWidget;
+
+protected:
+    void paintEvent(QPaintEvent *event) override {
+        {
+            QPainter painter(this);
+
+            painter.fillRect(rect(), uiColors(currentUiTheme()).secondary);
+        }
+        QDockWidget::paintEvent(event);
+    }
+};
+
 class DockTitleButton final : public QToolButton {
 public:
     DockTitleButton(QWidget *parent, DockGlyph glyph, const QString &toolTip)
@@ -81,6 +96,10 @@ private:
 };
 
 } // namespace
+
+QDockWidget *createPanelDock(const QString &title, QWidget *parent) {
+    return new PanelDock(title, parent);
+}
 
 void setDockTitleIcon(QDockWidget *dock, const QString &iconName) {
     if (dock == nullptr) {

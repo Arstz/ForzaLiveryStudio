@@ -258,7 +258,7 @@ bool MainWindow::writeScratchCopy(QString *error) {
 void MainWindow::saveScratchProject() {
     QString error;
     if (!writeScratchCopy(&error) && !error.isEmpty()) {
-        statusBar()->showMessage(
+        canvasStatusBar_->showMessage(
             QStringLiteral("Recovery save failed: %1").arg(error), 5000);
     }
 }
@@ -372,7 +372,7 @@ bool MainWindow::recoverUnexpectedScratchProject() {
             if (!sourcePath.isEmpty()) {
                 rememberRecentProjectJson(sourcePath);
             }
-            statusBar()->showMessage(
+            canvasStatusBar_->showMessage(
                 QStringLiteral("Recovered %1")
                     .arg(projectLabel.isEmpty()
                              ? QStringLiteral("Untitled") : projectLabel),
@@ -425,14 +425,14 @@ bool MainWindow::handleExternalDropUrls(const QList<QUrl> &urls) {
         }
     }
     if (paths.size() != 1) {
-        statusBar()->showMessage(QStringLiteral("Drop one project, C_group, or image file at a time"), 4000);
+        canvasStatusBar_->showMessage(QStringLiteral("Drop one project, C_group, or image file at a time"), 4000);
         return false;
     }
 
     const QString path = paths.front();
     const ExternalDropKind kind = classifyExternalDropPath(path);
     if (kind == ExternalDropKind::Unsupported) {
-        statusBar()->showMessage(QStringLiteral("Unsupported dropped file: %1").arg(QFileInfo(path).fileName()), 4000);
+        canvasStatusBar_->showMessage(QStringLiteral("Unsupported dropped file: %1").arg(QFileInfo(path).fileName()), 4000);
         return false;
     }
     if (kind != ExternalDropKind::Image && !confirmDiscardUnsavedChanges()) {
@@ -561,7 +561,7 @@ bool MainWindow::loadImportedProject(const std::function<fls::Project()> &load,
     try {
         fls::Project project = load();
         setProject(std::move(project));
-        statusBar()->showMessage(statusMessage, 5000);
+        canvasStatusBar_->showMessage(statusMessage, 5000);
         return true;
     } catch (const std::exception &ex) {
         if (error != nullptr) {
@@ -605,7 +605,7 @@ bool MainWindow::exportFolderImpl(const QString &folder, fls::ExportGameVersion 
             : projectExportFolder(folder, exportProject.name, exportProject.isLivery);
         const auto finishExport = [this, wgsTarget, &targetFolder]() {
             if (wgsTarget == nullptr) {
-                statusBar()->showMessage(QStringLiteral("Exported %1").arg(targetFolder), 5000);
+                canvasStatusBar_->showMessage(QStringLiteral("Exported %1").arg(targetFolder), 5000);
                 return;
             }
             QMap<QString, QByteArray> blobs;
@@ -622,7 +622,7 @@ bool MainWindow::exportFolderImpl(const QString &folder, fls::ExportGameVersion 
                 blobs.insert(key, file.readAll());
             }
             const QString backup = fls::replaceWgsContainer(*wgsTarget, blobs);
-            statusBar()->showMessage(QStringLiteral("Replaced %1 — backup: %2")
+            canvasStatusBar_->showMessage(QStringLiteral("Replaced %1 — backup: %2")
                 .arg(wgsTarget->containerName, QDir::toNativeSeparators(backup)), 15000);
         };
         if (exportProject.isLivery) {
@@ -700,7 +700,7 @@ bool MainWindow::newProject(QString *error) {
 bool MainWindow::newProject(bool livery, QString *error, int carId) {
     Q_UNUSED(error);
     setProject(createNewProject(livery, creatorName_, carId));
-    statusBar()->showMessage(livery ? QStringLiteral("New livery project created")
+    canvasStatusBar_->showMessage(livery ? QStringLiteral("New livery project created")
                                     : QStringLiteral("New project created"),
                              5000);
     return true;
@@ -723,7 +723,7 @@ bool MainWindow::saveProjectJson(const QString &path, QString *error) {
         rememberRecentProjectJson(targetPath);
         state_->setModified(false);
         writeScratchCopy(&scratchError);
-        statusBar()->showMessage(
+        canvasStatusBar_->showMessage(
             scratchError.isEmpty()
                 ? QStringLiteral("Saved %1").arg(targetPath)
                 : QStringLiteral("Saved %1; recovery save failed: %2")
@@ -746,7 +746,7 @@ bool MainWindow::loadProjectJson(const QString &path, QString *error) {
         setProject(std::move(loadedProject));
         projectJsonPath_ = targetPath;
         rememberRecentProjectJson(targetPath);
-        statusBar()->showMessage(QStringLiteral("Opened %1").arg(targetPath), 5000);
+        canvasStatusBar_->showMessage(QStringLiteral("Opened %1").arg(targetPath), 5000);
         return true;
     } catch (const std::exception &ex) {
         if (error != nullptr) {
@@ -848,12 +848,12 @@ void MainWindow::importGuideLayerDialog() {
 
 void MainWindow::preprocessSelectedGuide() {
     if (state_ == nullptr || !state_->hasProject()) {
-        statusBar()->showMessage(QStringLiteral("Open or create a project first"), 3500);
+        canvasStatusBar_->showMessage(QStringLiteral("Open or create a project first"), 3500);
         return;
     }
     const QVector<fls::scene::GuideLayer *> guides = state_->selectedGuideLayers();
     if (guides.size() != 1) {
-        statusBar()->showMessage(guides.isEmpty()
+        canvasStatusBar_->showMessage(guides.isEmpty()
                                      ? QStringLiteral("Select a guide layer first")
                                      : QStringLiteral("Select exactly one guide layer"),
                                  3500);
@@ -861,11 +861,11 @@ void MainWindow::preprocessSelectedGuide() {
     }
     fls::scene::GuideLayer *guide = guides.front();
     if (guide == nullptr || guide->locked) {
-        statusBar()->showMessage(QStringLiteral("Unlock the selected guide layer first"), 3500);
+        canvasStatusBar_->showMessage(QStringLiteral("Unlock the selected guide layer first"), 3500);
         return;
     }
     if (!guide->image) {
-        statusBar()->showMessage(QStringLiteral("The selected guide layer has no image"), 3500);
+        canvasStatusBar_->showMessage(QStringLiteral("The selected guide layer has no image"), 3500);
         return;
     }
 
@@ -884,7 +884,7 @@ void MainWindow::preprocessSelectedGuide() {
         source = source.mirrored(false, true);
     }
     if (source.isNull()) {
-        statusBar()->showMessage(QStringLiteral("Could not decode the selected guide image"), 4000);
+        canvasStatusBar_->showMessage(QStringLiteral("Could not decode the selected guide image"), 4000);
         return;
     }
 
@@ -925,7 +925,7 @@ void MainWindow::preprocessSelectedGuide() {
     }
     guide = static_cast<fls::scene::GuideLayer *>(node);
     if (guide->locked) {
-        statusBar()->showMessage(QStringLiteral("The selected guide layer is locked"), 3500);
+        canvasStatusBar_->showMessage(QStringLiteral("The selected guide layer is locked"), 3500);
         return;
     }
 
@@ -961,7 +961,7 @@ void MainWindow::preprocessSelectedGuide() {
     }
     state_->commitProjectEdit();
     state_->noteProjectGeometryChanged(true, {guideId});
-    statusBar()->showMessage(QStringLiteral("Preprocessed guide layer %1 (%2 retained colors, %3 new swatches)")
+    canvasStatusBar_->showMessage(QStringLiteral("Preprocessed guide layer %1 (%2 retained colors, %3 new swatches)")
                                  .arg(guideName).arg(retainedColors).arg(addedSwatches),
                              3500);
 }
@@ -973,9 +973,9 @@ void MainWindow::createRegions() {
     cancelRegionFill();
     QString message;
     if (canvas_->createRegionsForSelectedGuide(regionMergeAreaThreshold_, &message)) {
-        statusBar()->showMessage(message, 5000);
+        canvasStatusBar_->showMessage(message, 5000);
     } else {
-        statusBar()->showMessage(message.isEmpty()
+        canvasStatusBar_->showMessage(message.isEmpty()
                                      ? QStringLiteral("Could not create regions")
                                      : message,
                                  5000);
@@ -984,7 +984,7 @@ void MainWindow::createRegions() {
 
 void MainWindow::fillRegions() {
     if (canvas_ == nullptr || !state_->hasProject()) {
-        statusBar()->showMessage(QStringLiteral("Open or create a project first"), 4000);
+        canvasStatusBar_->showMessage(QStringLiteral("Open or create a project first"), 4000);
         return;
     }
     cancelGeneratedFill();
@@ -992,7 +992,7 @@ void MainWindow::fillRegions() {
     RegionFillBatchRequest request;
     QString message;
     if (!canvas_->prepareRegionFillBatch(&request, &message)) {
-        statusBar()->showMessage(message.isEmpty()
+        canvasStatusBar_->showMessage(message.isEmpty()
                                      ? QStringLiteral("Could not fill regions")
                                      : message,
                                  5000);
@@ -1006,7 +1006,7 @@ void MainWindow::fillRegions() {
     regionFillProgress_->setRange(0, 0);
     regionFillProgress_->setFormat(QStringLiteral("Planning regions…"));
     regionFillProgress_->show();
-    statusBar()->showMessage(QStringLiteral("Filling regions… Press %1 to cancel")
+    canvasStatusBar_->showMessage(QStringLiteral("Filling regions… Press %1 to cancel")
                                  .arg(interactionShortcutText(KeyInteraction::CancelActiveFill)));
 
     QPointer<MainWindow> guard(this);
@@ -1041,7 +1041,7 @@ void MainWindow::cancelRegionFill() {
     if (regionFillProgress_ != nullptr) {
         regionFillProgress_->hide();
     }
-    statusBar()->showMessage(QStringLiteral("Region Fill cancelled"), 1500);
+    canvasStatusBar_->showMessage(QStringLiteral("Region Fill cancelled"), 1500);
 }
 
 void MainWindow::updateRegionFillProgress(quint64 generation,
@@ -1076,7 +1076,7 @@ void MainWindow::finishRegionFill(quint64 generation, RegionFillBatchResult resu
     regionFillProgress_->hide();
     if (result.cancelled) {
         regionFillInsertionEntries_.clear();
-        statusBar()->showMessage(QStringLiteral("Region Fill cancelled"), 1500);
+        canvasStatusBar_->showMessage(QStringLiteral("Region Fill cancelled"), 1500);
         return;
     }
     const QImage differenceHeatmap = result.differenceHeatmap;
@@ -1085,7 +1085,7 @@ void MainWindow::finishRegionFill(quint64 generation, RegionFillBatchResult resu
     if (canvas_ == nullptr || !state_->hasProject()
         || !canvas_->applyRegionFillBatch(std::move(result), &message)) {
         regionFillInsertionEntries_.clear();
-        statusBar()->showMessage(message.isEmpty()
+        canvasStatusBar_->showMessage(message.isEmpty()
                                      ? QStringLiteral("Could not fill regions") : message,
                                  5000);
         return;
@@ -1094,7 +1094,7 @@ void MainWindow::finishRegionFill(quint64 generation, RegionFillBatchResult resu
         canvas_->regionFillWorldVariants();
     if (variants.isEmpty()) {
         regionFillInsertionEntries_.clear();
-        statusBar()->showMessage(QStringLiteral("Region fill produced no shapes"), 4000);
+        canvasStatusBar_->showMessage(QStringLiteral("Region fill produced no shapes"), 4000);
         return;
     }
     const QVector<QString> insertionEntries = regionFillInsertionEntries_;
@@ -1250,10 +1250,10 @@ void MainWindow::autosaveProject() {
 
     QString error;
     if (!saveProjectJson(projectJsonPath_, &error)) {
-        statusBar()->showMessage(
+        canvasStatusBar_->showMessage(
             QStringLiteral("Autosave failed: %1").arg(error), 5000);
     } else {
-        statusBar()->showMessage(
+        canvasStatusBar_->showMessage(
             QStringLiteral("Autosaved %1").arg(projectJsonPath_), 3000);
     }
 }
@@ -1389,7 +1389,7 @@ void MainWindow::applyHeaderMetadata() {
     state_->setModified(true);
     updateStatus();
     refreshHeaderMetadataWidget();
-    statusBar()->showMessage(QStringLiteral("Header metadata updated"), 5000);
+    canvasStatusBar_->showMessage(QStringLiteral("Header metadata updated"), 5000);
 }
 
 void MainWindow::scheduleLayoutSave() {
@@ -1428,6 +1428,16 @@ bool MainWindow::restoreLayout() {
 void MainWindow::resetLayout() {
     const QSize availableSize = screen()->availableGeometry().size();
 
+    for (DockAreaCollapseState &state : dockAreaCollapseStates_) {
+        state.layoutState.clear();
+    }
+    for (const DockAreaCollapseState &state : dockAreaCollapseStates_) {
+        if (state.collapsed) {
+            toggleDockAreaCollapsed(state.area);
+        }
+    }
+    dockAreaCollapseStates_.clear();
+
 #if defined(Q_OS_WIN) && QT_VERSION >= QT_VERSION_CHECK(6, 9, 0)
     for (QDockWidget *dock : dockWidgets_) {
         dock->setAttribute(Qt::WA_ContentsMarginsRespectsSafeArea, false);
@@ -1447,8 +1457,9 @@ void MainWindow::resetLayout() {
     settings.remove(QStringLiteral("layout/state"));
     settings.remove(QStringLiteral("layout/geometry"));
     settings.remove(QStringLiteral("ui/splitters/shapesSections"));
+    scheduleLayoutRepaint();
     scheduleLayoutSave();
-    statusBar()->showMessage(QStringLiteral("Layout reset to default"), 5000);
+    canvasStatusBar_->showMessage(QStringLiteral("Layout reset to default"), 5000);
 }
 
 void MainWindow::applyDefaultLayoutSizes() {
@@ -1461,7 +1472,7 @@ void MainWindow::applyDefaultLayoutSizes() {
     auto *swatchesDock = findChild<QDockWidget *>(QStringLiteral("SwatchesDock"));
     auto *layersDock = findChild<QDockWidget *>(QStringLiteral("LayersDock"));
     auto *shapesDock = findChild<QDockWidget *>(QStringLiteral("ShapesDock"));
-    const int dockAreaHeight = height() - canvas_->y() - statusBar()->height();
+    const int dockAreaHeight = height() - centralWidget()->y();
     const int bottomHeight = qRound(dockAreaHeight * kBottomHeightFraction);
     const int sideHeight = dockAreaHeight - bottomHeight;
     const int propertiesHeight = qRound(sideHeight * kPropertiesHeightFraction);

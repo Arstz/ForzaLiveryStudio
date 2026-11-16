@@ -14,7 +14,7 @@
 #include "property_panel.h"
 #include "cubic_contour.h"
 #include "tool_settings_widget.h"
-#include "shape_registry.h"
+#include "shape_name_store.h"
 #include "shapes_browser_widget.h"
 #include "matrix_math.h"
 
@@ -226,7 +226,7 @@ void MainWindow::startPenFill(const QVector<PenLoop> &loops,
             coverageScale = compact::scaleCoverageToRegion(request, compactOptions);
         } catch (const std::exception &error) {
             canvas_->setPenFillRunning(false);
-            statusBar()->showMessage(QStringLiteral("Compact Fit failed: %1").arg(QString::fromUtf8(error.what())), 5000);
+            canvasStatusBar_->showMessage(QStringLiteral("Compact Fit failed: %1").arg(QString::fromUtf8(error.what())), 5000);
             return;
         }
         const int decimals = std::clamp(kMinimumCoverageDecimals - int(std::floor(std::log10(coverageScale))),
@@ -257,7 +257,7 @@ void MainWindow::startPenFill(const QVector<PenLoop> &loops,
         if (primitives.isEmpty() || fillMask) {
             canvas_->setPenFillRunning(false);
             clearGeneratedFillState();
-            statusBar()->showMessage(fillMask
+            canvasStatusBar_->showMessage(fillMask
                 ? QStringLiteral("%1 requires an opaque color fill").arg(fillLabel)
                 : QStringLiteral("%1 failed: %2").arg(fillLabel, catalogError), 5000);
             return;
@@ -268,7 +268,7 @@ void MainWindow::startPenFill(const QVector<PenLoop> &loops,
             if (leewayPath.isEmpty()) {
                 canvas_->setPenFillRunning(false);
                 clearGeneratedFillState();
-                statusBar()->showMessage(
+                canvasStatusBar_->showMessage(
                     QStringLiteral("Compact Fit failed: %1").arg(leewayError), 5000);
                 return;
             }
@@ -279,7 +279,7 @@ void MainWindow::startPenFill(const QVector<PenLoop> &loops,
         generatedFillProgress_->setFormat(QStringLiteral("%1 | Preparing region").arg(fillLabel));
         generatedFillProgress_->show();
         canvas_->setPenFillRunning(true, QStringLiteral("Optimizing %1…").arg(fillLabel));
-        statusBar()->showMessage(QStringLiteral("Optimizing %1… Press %2 to cancel")
+        canvasStatusBar_->showMessage(QStringLiteral("Optimizing %1… Press %2 to cancel")
             .arg(fillLabel, interactionShortcutText(KeyInteraction::CanvasCancelInteraction)));
         const QString strategy = fillTool + (fillColor.has_value()
             ? QStringLiteral("-bucket") : QStringLiteral("-pen"));
@@ -313,12 +313,12 @@ void MainWindow::startPenFill(const QVector<PenLoop> &loops,
     if (request.primitives.isEmpty()) {
         canvas_->setPenFillRunning(false);
         clearGeneratedFillState();
-        statusBar()->showMessage(QStringLiteral("Pen fill failed: Primitive geometry is unavailable"), 4000);
+        canvasStatusBar_->showMessage(QStringLiteral("Pen fill failed: Primitive geometry is unavailable"), 4000);
         return;
     }
 
     canvas_->setPenFillRunning(true, QStringLiteral("Running analytic contour fill…"));
-    statusBar()->showMessage(QStringLiteral("Running analytic contour fill… Press %1 to cancel")
+    canvasStatusBar_->showMessage(QStringLiteral("Running analytic contour fill… Press %1 to cancel")
                                  .arg(interactionShortcutText(KeyInteraction::CanvasCancelInteraction)));
 
     const QString strategy = fillColor.has_value()
@@ -352,12 +352,12 @@ void MainWindow::startLiningFill(const QVector<PenPoint> &points,
     if (primitives.isEmpty()) {
         canvas_->setLiningFillRunning(false);
         clearGeneratedFillState();
-        statusBar()->showMessage(QStringLiteral("Lining fill failed: %1").arg(catalogError), 4000);
+        canvasStatusBar_->showMessage(QStringLiteral("Lining fill failed: %1").arg(catalogError), 4000);
         return;
     }
 
     canvas_->setLiningFillRunning(true, QStringLiteral("Tracing lining path…"));
-    statusBar()->showMessage(QStringLiteral("Tracing lining path… Press %1 to cancel")
+    canvasStatusBar_->showMessage(QStringLiteral("Tracing lining path… Press %1 to cancel")
                                  .arg(interactionShortcutText(KeyInteraction::CanvasCancelInteraction)));
 
     const double outsideMargin = loadBehaviorSettings().liningOutsideMargin;
@@ -476,7 +476,7 @@ void MainWindow::cancelGeneratedFill() {
         canvas_->setPenFillRunning(false);
         canvas_->setLiningFillRunning(false);
     }
-    statusBar()->showMessage(QStringLiteral("%1 cancelled").arg(generatedFillLabel_), 1500);
+    canvasStatusBar_->showMessage(QStringLiteral("%1 cancelled").arg(generatedFillLabel_), 1500);
     clearGeneratedFillState();
 }
 
@@ -537,13 +537,13 @@ void MainWindow::finishGeneratedFill(quint64 generation, PenFillResult result) {
         }
     }
     if (result.cancelled) {
-        statusBar()->showMessage(QStringLiteral("%1 cancelled").arg(generatedFillLabel_), 1500);
+        canvasStatusBar_->showMessage(QStringLiteral("%1 cancelled").arg(generatedFillLabel_), 1500);
         clearGeneratedFillState();
         return;
     }
     const bool lining = generatedFillTool_ == QStringLiteral("lining");
     if ((lining && !result.error.isEmpty()) || result.placements.isEmpty() || !state_->hasProject()) {
-        statusBar()->showMessage(QStringLiteral("%1 failed: %2")
+        canvasStatusBar_->showMessage(QStringLiteral("%1 failed: %2")
                                      .arg(generatedFillLabel_)
                                      .arg(result.error.isEmpty() ? QStringLiteral("no shapes generated") : result.error),
                                  5000);
@@ -562,12 +562,12 @@ void MainWindow::finishGeneratedFill(quint64 generation, PenFillResult result) {
         : (compactFit ? QStringLiteral("Compact Fit") : QStringLiteral("Analytic Contour Fill"));
     insertGeneratedFill(groupName, groupName, placements);
     if (compactFit) {
-        statusBar()->showMessage(QStringLiteral("Created Compact Fit with %1 shapes; missing %2, spill %3 world²")
+        canvasStatusBar_->showMessage(QStringLiteral("Created Compact Fit with %1 shapes; missing %2, spill %3 world²")
             .arg(placements.size()).arg(result.targetArea - result.coveredArea, 0, 'g', 6)
             .arg(result.outsideArea, 0, 'g', 6), 8000);
     }
     if (!result.error.isEmpty()) {
-        statusBar()->showMessage(QStringLiteral("Created %1 with %2 shapes. Warning: %3")
+        canvasStatusBar_->showMessage(QStringLiteral("Created %1 with %2 shapes. Warning: %3")
             .arg(groupName).arg(placements.size()).arg(result.error), 15000);
     }
     if (canvas_ != nullptr) {
@@ -597,7 +597,7 @@ void MainWindow::insertGeneratedFill(const QString &groupName,
     for (const auto &placement : placements) {
         auto shape = std::make_unique<fls::scene::Shape>();
         shape->id = QStringLiteral("layer_%1").arg(QUuid::createUuid().toString(QUuid::WithoutBraces));
-        shape->name = fls::detail::shapeName(static_cast<quint16>(placement.first));
+        shape->name = defaultShapeLayerName(static_cast<quint16>(placement.first));
         shape->setVectorShape(static_cast<quint16>(placement.first));
         shape->transform = fls::decomposeTransform2D(generatedShapeMatrix(placement.second));
         shape->color = generatedFillColor_;
@@ -651,7 +651,7 @@ void MainWindow::insertGeneratedFill(const QString &groupName,
     if (canvas_ != nullptr) {
         canvas_->setFocus();
     }
-    statusBar()->showMessage(QStringLiteral("Created %1 with %2 shapes")
+    canvasStatusBar_->showMessage(QStringLiteral("Created %1 with %2 shapes")
                                  .arg(displayName)
                                  .arg(placements.size()),
                              3500);
@@ -662,13 +662,13 @@ void MainWindow::toggleContourLeewayEntry(
     const QString &entryId) {
     if (canvas_ == nullptr
         || loadBehaviorSettings().contourFillMode != ContourFillMode::CompactFit) {
-        statusBar()->showMessage(
+        canvasStatusBar_->showMessage(
             QStringLiteral("Contour leeway requires Compact Fit Contour Fill"),
             3000);
         return;
     }
     if (!canvas_->canAssignContourLeeway()) {
-        statusBar()->showMessage(
+        canvasStatusBar_->showMessage(
             QStringLiteral("Close the Pen contour before assigning leeway"),
             3000);
         return;
@@ -682,7 +682,7 @@ void MainWindow::toggleContourLeewayEntry(
         QString error;
         if (canvas_->contourLeewayPath(&error).isEmpty()) {
             canvas_->setContourLeewayEntryId(previousEntryId);
-            statusBar()->showMessage(error, 4000);
+            canvasStatusBar_->showMessage(error, 4000);
             return;
         }
     }
@@ -690,7 +690,7 @@ void MainWindow::toggleContourLeewayEntry(
     tree_->setLeewayEntryId(nextEntryId);
     const fls::scene::Layer *entry =
         state_->sceneNode(nextEntryId);
-    statusBar()->showMessage(
+    canvasStatusBar_->showMessage(
         nextEntryId.isEmpty()
         ? QStringLiteral("Contour leeway cleared")
         : QStringLiteral("Contour leeway: %1; fill will be placed below it")
@@ -792,7 +792,7 @@ void MainWindow::insertGeneratedRegionVariants(
                 auto shape = std::make_unique<fls::scene::Shape>();
                 shape->id = QStringLiteral("layer_%1").arg(
                     QUuid::createUuid().toString(QUuid::WithoutBraces));
-                shape->name = fls::detail::shapeName(
+                shape->name = defaultShapeLayerName(
                     static_cast<quint16>(placement.shapeId));
                 shape->setVectorShape(static_cast<quint16>(placement.shapeId));
                 shape->transform = fls::decomposeTransform2D(
@@ -853,7 +853,7 @@ void MainWindow::insertGeneratedRegionVariants(
     }
     const QString differenceText = differenceGuideCreated
         ? QStringLiteral(", and a difference heatmap") : QString();
-    statusBar()->showMessage(QStringLiteral(
+    canvasStatusBar_->showMessage(QStringLiteral(
                                  "Created %1 with %2 variants, %3 region groups, %4 shapes%5")
                                  .arg(displayName)
                                  .arg(variants.size())
@@ -899,7 +899,7 @@ void MainWindow::deleteSelectedLayers() {
 
 void MainWindow::copySelection() {
     if (copySelectionToClipboard()) {
-        statusBar()->showMessage(QStringLiteral("Copied selection"), 1500);
+        canvasStatusBar_->showMessage(QStringLiteral("Copied selection"), 1500);
     }
 }
 
@@ -914,13 +914,13 @@ void MainWindow::executeSelectionCommand(EditorCommandType type, bool flatten) {
     command.flatten = flatten;
     QString error;
     if (!state_->executeCommand(command, &error)) {
-        statusBar()->showMessage(error, 3000);
+        canvasStatusBar_->showMessage(error, 3000);
     }
 }
 
 void MainWindow::pasteClipboard() {
     if (!state_->hasProject() || state_->clipboard() == nullptr) {
-        statusBar()->showMessage(QStringLiteral("Clipboard is empty"), 2500);
+        canvasStatusBar_->showMessage(QStringLiteral("Clipboard is empty"), 2500);
         return;
     }
 
@@ -930,7 +930,7 @@ void MainWindow::pasteClipboard() {
         strippedLogos = stripRasterLayers(pasteBuffer.nodes);
     }
     if (pasteBuffer.nodes.empty()) {
-        statusBar()->showMessage(
+        canvasStatusBar_->showMessage(
             QStringLiteral("Logos can only be used in livery projects; nothing to paste"), 3000);
         return;
     }
@@ -961,13 +961,13 @@ void MainWindow::pasteClipboard() {
     }
     state_->commitProjectEdit();
     if (strippedLogos > 0) {
-        statusBar()->showMessage(
+        canvasStatusBar_->showMessage(
             QStringLiteral("Pasted selection (%1 logo%2 removed — not allowed in Group projects)")
                 .arg(strippedLogos)
                 .arg(strippedLogos == 1 ? QString() : QStringLiteral("s")),
             3000);
     } else {
-        statusBar()->showMessage(QStringLiteral("Pasted selection"), 1500);
+        canvasStatusBar_->showMessage(QStringLiteral("Pasted selection"), 1500);
     }
 }
 
@@ -977,10 +977,10 @@ void MainWindow::stampSelection() {
 
 void MainWindow::sampleGuideColorToSelection() {
     if (properties_ == nullptr || !properties_->sampleGuideColorToSelection()) {
-        statusBar()->showMessage(QStringLiteral("No guide color under cursor or no colorable selection"), 2500);
+        canvasStatusBar_->showMessage(QStringLiteral("No guide color under cursor or no colorable selection"), 2500);
         return;
     }
-    statusBar()->showMessage(QStringLiteral("Picked guide color"), 1500);
+    canvasStatusBar_->showMessage(QStringLiteral("Picked guide color"), 1500);
 }
 
 void MainWindow::insertShape(int shapeId) {
@@ -990,7 +990,7 @@ void MainWindow::insertShape(int shapeId) {
 
     auto layer = std::make_unique<fls::scene::Shape>();
     layer->id = state_->uniqueLayerId();
-    layer->name = fls::detail::shapeName(static_cast<quint16>(shapeId));
+    layer->name = defaultShapeLayerName(static_cast<quint16>(shapeId));
     layer->setVectorShape(static_cast<quint16>(shapeId));
     insertShapeLayer(std::move(layer));
 }
@@ -999,13 +999,13 @@ void MainWindow::replaceSelectedShape(int shapeId) {
     const QVector<fls::scene::Shape *> selected = state_->selectedLayers();
     if (selected.size() != 1 || !state_->selectedGuideLayerIds().isEmpty()
         || selected.front() == nullptr) {
-        statusBar()->showMessage(QStringLiteral("Select one shape to replace"), 2000);
+        canvasStatusBar_->showMessage(QStringLiteral("Select one shape to replace"), 2000);
         return;
     }
 
     fls::scene::Shape *layer = selected.front();
     if (!layer->isRaster() && layer->shapeId == shapeId) {
-        statusBar()->showMessage(QStringLiteral("Selected shape already uses this geometry"), 1500);
+        canvasStatusBar_->showMessage(QStringLiteral("Selected shape already uses this geometry"), 1500);
         return;
     }
 
@@ -1017,7 +1017,7 @@ void MainWindow::replaceSelectedShape(int shapeId) {
     if (canvas_ != nullptr) {
         canvas_->setFocus();
     }
-    statusBar()->showMessage(QStringLiteral("Replaced selected shape"), 1500);
+    canvasStatusBar_->showMessage(QStringLiteral("Replaced selected shape"), 1500);
 }
 
 void MainWindow::insertLogo(quint32 rasterId, int width, int height) {
@@ -1031,6 +1031,20 @@ void MainWindow::insertLogo(quint32 rasterId, int width, int height) {
     layer->setRasterShape(rasterId, width, height);
     layer->sourceLogoId = static_cast<quint16>(0x8000u | (rasterId & 0x7fffu));
     insertShapeLayer(std::move(layer));
+}
+
+QString MainWindow::defaultShapeLayerName(quint16 shapeId) {
+    static const ShapeNameStore names = []() {
+        ShapeNameStore store;
+        store.loadDefault();
+
+        return store;
+    }();
+    const QString name = names.name(shapeId);
+
+    return QStringLiteral("%1 (%2)")
+        .arg(name.isEmpty() ? QStringLiteral("Shape") : name)
+        .arg(shapeId);
 }
 
 void MainWindow::insertShapeLayer(std::unique_ptr<fls::scene::Shape> layer) {
@@ -1059,7 +1073,7 @@ void MainWindow::insertShapeLayer(std::unique_ptr<fls::scene::Shape> layer) {
     if (canvas_ != nullptr) {
         canvas_->setFocus();
     }
-    statusBar()->showMessage(QStringLiteral("Inserted %1").arg(insertedName), 1500);
+    canvasStatusBar_->showMessage(QStringLiteral("Inserted %1").arg(insertedName), 1500);
 }
 
 void MainWindow::placeTextDialog() {
@@ -1130,7 +1144,7 @@ void MainWindow::placeTextDialog() {
     for (const PlacedTextGlyph &glyph : line.glyphs) {
         auto layer = std::make_unique<fls::scene::Shape>();
         layer->id = state_->uniqueLayerId();
-        layer->name = fls::detail::shapeName(static_cast<quint16>(glyph.shapeId));
+        layer->name = defaultShapeLayerName(static_cast<quint16>(glyph.shapeId));
         layer->setVectorShape(static_cast<quint16>(glyph.shapeId));
         layer->x = startX + glyph.originX;
         layer->y = center.y();
@@ -1162,7 +1176,7 @@ void MainWindow::placeTextDialog() {
                                 QStringLiteral("Placed \"%1\" in %2.\n\nSkipped characters with no glyph in this font: %3")
                                     .arg(groupName, fontName, line.skipped));
     } else {
-        statusBar()->showMessage(QStringLiteral("Placed \"%1\" (%2)").arg(groupName, fontName), 2000);
+        canvasStatusBar_->showMessage(QStringLiteral("Placed \"%1\" (%2)").arg(groupName, fontName), 2000);
     }
 }
 
@@ -1204,7 +1218,7 @@ void MainWindow::saveCurrentSelectionAsCustomGroup() {
         return;
     }
     shapesBrowser_->addCustomGroup(name, clipboard);
-    statusBar()->showMessage(QStringLiteral("Saved custom group %1").arg(name), 2000);
+    canvasStatusBar_->showMessage(QStringLiteral("Saved custom group %1").arg(name), 2000);
 }
 
 void MainWindow::insertCustomGroup(const QString &name, const ProjectClipboard &clipboard) {
@@ -1265,7 +1279,7 @@ void MainWindow::insertCustomGroup(const QString &name, const ProjectClipboard &
     if (canvas_ != nullptr) {
         canvas_->setFocus();
     }
-    statusBar()->showMessage(QStringLiteral("Inserted custom group"), 1500);
+    canvasStatusBar_->showMessage(QStringLiteral("Inserted custom group"), 1500);
 }
 
 bool MainWindow::importGuideLayer(const QString &path, QString *error) {
@@ -1361,7 +1375,7 @@ bool MainWindow::importGuideLayer(const QString &path, QString *error) {
         canvas_->setTool(QStringLiteral("transform"));
         canvas_->setFocus();
     }
-    statusBar()->showMessage(QStringLiteral("Added guide layer %1").arg(guideName), 2500);
+    canvasStatusBar_->showMessage(QStringLiteral("Added guide layer %1").arg(guideName), 2500);
     return true;
 }
 
@@ -1373,7 +1387,7 @@ void MainWindow::groupOrUngroupSelection() {
         ? EditorCommandType::Ungroup : EditorCommandType::Group;
     QString error;
     if (!state_->executeCommand(command, &error)) {
-        statusBar()->showMessage(error, 3000);
+        canvasStatusBar_->showMessage(error, 3000);
     }
 }
 
@@ -1412,18 +1426,18 @@ void MainWindow::redo() {
 
 void MainWindow::centerViewOnSelection() {
     if (canvas_ == nullptr || !canvas_->centerViewOnSelection()) {
-        statusBar()->showMessage(QStringLiteral("No selection to center"), 1500);
+        canvasStatusBar_->showMessage(QStringLiteral("No selection to center"), 1500);
         return;
     }
-    statusBar()->showMessage(QStringLiteral("Centered view on selection"), 1500);
+    canvasStatusBar_->showMessage(QStringLiteral("Centered view on selection"), 1500);
 }
 
 void MainWindow::fitViewToVisibleArea() {
     if (canvas_ == nullptr || !canvas_->fitViewToVisibleArea()) {
-        statusBar()->showMessage(QStringLiteral("Open a project to fit the visible area"), 1500);
+        canvasStatusBar_->showMessage(QStringLiteral("Open a project to fit the visible area"), 1500);
         return;
     }
-    statusBar()->showMessage(QStringLiteral("Fit view to visible area"), 1500);
+    canvasStatusBar_->showMessage(QStringLiteral("Fit view to visible area"), 1500);
 }
 
 void MainWindow::noteProjectGeometryChanged(bool refreshPreviews) {
@@ -1492,7 +1506,7 @@ void MainWindow::setToolName(const QString &name) {
         toolSettings_->setTool(name);
         refreshToolSettings();
     }
-    statusBar()->showMessage(QStringLiteral("Tool: %1").arg(name), 1500);
+    canvasStatusBar_->showMessage(QStringLiteral("Tool: %1").arg(name), 1500);
 }
 
 } // namespace gui
