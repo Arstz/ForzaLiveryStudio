@@ -1420,6 +1420,11 @@ bool MainWindow::restoreLayout() {
     positionToolSettings();
     if (!geometry.isEmpty()) {
         restoreGeometry(geometry);
+#ifdef Q_OS_WIN
+        if (isMaximized() && isFullScreen()) {
+            setWindowState(windowState() & ~Qt::WindowFullScreen);
+        }
+#endif
     }
 
     return restored;

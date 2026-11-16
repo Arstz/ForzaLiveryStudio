@@ -1,5 +1,6 @@
 #include "main_window.h"
 #include "theme_manager.h"
+#include "title_menu_bar.h"
 #include "system_integration.h"
 #include "image_io.h"
 #include "car_model_renderer.h"
@@ -108,6 +109,7 @@ int main(int argc, char *argv[]) {
     QCoreApplication::setAttribute(Qt::AA_ShareOpenGLContexts);
     QApplication app(argc, argv);
     gui::applyUiTheme(app, gui::loadUiTheme());
+    gui::installWindowCaptionOverrides(app);
 
     if (QCoreApplication::arguments().contains(QStringLiteral("--shadertest"))) {
         QOffscreenSurface surface;

@@ -6,8 +6,10 @@
 #include <QApplication>
 #include <QEvent>
 #include <QAbstractButton>
+#include <QDialog>
 #include <QFontMetrics>
 #include <QHBoxLayout>
+#include <QLayout>
 #include <QMainWindow>
 #include <QMenuBar>
 #include <QMouseEvent>
@@ -37,12 +39,35 @@ constexpr int kCaptionMenuHorizontalPadding = 8;
 constexpr LPARAM kSuppressNonClientRepaint = -1;
 constexpr double kCaptionButtonWidthRatio = 1.5;
 constexpr double kRestoreOffset = 3.0;
+constexpr const char *kCaptionManagerName = "WindowCaptionManager";
+const auto kNativeStateUpdateEvent = static_cast<QEvent::Type>(QEvent::registerEventType());
 
 enum class CaptionAction { Minimize, Maximize, Close };
 
+bool nativeWindowMaximized(const QWidget &window) {
+    const HWND handle = reinterpret_cast<HWND>(window.internalWinId());
+
+    return handle != nullptr && IsWindowVisible(handle) ? IsZoomed(handle) != FALSE : window.isMaximized();
+}
+
+bool nativeClientCoversMonitor(HWND window, POINT *origin) {
+    RECT client{};
+    MONITORINFO monitor{};
+
+    monitor.cbSize = sizeof(monitor);
+    if ((GetWindowLongPtrW(window, GWL_STYLE) & WS_CAPTION) != WS_CAPTION
+        || !GetClientRect(window, &client) || !ClientToScreen(window, origin)
+        || !GetMonitorInfoW(MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST), &monitor)) {
+        return false;
+    }
+    OffsetRect(&client, origin->x, origin->y);
+
+    return EqualRect(&client, &monitor.rcMonitor) != FALSE;
+}
+
 class CaptionLogo final : public QWidget {
 public:
-    CaptionLogo(QMainWindow &window, QWidget *parent) : QWidget(parent), window_(&window) {
+    CaptionLogo(QWidget &window, QWidget *parent) : QWidget(parent), window_(&window) {
         setAttribute(Qt::WA_TransparentForMouseEvents);
         setFixedSize(kDefaultCaptionHeight, kDefaultCaptionHeight);
     }
@@ -65,7 +90,7 @@ protected:
     }
 
 private:
-    QPointer<QMainWindow> window_;
+    QPointer<QWidget> window_;
 };
 
 void applyNativeFrameTheme(HWND window) {
@@ -84,10 +109,11 @@ void applyNativeFrameTheme(HWND window) {
     DwmSetWindowAttribute(window, DWMWA_TEXT_COLOR, &text, sizeof(text));
 }
 
-void configureNativeFrame(HWND window) {
+void configureNativeFrame(HWND window, bool mainWindow) {
     const LONG_PTR style = GetWindowLongPtrW(window, GWL_STYLE);
-    const LONG_PTR frameStyle = style | WS_CAPTION | WS_THICKFRAME | WS_SYSMENU
-        | WS_MINIMIZEBOX | WS_MAXIMIZEBOX;
+    const LONG_PTR frameStyle = mainWindow
+        ? style | WS_CAPTION | WS_THICKFRAME | WS_SYSMENU | WS_MINIMIZEBOX | WS_MAXIMIZEBOX
+        : style | WS_CAPTION;
     const DWMNCRENDERINGPOLICY renderingPolicy = DWMNCRP_ENABLED;
     const MARGINS margins{};
 
@@ -97,7 +123,9 @@ void configureNativeFrame(HWND window) {
     DwmSetWindowAttribute(window, DWMWA_NCRENDERING_POLICY, &renderingPolicy, sizeof(renderingPolicy));
     DwmExtendFrameIntoClientArea(window, &margins);
     applyNativeFrameTheme(window);
-    EnableMenuItem(GetSystemMenu(window, FALSE), SC_CLOSE, MF_BYCOMMAND | MF_ENABLED);
+    if (mainWindow) {
+        EnableMenuItem(GetSystemMenu(window, FALSE), SC_CLOSE, MF_BYCOMMAND | MF_ENABLED);
+    }
     SetWindowPos(window, nullptr, 0, 0, 0, 0,
         SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
 }
@@ -119,22 +147,21 @@ void calculateNativeClientArea(const MSG &event, qintptr *result) {
 
 class CaptionButton final : public QAbstractButton {
 public:
-    CaptionButton(QMainWindow &window, CaptionAction action, QWidget *parent)
+    CaptionButton(QWidget &window, CaptionAction action, QWidget *parent)
         : QAbstractButton(parent), window_(&window), action_(action) {
         setFocusPolicy(Qt::NoFocus);
         setMouseTracking(true);
         updateWindowState();
         connect(this, &QAbstractButton::clicked, &window, [this]() {
+            const HWND handle = reinterpret_cast<HWND>(window_->internalWinId());
+
             switch (action_) {
             case CaptionAction::Minimize:
-                window_->showMinimized();
+                PostMessageW(handle, WM_SYSCOMMAND, SC_MINIMIZE, 0);
                 break;
             case CaptionAction::Maximize:
-                if (window_->isMaximized()) {
-                    window_->showNormal();
-                } else {
-                    window_->showMaximized();
-                }
+                PostMessageW(handle, WM_SYSCOMMAND,
+                    nativeWindowMaximized(*window_) ? SC_RESTORE : SC_MAXIMIZE, 0);
                 break;
             case CaptionAction::Close:
                 window_->close();
@@ -146,7 +173,7 @@ public:
     void updateWindowState() {
         const QString label = action_ == CaptionAction::Minimize ? QStringLiteral("Minimize")
             : action_ == CaptionAction::Close ? QStringLiteral("Close")
-            : window_->isMaximized() ? QStringLiteral("Restore") : QStringLiteral("Maximize");
+            : nativeWindowMaximized(*window_) ? QStringLiteral("Restore") : QStringLiteral("Maximize");
 
         setToolTip(label);
         setAccessibleName(label);
@@ -187,7 +214,7 @@ protected:
             painter.drawLine(glyph.bottomLeft(), glyph.bottomRight());
             break;
         case CaptionAction::Maximize:
-            if (window_->isMaximized()) {
+            if (nativeWindowMaximized(*window_)) {
                 painter.drawRect(glyph.adjusted(kRestoreOffset, 0, 0, -kRestoreOffset));
                 painter.fillRect(glyph.adjusted(0, kRestoreOffset, -kRestoreOffset, 0),
                     isDown() ? colors.selection : hovered ? uiSelectionHoverColor(colors.selection) : colors.main);
@@ -204,14 +231,14 @@ protected:
     }
 
 private:
-    QPointer<QMainWindow> window_;
+    QPointer<QWidget> window_;
     CaptionAction action_;
 };
 
 class CaptionControls final : public QWidget {
 public:
-    explicit CaptionControls(QMainWindow &window, QWidget *parent)
-        : QWidget(parent), buttons_{
+    explicit CaptionControls(QWidget &window, QWidget *parent)
+        : QWidget(parent), window_(&window), buttons_{
             new CaptionButton(window, CaptionAction::Minimize, this),
             new CaptionButton(window, CaptionAction::Maximize, this),
             new CaptionButton(window, CaptionAction::Close, this)} {
@@ -234,6 +261,14 @@ public:
         updateGeometry();
     }
 
+    void updateWindowFlags() {
+        const Qt::WindowFlags flags = window_->windowFlags();
+
+        buttons_[0]->setVisible(flags.testFlag(Qt::WindowMinimizeButtonHint));
+        buttons_[1]->setVisible(flags.testFlag(Qt::WindowMaximizeButtonHint));
+        buttons_[2]->setVisible(flags.testFlag(Qt::WindowCloseButtonHint));
+    }
+
     void updateWindowState() {
         for (auto *button : buttons_) {
             button->updateWindowState();
@@ -249,12 +284,13 @@ public:
     }
 
 private:
+    QPointer<QWidget> window_;
     std::array<CaptionButton *, 3> buttons_;
 };
 
 class TitleMenuBar final : public QMenuBar, private QAbstractNativeEventFilter {
 public:
-    explicit TitleMenuBar(QMainWindow &window)
+    explicit TitleMenuBar(QWidget &window)
         : QMenuBar(&window)
         , window_(&window)
         , logo_(new CaptionLogo(window, this))
@@ -264,7 +300,10 @@ public:
         setCornerWidget(controls_, Qt::TopRightCorner);
         window.installEventFilter(this);
         QCoreApplication::instance()->installNativeEventFilter(this);
+        controls_->updateWindowFlags();
+        controls_->updateWindowState();
         updateCaptionMetrics();
+        initializeNativeFrame();
     }
 
     ~TitleMenuBar() override {
@@ -274,6 +313,21 @@ public:
     }
 
 protected:
+    void paintEvent(QPaintEvent *event) override {
+        QMenuBar::paintEvent(event);
+        if (qobject_cast<QMainWindow *>(window_) != nullptr) {
+            return;
+        }
+        QPainter painter(this);
+        const QRect titleBounds = rect().adjusted(logo_->width() + kUiSpacing, 0,
+            -controls_->width() - kUiSpacing, -kUiControlBorderWidth);
+        const QString title = fontMetrics().elidedText(window_->windowTitle(), Qt::ElideRight,
+            std::max(0, titleBounds.width()));
+
+        painter.setPen(uiColors(currentUiTheme()).text);
+        painter.drawText(titleBounds, Qt::AlignLeft | Qt::AlignVCenter, title);
+    }
+
     bool nativeEventFilter(const QByteArray &eventType, void *message, qintptr *result) override {
         const auto *event = static_cast<const MSG *>(message);
 
@@ -283,6 +337,31 @@ protected:
             return false;
         }
         switch (event->message) {
+        case WM_ENTERSIZEMOVE:
+            nativeMoveActive_ = true;
+            return false;
+        case WM_EXITSIZEMOVE:
+            nativeMoveActive_ = false;
+            scheduleNativeStateUpdate();
+            return false;
+        case WM_SIZE: {
+            POINT origin{};
+
+            scheduleNativeStateUpdate();
+            if ((event->wParam == SIZE_MAXIMIZED || event->wParam == SIZE_RESTORED)
+                && nativeClientCoversMonitor(nativeWindow_, &origin)) {
+                PostMessageW(nativeWindow_, WM_MOVE, 0, MAKELPARAM(origin.x, origin.y));
+                *result = 0;
+
+                return true;
+            }
+
+            return false;
+        }
+        case WM_WINDOWPOSCHANGED:
+        case WM_STYLECHANGED:
+            scheduleNativeStateUpdate();
+            return false;
         case WM_NCCALCSIZE:
             calculateNativeClientArea(*event, result);
             break;
@@ -300,6 +379,12 @@ protected:
     }
 
     bool event(QEvent *event) override {
+        if (event->type() == kNativeStateUpdateEvent) {
+            nativeStateUpdatePending_ = false;
+            synchronizeNativeState();
+
+            return true;
+        }
         const bool result = QMenuBar::event(event);
 
         switch (event->type()) {
@@ -324,16 +409,24 @@ protected:
             case QEvent::WindowIconChange:
                 logo_->update();
                 break;
+            case QEvent::WindowTitleChange:
+                update();
+                break;
             case QEvent::WindowActivate:
             case QEvent::WindowDeactivate:
                 applyNativeFrameTheme(nativeWindow_);
                 break;
             case QEvent::WinIdChange:
             case QEvent::Show:
-            case QEvent::WindowStateChange:
-                updateCaptionMetrics();
+                controls_->updateWindowFlags();
                 controls_->updateWindowState();
+                updateCaptionMetrics();
                 initializeNativeFrame();
+                scheduleNativeStateUpdate();
+                break;
+            case QEvent::WindowStateChange:
+                controls_->updateWindowState();
+                scheduleNativeStateUpdate();
                 break;
             default:
                 break;
@@ -360,6 +453,40 @@ protected:
     }
 
 private:
+
+    void scheduleNativeStateUpdate() {
+        if (nativeStateUpdatePending_ || synchronizingNativeState_ || nativeMoveActive_) {
+            return;
+        }
+        nativeStateUpdatePending_ = true;
+        QCoreApplication::postEvent(this, new QEvent(kNativeStateUpdateEvent), Qt::LowEventPriority);
+    }
+
+    void synchronizeNativeState() {
+        if (window_ == nullptr || frameWindow_ == nullptr || nativeWindow_ == nullptr
+            || !IsWindowVisible(nativeWindow_) || nativeMoveActive_ || IsIconic(nativeWindow_)) {
+            return;
+        }
+        const QScopedValueRollback<bool> guard(synchronizingNativeState_, true);
+        const LONG_PTR style = GetWindowLongPtrW(nativeWindow_, GWL_STYLE);
+        const Qt::WindowStates nativeState = IsZoomed(nativeWindow_)
+            ? Qt::WindowMaximized : Qt::WindowNoState;
+        const Qt::WindowStates stateMask = Qt::WindowMinimized | Qt::WindowMaximized | Qt::WindowFullScreen;
+
+        if ((style & WS_CAPTION) != WS_CAPTION) {
+            return;
+        }
+        if ((frameWindow_->windowStates() & stateMask) != nativeState) {
+            frameWindow_->setWindowStates(nativeState);
+        }
+        if ((window_->windowState() & stateMask) != nativeState) {
+            QWindowStateChangeEvent event(window_->windowState());
+
+            QCoreApplication::sendEvent(frameWindow_, &event);
+        }
+        controls_->updateWindowState();
+    }
+
     LRESULT hitTest(const QPoint &screenPosition) const {
         POINT clientPosition{screenPosition.x(), screenPosition.y()};
         const POINT position = clientPosition;
@@ -446,7 +573,7 @@ private:
             return;
         }
         configuredWindow_ = nativeWindow_;
-        configureNativeFrame(nativeWindow_);
+        configureNativeFrame(nativeWindow_, qobject_cast<QMainWindow *>(window_) != nullptr);
     }
 
     void updateCaptionMetrics() {
@@ -483,20 +610,74 @@ private:
         applyNativeFrameTheme(nativeWindow_);
     }
 
-    QPointer<QMainWindow> window_;
+    QPointer<QWidget> window_;
     QPointer<QWindow> frameWindow_;
     CaptionLogo *logo_;
     CaptionControls *controls_;
     HWND nativeWindow_ = nullptr;
     HWND configuredWindow_ = nullptr;
     bool updating_ = false;
+    bool nativeStateUpdatePending_ = false;
+    bool synchronizingNativeState_ = false;
+    bool nativeMoveActive_ = false;
+};
+
+class WindowCaptionManager final : public QObject {
+public:
+    explicit WindowCaptionManager(QApplication &application) : QObject(&application) {
+        setObjectName(QString::fromLatin1(kCaptionManagerName));
+        application.installEventFilter(this);
+    }
+
+protected:
+    bool eventFilter(QObject *watched, QEvent *event) override {
+        if (installing_ || (event->type() != QEvent::Polish && event->type() != QEvent::Show
+            && event->type() != QEvent::LayoutRequest
+            && event->type() != QEvent::WinIdChange)) {
+            return false;
+        }
+        auto *dialog = qobject_cast<QDialog *>(watched);
+
+        if (dialog == nullptr || !dialog->isWindow() || dialog->layout() == nullptr
+            || dialog->windowType() != Qt::Dialog) {
+            return false;
+        }
+        auto *caption = dialog->findChild<QMenuBar *>(QStringLiteral("WindowTitleMenu"), Qt::FindDirectChildrenOnly);
+
+        if (caption != nullptr && dialog->layout()->menuBar() == caption) {
+            return false;
+        }
+        const QScopedValueRollback<bool> guard(installing_, true);
+
+        if (caption == nullptr) {
+            caption = new TitleMenuBar(*dialog);
+        }
+        dialog->layout()->setMenuBar(caption);
+
+        return false;
+    }
+
+private:
+    bool installing_ = false;
 };
 
 } // namespace
 #endif
 
+void installWindowCaptionOverrides(QApplication &application) {
+#ifdef Q_OS_WIN
+    QCoreApplication::setAttribute(Qt::AA_DontUseNativeDialogs);
+    if (application.findChild<QObject *>(QString::fromLatin1(kCaptionManagerName), Qt::FindDirectChildrenOnly) == nullptr) {
+        new WindowCaptionManager(application);
+    }
+#else
+    Q_UNUSED(application);
+#endif
+}
+
 QMenuBar *createTitleMenuBar(QMainWindow &window) {
 #ifdef Q_OS_WIN
+    installWindowCaptionOverrides(*qApp);
     return new TitleMenuBar(window);
 #else
     return new QMenuBar(&window);

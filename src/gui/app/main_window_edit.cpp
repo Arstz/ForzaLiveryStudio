@@ -1303,17 +1303,17 @@ bool MainWindow::importGuideLayer(const QString &path, QString *error) {
     }
 
     QString embedFormat;
-    QProgressDialog progress(decodedFormat == QByteArrayLiteral("svg")
-                                 ? QStringLiteral("Preparing SVG guide for project storage...")
-                                 : QStringLiteral("Converting guide image for project storage..."),
-                             QString(),
-                             0,
-                             0,
-                             this);
+    QDialog progress(this);
+    auto *progressLayout = new QVBoxLayout(&progress);
+    auto *progressBar = new QProgressBar(&progress);
+
+    progressLayout->addWidget(new QLabel(decodedFormat == QByteArrayLiteral("svg")
+        ? QStringLiteral("Preparing SVG guide for project storage...")
+        : QStringLiteral("Converting guide image for project storage..."), &progress));
+    progressBar->setRange(0, 0);
+    progressLayout->addWidget(progressBar);
     progress.setWindowTitle(QStringLiteral("Converting Image"));
     progress.setWindowModality(Qt::ApplicationModal);
-    progress.setCancelButton(nullptr);
-    progress.setMinimumDuration(0);
     progress.show();
     QApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
 

@@ -114,15 +114,24 @@ the application entry point and links the UI library.
 
 ### GUI appearance
 
-On Windows, `title_menu_bar.*` integrates the main menus with the caption through
-WinAPI client-area calculation. The frame retains native side and bottom resize
-borders, and Qt measures the frame using the native border geometry. DWM owns
-frame painting, with native surface, text, and dark-mode attributes following
+On Windows, `title_menu_bar.*` integrates the main menus and dialog captions
+through WinAPI client-area calculation. An application event filter installs
+dialog caption bars in their root layouts. File, color, and message dialogs use
+Qt surfaces. Dialog controls follow their existing window flags, while custom
+popup, dock, and toolbar chrome stays independent. The frame retains native side
+and bottom resize borders, and Qt measures the frame using the native border
+geometry. DWM owns frame painting, with native surface, text, and dark-mode attributes following
 the application theme. Frame colors refresh with theme and activation changes.
-Native frame configuration runs once when the main native handle is assigned,
+Native frame configuration runs once when the native handle is assigned,
 before Qt creates its native child windows. Client-area calculation follows the
 current native styles during window state transitions. Native activation updates
 preserve custom caption painting.
+Caption state and system commands follow the native window state. Native
+geometry notifications and state classification remain separate when the
+client area fills a monitor. Queued reconciliation lets Qt finish native move
+and resize transitions before refreshing its state and the caption controls.
+State notifications preserve Qt's normal-window geometry. Saved maximized
+layouts normalize their state during restoration.
 Resize borders retain hit-test priority.
 Theme-painted window controls occupy the right corner; the application logo
 precedes the menus, and the title remains available to the operating system.
