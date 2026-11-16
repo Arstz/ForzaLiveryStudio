@@ -12,7 +12,95 @@ namespace gui {
 namespace {
 
 constexpr int kSwatchSize = kUiControlHeight;
-constexpr int kSwatchesPerRow = 6;
+
+class SwatchLayout final : public QLayout {
+public:
+    explicit SwatchLayout(QWidget *parent) : QLayout(parent) {
+        setContentsMargins(kUiSpacing, kUiSpacing, kUiSpacing, kUiSpacing);
+        setSpacing(kUiSpacing);
+    }
+
+    ~SwatchLayout() override {
+        while (QLayoutItem *item = takeAt(0)) {
+            delete item;
+        }
+    }
+
+    void addItem(QLayoutItem *item) override {
+        items_.push_back(item);
+        invalidate();
+    }
+
+    int count() const override {
+        return static_cast<int>(items_.size());
+    }
+
+    QLayoutItem *itemAt(int index) const override {
+        return items_.value(index);
+    }
+
+    QLayoutItem *takeAt(int index) override {
+        if (index < 0 || index >= count()) {
+            return nullptr;
+        }
+        QLayoutItem *item = items_.takeAt(index);
+        invalidate();
+
+        return item;
+    }
+
+    Qt::Orientations expandingDirections() const override {
+        return Qt::Horizontal;
+    }
+
+    QSize minimumSize() const override {
+        const QMargins margins = contentsMargins();
+
+        return QSize(kSwatchSize + margins.left() + margins.right(),
+            kSwatchSize + margins.top() + margins.bottom());
+    }
+
+    QSize sizeHint() const override {
+        return minimumSize();
+    }
+
+    bool hasHeightForWidth() const override {
+        return true;
+    }
+
+    int heightForWidth(int width) const override {
+        const QMargins margins = contentsMargins();
+        const int columns = columnsForWidth(width);
+        const int rows = (count() + columns - 1) / columns;
+
+        return rows * kSwatchSize + std::max(0, rows - 1) * spacing()
+            + margins.top() + margins.bottom();
+    }
+
+    void setGeometry(const QRect &rect) override {
+        const QMargins margins = contentsMargins();
+        const QPoint origin = rect.topLeft() + QPoint(margins.left(), margins.top());
+        const int columns = columnsForWidth(rect.width());
+
+        QLayout::setGeometry(rect);
+        for (int index = 0; index < count(); ++index) {
+            const QPoint position = origin + QPoint(
+                (index % columns) * (kSwatchSize + spacing()),
+                (index / columns) * (kSwatchSize + spacing()));
+            items_[index]->setGeometry(QRect(position, QSize(kSwatchSize, kSwatchSize)));
+        }
+    }
+
+private:
+    int columnsForWidth(int width) const {
+        const QMargins margins = contentsMargins();
+        const int contentWidth = width - margins.left() - margins.right();
+
+        return std::max(1, (contentWidth + spacing()) / (kSwatchSize + spacing()));
+    }
+
+    QList<QLayoutItem *> items_;
+};
 
 class SwatchButton final : public QPushButton {
 public:
@@ -34,9 +122,7 @@ protected:
 
 ColorPaletteWidget::ColorPaletteWidget(QWidget *parent)
     : QWidget(parent) {
-    grid_ = new QGridLayout(this);
-    grid_->setContentsMargins(6, 6, 6, 6);
-    grid_->setSpacing(6);
+    layout_ = new SwatchLayout(this);
 
     addButton_ = new QPushButton(this);
     addButton_->setIcon(uiAddIcon());
@@ -86,7 +172,7 @@ void ColorPaletteWidget::refreshTheme() {
 }
 
 void ColorPaletteWidget::rebuild() {
-    while (QLayoutItem *item = grid_->takeAt(0)) {
+    while (QLayoutItem *item = layout_->takeAt(0)) {
         if (QWidget *widget = item->widget()) {
             if (widget != addButton_) {
                 widget->deleteLater();
@@ -95,8 +181,6 @@ void ColorPaletteWidget::rebuild() {
         delete item;
     }
 
-    int row = 0;
-    int column = 0;
     const int swatchCount = swatches_ == nullptr ? 0 : swatches_->size();
     for (int i = 0; i < swatchCount; ++i) {
         const Color color = swatches_->at(i);
@@ -119,17 +203,11 @@ void ColorPaletteWidget::rebuild() {
                 removeSwatch(i);
             }
         });
-        grid_->addWidget(button, row, column);
-        if (++column >= kSwatchesPerRow) {
-            column = 0;
-            ++row;
-        }
+        layout_->addWidget(button);
     }
 
     addButton_->setEnabled(swatches_ != nullptr);
-    grid_->addWidget(addButton_, row, column);
-    grid_->setRowStretch(row + 1, 1);
-    grid_->setColumnStretch(kSwatchesPerRow, 1);
+    layout_->addWidget(addButton_);
 }
 
 void ColorPaletteWidget::editSwatches(const std::function<void()> &edit) {

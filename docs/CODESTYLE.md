@@ -19,6 +19,7 @@ These describe how code should read going forward; they are not a task list.
 - Prefer an implicit or declarative definition over an ambiguous manual cycle:
   reach for a named algorithm, a table, or a single expression before writing an
   index-driven loop that reconstructs one.
+- Do not hardcode references or derive variables from plaintext.
 
 ## Structure
 

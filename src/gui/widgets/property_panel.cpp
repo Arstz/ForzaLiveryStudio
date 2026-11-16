@@ -40,6 +40,25 @@ bool isColorableShape(const fls::scene::Shape *layer) {
 
 constexpr int kPropertyIconExtent = 14;
 constexpr int kPropertyLabelSpacing = kUiSpacing;
+constexpr int kPropertyNameCharacterCount = 25;
+
+class PropertyNameEdit final : public QLineEdit {
+public:
+    using QLineEdit::QLineEdit;
+
+    QSize sizeHint() const override {
+        QStyleOptionFrame option;
+        QSize hint = QLineEdit::sizeHint();
+        const QMargins margins = textMargins();
+        const QSize textSize(fontMetrics().averageCharWidth() * kPropertyNameCharacterCount
+            + margins.left() + margins.right() + 2 * kUiControlBorderWidth, fontMetrics().height());
+
+        initStyleOption(&option);
+        hint.setWidth(style()->sizeFromContents(QStyle::CT_LineEdit, &option, textSize, this).width());
+
+        return hint;
+    }
+};
 
 class ArithmeticExpressionParser final {
 public:
@@ -711,7 +730,7 @@ PropertyPanel::PropertyPanel(EditorState *state, QWidget *parent)
     : QWidget(parent)
     , state_(state) {
     auto *layout = new QFormLayout(this);
-    name_ = new QLineEdit(this);
+    name_ = new PropertyNameEdit(this);
     shapeId_ = new QSpinBox(this);
     shapeId_->setRange(0, 0xffff);
     shapeId_->setDisplayIntegerBase(16);
@@ -757,6 +776,7 @@ PropertyPanel::PropertyPanel(EditorState *state, QWidget *parent)
         QWidget *widget = it.key();
         widget->setObjectName(QStringLiteral("property.%1").arg(it.value()));
         if (qobject_cast<QAbstractSpinBox *>(widget) != nullptr) {
+            widget->setSizePolicy(QSizePolicy::Ignored, widget->sizePolicy().verticalPolicy());
             widget->installEventFilter(this);
         }
         if (auto *box = qobject_cast<QDoubleSpinBox *>(widget)) {

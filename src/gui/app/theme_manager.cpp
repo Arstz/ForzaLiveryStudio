@@ -482,6 +482,11 @@ QString themeStyleSheet(UiTheme theme) {
             background: transparent; border-color: transparent;
             padding: @baselineTopInsetpx @toolbarPaddingpx @baselineBottomInsetpx @toolbarPaddingpx;
         }
+        QToolBar#MainToolBar:vertical QToolButton {
+            min-height: @squareExtentpx; max-height: @squareExtentpx;
+            min-width: @squareExtentpx; max-width: @squareExtentpx;
+            padding: 0;
+        }
         QToolBar#MainToolBar QToolButton:checked,
         QToolBar#MainToolBar QToolButton:pressed { color: @selectedText; background: @selection; border-color: transparent; }
         QToolBar#MainToolBar QToolButton:hover,
@@ -1005,10 +1010,11 @@ QColor uiSelectionHoverColor(const QColor &color) {
 }
 
 void applyUiToolbarMetrics(QToolBar &toolbar) {
-    const int iconExtent = uiTextPixelSize(toolbar.font());
     const bool mainToolbar = toolbar.objectName() == QStringLiteral("MainToolBar");
     const bool settingsToolbar = toolbar.objectName() == QStringLiteral("ToolSettingsBar");
     const bool horizontal = toolbar.orientation() == Qt::Horizontal;
+    const int iconExtent = mainToolbar && !horizontal
+        ? kUiControlHeight - 2 * kUiControlBorderWidth : uiTextPixelSize(toolbar.font());
 
     toolbar.ensurePolished();
     toolbar.setIconSize(QSize(iconExtent, iconExtent));

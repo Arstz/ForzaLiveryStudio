@@ -8,7 +8,7 @@
 #include <functional>
 #include <optional>
 
-class QGridLayout;
+class QLayout;
 class QPushButton;
 
 namespace gui {
@@ -39,7 +39,7 @@ private:
     std::function<void(const Color &)> applyColorCallback_;
     std::function<void()> beginEditCallback_;
     std::function<void()> commitEditCallback_;
-    QGridLayout *grid_ = nullptr;
+    QLayout *layout_ = nullptr;
     QPushButton *addButton_ = nullptr;
 };
 
