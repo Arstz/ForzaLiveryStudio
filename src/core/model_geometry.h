@@ -121,6 +121,13 @@ struct CarLocator {
     ModelVec3 position;
 };
 
+struct CarWheelMount {
+    ModelMat4 transform;
+    int instanceId = -1;
+    bool front = true;
+    bool left = true;
+};
+
 struct CarModel {
     QString sourcePath;
     QString mediaName;
@@ -131,6 +138,7 @@ struct CarModel {
     std::vector<CarMesh> liveryProjectionMeshes;
     std::vector<CarPartOption> partOptions;
     std::vector<CarLocator> locators;
+    std::vector<CarWheelMount> wheelMounts;
     ModelVec3 boundsMin;
     ModelVec3 boundsMax;
 

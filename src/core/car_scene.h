@@ -26,6 +26,9 @@ struct WheelSizing {
 CarModel loadCarBin(const QString &path, QString *error = nullptr,
                     const WheelSizing &wheels = {});
 
+void appendCarRim(CarModel &car, const CarModel &rim, const CarWheelMount &mount,
+                  const AxleSizing &sizing);
+
 void appendApproximateTires(
     CarModel &car, const CarModel &leftTemplate, const CarModel &rightTemplate,
     const WheelSizing &wheels = {});

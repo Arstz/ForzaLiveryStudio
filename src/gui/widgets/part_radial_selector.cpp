@@ -33,7 +33,7 @@ struct PartChoiceName {
 
 QString stripPartName(QString text) {
     static const QRegularExpression kPartNames(
-        QStringLiteral(R"(\b(?:(?:front|rear)\s+(?:bumper|wing|spoiler)|side\s+skirts?|(?:wide[\s-]?body|body)[\s-]*kit|wide[\s-]?body|body|bumper|hood|bonnet|wing|spoiler|skirts?)\b)"),
+        QStringLiteral(R"(\b(?:(?:front|rear)\s+(?:bumper|wing|spoiler|rim|tire)|tire\s+compound|side\s+skirts?|(?:wide[\s-]?body|body)[\s-]*kit|wide[\s-]?body|body|bumper|hood|bonnet|wing|spoiler|skirts?)\b)"),
         QRegularExpression::CaseInsensitiveOption);
     static const QRegularExpression kOuterSeparators(QStringLiteral(R"(^[\s:/–—-]+|[\s:/–—-]+$)"));
 
@@ -82,7 +82,7 @@ void compactChoiceNames(QVector<PartRadialChoice> &choices) {
 
     names.reserve(choices.size());
     for (const auto &choice : choices) {
-        names.push_back(parseChoiceName(choice.name));
+        names.push_back(choice.preserveName ? PartChoiceName{choice.name, {}} : parseChoiceName(choice.name));
         ++brandCounts[names.back().brand.toCaseFolded()];
     }
     for (qsizetype index = 0; index < choices.size(); ++index) {
@@ -118,6 +118,15 @@ PartRadialSelector::PartRadialSelector(QWidget *parent) : QWidget(parent) {
 
 void PartRadialSelector::beginSelection(const QPoint &origin, const QString &title,
     QVector<PartRadialChoice> choices, int selectedOptionId, PreviewProvider previewProvider) {
+    const QFontMetrics helpMetrics(uiSecondaryTextFont());
+    const bool multiplePages = choices.size() > kChoicesPerPage;
+    const qreal hintHeight = helpMetrics.height() + kUiMargin * 2;
+    const bool counterBelow = origin.y() <= (height() - hintHeight) * 0.5;
+    const qreal counterSpace = multiplePages ? helpMetrics.height() + kUiSpacing : 0;
+    const QRectF available(kRadialMargin, kRadialMargin + (counterBelow ? 0 : counterSpace),
+        std::max(1, width() - kRadialMargin * 2),
+        std::max(1.0, height() - kRadialMargin * 2 - hintHeight - counterSpace));
+
     cancelSelection();
     if (choices.isEmpty()) return;
     compactChoiceNames(choices);
@@ -128,12 +137,15 @@ void PartRadialSelector::beginSelection(const QPoint &origin, const QString &tit
     setAccessibleName(title);
     setAccessibleDescription(QStringLiteral("Drag to a part and release to apply. Escape cancels. Scroll changes page."));
     origin_ = origin;
-    outerRadius_ = std::max(1.0, std::min(kMaximumRadius,
-        std::min(width(), height()) * 0.5 - kRadialMargin));
-    center_ = QPointF(std::clamp<qreal>(origin.x(), outerRadius_ + kRadialMargin,
-        std::max(outerRadius_ + kRadialMargin, width() - outerRadius_ - kRadialMargin)),
-        std::clamp<qreal>(origin.y(), outerRadius_ + kRadialMargin,
-        std::max(outerRadius_ + kRadialMargin, height() - outerRadius_ - kRadialMargin)));
+    outerRadius_ = std::max(1.0, std::min(kMaximumRadius, std::min(available.width(), available.height()) * 0.5));
+    center_ = QPointF(std::clamp<qreal>(origin.x(), available.left() + outerRadius_,
+        std::max(available.left() + outerRadius_, available.right() - outerRadius_)),
+        std::clamp<qreal>(origin.y(), available.top() + outerRadius_,
+        std::max(available.top() + outerRadius_, available.bottom() - outerRadius_)));
+    pageCounterBounds_ = multiplePages
+        ? QRectF(center_.x() - outerRadius_, counterBelow ? center_.y() + outerRadius_ + kUiSpacing
+            : center_.y() - outerRadius_ - kUiSpacing - helpMetrics.height(), outerRadius_ * 2, helpMetrics.height())
+        : QRectF();
     selectedOptionId_ = selectedOptionId;
     hoveredChoice_ = -1;
     page_ = 0;
@@ -234,11 +246,14 @@ void PartRadialSelector::paintEvent(QPaintEvent *) {
     painter.drawText(label, Qt::AlignCenter | Qt::TextWordWrap, name);
     painter.setFont(uiSecondaryTextFont());
     painter.setPen(colors.mutedText);
+    if (!pageCounterBounds_.isEmpty()) {
+        painter.drawText(pageCounterBounds_, Qt::AlignCenter,
+            QStringLiteral("%1/%2").arg(page_ + 1).arg((choices_.size() + kChoicesPerPage - 1) / kChoicesPerPage));
+    }
     painter.drawText(QRectF(kUiMargin, height() - fontMetrics().height() - kUiMargin,
         width() - kUiMargin * 2, fontMetrics().height()), Qt::AlignCenter,
         choices_.size() > kChoicesPerPage
-            ? QStringLiteral("Release to apply · Center / Esc to cancel · Scroll: %1 / %2")
-                .arg(page_ + 1).arg((choices_.size() + kChoicesPerPage - 1) / kChoicesPerPage)
+            ? QStringLiteral("Release to apply · Center / Esc to cancel · Scroll to browse")
             : QStringLiteral("Release to apply · Center / Esc to cancel"));
 }
 

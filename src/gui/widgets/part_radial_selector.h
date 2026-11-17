@@ -14,6 +14,7 @@ struct PartRadialChoice {
     QImage preview;
     int optionId = -1;
     bool empty = false;
+    bool preserveName = false;
 };
 
 class PartRadialSelector final : public QWidget {
@@ -53,6 +54,7 @@ private:
     QString title_;
     QPointF origin_;
     QPointF center_;
+    QRectF pageCounterBounds_;
     int selectedOptionId_ = -1;
     int hoveredChoice_ = -1;
     int page_ = 0;

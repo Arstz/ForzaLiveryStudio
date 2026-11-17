@@ -2,6 +2,7 @@
 
 #include "car_scene.h"
 #include "car_part_selection.h"
+#include "car_preview_wheels.h"
 #include "editor_state.h"
 #include "gui_assets.h"
 #include "material_hashes.h"
@@ -957,6 +958,7 @@ fls::ManufacturerColorPalette loadManufacturerColors(
 
 struct PreparedCar {
     fls::CarModel model;
+    std::shared_ptr<WheelPreviewState> wheels;
     fls::LiveryMaskSet liveryMasks;
     fls::ManufacturerColorPalette manufacturerColors;
     std::vector<CarUnwrapOverlaySet> carUnwrapOverlaySets;
@@ -1018,11 +1020,24 @@ std::shared_ptr<PreparedCar> prepareCar(
     checkpoint(QStringLiteral("tires_ms"));
     assignSharedSlotMaterials(model);
     resolveExteriorMaterials(model, path, QFileInfo(loadPath).absolutePath(), loadCarTextures);
+    auto wheelPreview = prepareWheelPreview(model, path, game, wheelSizing);
+    if (wheelPreview) {
+        auto front = buildWheelPreviewGeometry(*wheelPreview, true, wheelPreview->axles[0].rimId,
+            wheelPreview->tireId);
+        auto rear = buildWheelPreviewGeometry(*wheelPreview, false, wheelPreview->axles[1].rimId,
+            wheelPreview->tireId);
+        if (!front.meshes.empty() && !rear.meshes.empty()) {
+            front.meshes.insert(front.meshes.end(), rear.meshes.cbegin(), rear.meshes.cend());
+            replaceWheelPreviewGeometry(model, front);
+        }
+        installWheelPartOptions(model, *wheelPreview);
+    }
     checkpoint(QStringLiteral("materials_ms"));
 
     const QDir carDir = QFileInfo(loadPath).absoluteDir();
     auto prepared = std::make_shared<PreparedCar>();
     prepared->model = std::move(model);
+    prepared->wheels = std::move(wheelPreview);
     prepared->manufacturerColors = loadManufacturerColors(carDir.absolutePath(), path);
     checkpoint(QStringLiteral("manufacturer_ms"));
     prepared->extractedCarDir = std::move(extracted);
@@ -1184,6 +1199,7 @@ CarPreviewWidget::~CarPreviewWidget() {
     cancelCarLoad();
     makeCurrent();
     carRenderer_.release();
+    wheelRenderer_.release();
     shapeRenderer_.release();
     doneCurrent();
 }
@@ -1255,6 +1271,7 @@ void CarPreviewWidget::loadCarAsync(const QString &path, CarLoadCallback callbac
                     }
 
                     guard->model_ = std::move(prepared->model);
+                    guard->wheelPreview_ = std::move(prepared->wheels);
                     guard->manufacturerColors_ = std::move(prepared->manufacturerColors);
                     guard->extractedCarDir_ = std::move(prepared->extractedCarDir);
                     guard->loadedCarPath_ = std::move(prepared->loadedCarPath);
@@ -1342,6 +1359,7 @@ void CarPreviewWidget::clearModel() {
     loadedCarGame_.clear();
     loadedCarKey_.clear();
     manufacturerColors_ = {};
+    wheelPreview_.reset();
     selectedLodIndex_ = 0;
     selectedPartOptions_.clear();
     paintControls_.clear();
@@ -1640,6 +1658,7 @@ void CarPreviewWidget::rebuildColorsPanel() {
         delete item->widget();
         delete item;
     }
+    rebuildWheelSizingControls();
     auto *header = new QWidget(colorsPage_);
     auto *headerLayout = new QHBoxLayout(header);
     headerLayout->setContentsMargins(0, 0, 0, 0);
@@ -2188,6 +2207,12 @@ int CarPreviewWidget::previewViewportWidth() const {
 
 void CarPreviewWidget::resetPartSelections() {
     selectedPartOptions_ = fls::stockCarPartSelections(model_);
+    if (wheelPreview_) {
+        for (int partType : kWheelSelectors) {
+            const auto &axle = wheelPreview_->axles[isFrontWheelSelector(partType) ? 0 : 1];
+            selectedPartOptions_.insert(partType, isRimSelector(partType) ? axle.rimId : wheelPreview_->tireId);
+        }
+    }
     individualPartOptions_ = selectedPartOptions_;
     carRenderer_.setPartSelections(selectedPartOptions_);
     rebuildPartControls();

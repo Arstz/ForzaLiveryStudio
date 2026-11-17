@@ -871,6 +871,13 @@ CarModel loadCarBin(const QString &path, QString *error, const WheelSizing &whee
             }
         }
 
+        if (stock && corner >= 0 && isWheelModelPath(part.path)
+            && std::none_of(car.wheelMounts.cbegin(), car.wheelMounts.cend(), [corner](const auto &mount) {
+                return mount.front == isFrontCorner(corner) && mount.left == isLeftCorner(corner);
+            })) {
+            car.wheelMounts.push_back({instance, currentInstanceId, isFrontCorner(corner), isLeftCorner(corner)});
+        }
+
         const auto prepareMesh = [&](CarMesh &mesh) {
             if (isWheelModelPath(part.path) && isWheelStandInSlot(mesh.materialName)) {
                 return false;
@@ -951,6 +958,20 @@ CarModel loadCarBin(const QString &path, QString *error, const WheelSizing &whee
     return car;
 }
 
+void appendCarRim(CarModel &car, const CarModel &rim, const CarWheelMount &mount,
+                  const AxleSizing &sizing) {
+    for (const CarMesh &source : rim.meshes) {
+        if (isWheelStandInSlot(source.materialName)) continue;
+        CarMesh mesh = source;
+        mesh.boneTransform = matMul(mesh.boneTransform, mount.transform);
+        mesh.modelInstanceId = mount.instanceId;
+        mesh.stockPart = true;
+        mesh.paintMaterialHash = wheelPaintHash(mount.front, mesh);
+        bakeWheelTransform(mesh, sizing);
+        car.meshes.push_back(std::move(mesh));
+    }
+}
+
 void appendApproximateTires(
     CarModel &car, const CarModel &leftTemplate, const CarModel &rightTemplate,
     const WheelSizing &wheels) {
@@ -965,8 +986,8 @@ void appendApproximateTires(
         nextInstanceId = std::max(nextInstanceId, mesh.modelInstanceId + 1);
         const QString material = mesh.materialName.toLower();
         if (mesh.modelInstanceId < 0
-            || !mesh.name.startsWith(QStringLiteral("wheel_"), Qt::CaseInsensitive)
-            || !mesh.name.contains(QStringLiteral("LODS0"), Qt::CaseInsensitive)
+            || (!isWheelModelPath(mesh.sourceModelPath)
+                && !mesh.name.startsWith(QStringLiteral("wheel_"), Qt::CaseInsensitive))
             || (material != QStringLiteral("rim") && material != QStringLiteral("rim2"))) {
             continue;
         }
@@ -986,9 +1007,6 @@ void appendApproximateTires(
     const auto templateBounds = [](const CarModel &source) {
         TemplateBounds bounds;
         for (const CarMesh &mesh : source.meshes) {
-            if (!mesh.name.contains(QStringLiteral("LODS0"), Qt::CaseInsensitive)) {
-                continue;
-            }
             for (const ModelVec3 &position : mesh.positions) {
                 const ModelVec3 p = mesh.boneTransform.transformPoint(position);
                 const float radius = std::hypot(p.y, p.z);

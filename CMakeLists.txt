@@ -350,6 +350,8 @@ qt_add_library(fls_editor_ui STATIC
     src/gui/canvas/project_canvas_events.cpp
     src/gui/widgets/car_preview_widget.cpp
     src/gui/widgets/car_preview_parts.cpp
+    src/gui/widgets/car_preview_wheels.cpp
+    src/gui/widgets/car_preview_wheels.h
     src/gui/widgets/part_radial_selector.cpp
     src/gui/widgets/part_radial_selector.h
     src/gui/widgets/car_preview_widget.h
@@ -463,6 +465,8 @@ if(WIN32)
 endif()
 add_executable(fls_car_part_selection_tests EXCLUDE_FROM_ALL tools/tests/car_part_selection/main.cpp)
 target_link_libraries(fls_car_part_selection_tests PRIVATE fls_core)
+add_executable(fls_car_wheel_preview_tests EXCLUDE_FROM_ALL tools/tests/car_wheel_preview/main.cpp)
+target_link_libraries(fls_car_wheel_preview_tests PRIVATE fls_editor_ui)
 
 if(FLS_BUILD_TESTS)
     set_target_properties(fls_part_radial_selector_tests fls_car_part_selection_tests

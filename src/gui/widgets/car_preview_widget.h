@@ -35,6 +35,7 @@ namespace gui {
 
 class EditorState;
 class PartRadialSelector;
+struct WheelPreviewState;
 
 QJsonObject profileCarLoading(const QString &path, bool loadTextures, int repetitions, bool verifyUnwrap);
 
@@ -123,7 +124,14 @@ private:
     void layoutPartControls();
     void beginPartSelection(int partType, QAbstractButton *anchor);
     QImage renderPartOptionPreview(int partType, int optionId);
+    QImage renderGeometryPreview(CarModelRenderer &renderer, const fls::ModelBounds &bounds,
+        const QHash<int, int> &selections, int partType, bool wholeCar);
     void selectPartOption(int partType, int optionId);
+    QImage renderWheelOptionPreview(int partType, int optionId);
+    void selectWheelOption(int partType, int optionId);
+    bool applyWheelGeometry();
+    void rebuildWheelSizingControls();
+    void selectWheelSize(bool front, bool diameter, int optionId, float value);
     void rebuildColorsPanel();
     void syncPaintControls();
     void selectLod(int lodIndex);
@@ -140,6 +148,8 @@ private:
     NativeShapeRenderer shapeRenderer_;
     ShapeGeometryStore geometry_;
     CarModelRenderer carRenderer_;
+    CarModelRenderer wheelRenderer_;
+    std::shared_ptr<WheelPreviewState> wheelPreview_;
     fls::PaintFinishLibrary paintFinishes_;
     QString gameFolder_;
     quint64 paintFinishLoadGeneration_ = 0;
