@@ -156,7 +156,7 @@ void MainWindow::paintEvent(QPaintEvent *event) {
         default:
             continue;
         }
-        painter.fillRect(bounds, colors.secondary);
+        painter.fillRect(bounds, colors.panelBackground);
         painter.fillRect(separator, colors.resizeHandle);
     }
 }

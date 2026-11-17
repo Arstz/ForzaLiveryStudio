@@ -26,7 +26,7 @@ protected:
         {
             QPainter painter(this);
 
-            painter.fillRect(rect(), uiColors(currentUiTheme()).secondary);
+            painter.fillRect(rect(), uiColors(currentUiTheme()).panelBackground);
         }
         QDockWidget::paintEvent(event);
     }

@@ -999,7 +999,7 @@ ShapesBrowserWidget::ShapesBrowserWidget(QWidget *parent)
     layout->setSpacing(6);
 
     search_ = new QLineEdit(this);
-    search_->setPlaceholderText(QStringLiteral("Filter shapes..."));
+    search_->setPlaceholderText(QStringLiteral("Filter..."));
     search_->addAction(assetIcon(QStringLiteral("ShapeBrowserSearch.xpm")), QLineEdit::LeadingPosition);
     layout->addWidget(search_);
 
@@ -1013,6 +1013,7 @@ ShapesBrowserWidget::ShapesBrowserWidget(QWidget *parent)
     categoryLayout->setSpacing(6);
     categoriesList_ = new QListWidget(categoryPane);
     categoriesList_->setProperty("uiMainSurface", true);
+    categoriesList_->setProperty("uiDividedItems", true);
     categoriesList_->setMinimumWidth(150);
     categoryLayout->addWidget(categoriesList_, 1);
     addSelection_ = new QToolButton(categoryPane);

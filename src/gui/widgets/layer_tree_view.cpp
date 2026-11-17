@@ -3,6 +3,7 @@
 #include "drag_cursors.h"
 #include "layer_state_delegate.h"
 #include "layer_tree_model.h"
+#include "theme_manager.h"
 
 #include <algorithm>
 
@@ -12,6 +13,9 @@ namespace {
 constexpr int kDragHotspotClamp = 24;
 constexpr int kDragScrollMargin = 32;
 constexpr int kDragScrollIntervalMs = 40;
+constexpr int kBranchGlyphExtent = 8;
+constexpr int kLeewayFillAlpha = 35;
+constexpr int kLeewayLineWidth = 2;
 const QColor kLeewayAccentColor(45, 205, 185);
 
 bool isBadgePoint(const QRect &rowRect, const QPoint &point, bool guide) {
@@ -27,6 +31,8 @@ bool isBadgePoint(const QRect &rowRect, const QPoint &point, bool guide) {
 
 LayerTreeView::LayerTreeView(QWidget *parent)
     : QTreeView(parent) {
+    setMouseTracking(true);
+    viewport()->setAttribute(Qt::WA_Hover, true);
     dragScrollTimer_.setInterval(kDragScrollIntervalMs);
     connect(&dragScrollTimer_, &QTimer::timeout, this, [this]() {
         QScrollBar *scrollBar = verticalScrollBar();
@@ -74,45 +80,123 @@ QItemSelectionModel::SelectionFlags LayerTreeView::selectionCommand(const QModel
 
 void LayerTreeView::paintEvent(QPaintEvent *event) {
     QTreeView::paintEvent(event);
-    QPainter painter(viewport());
-    const QColor text = palette().color(QPalette::Text);
-    QColor lineColor = text;
-    lineColor.setAlpha(70);
-    painter.setPen(QPen(lineColor, 1));
-    const int indent = indentation();
-    if (indent > 0 && model() != nullptr) {
-        for (int y = 0; y < viewport()->height();) {
-            const QModelIndex index = indexAt(QPoint(0, y));
-            if (!index.isValid()) {
-                ++y;
-                continue;
-            }
-            const QRect rowRect = visualRect(index);
-            if (index.data(LayerTreeModel::EntryIdRole).toString()
-                == leewayEntryId_) {
-                QColor fill = kLeewayAccentColor;
-                fill.setAlpha(35);
-                painter.fillRect(rowRect, fill);
-                painter.setPen(QPen(kLeewayAccentColor, 2));
-                painter.drawLine(rowRect.topLeft(), rowRect.bottomLeft());
-                painter.setPen(QPen(lineColor, 1));
-            }
-            int depth = 0;
-            for (QModelIndex ancestor = index.parent(); ancestor.isValid(); ancestor = ancestor.parent()) {
-                ++depth;
-            }
-            for (int level = 0; level < depth; ++level) {
-                const int x = rowRect.left() - (depth - level) * indent + indent / 2;
-                painter.drawLine(QPoint(x, rowRect.top()), QPoint(x, rowRect.bottom()));
-            }
-            y = std::max(y + 1, rowRect.bottom() + 1);
-        }
-    }
     if (dropIndicatorY_ < 0) {
         return;
     }
+    QPainter painter(viewport());
+
     painter.setPen(QPen(dropIndicatorColor(), 2));
     painter.drawLine(QPoint(0, dropIndicatorY_), QPoint(viewport()->width(), dropIndicatorY_));
+}
+
+void LayerTreeView::drawRow(QPainter *painter, const QStyleOptionViewItem &option, const QModelIndex &index) const {
+    const UiColors colors = uiColors(currentUiTheme());
+    const QRect rowRect = fullRowRect(index);
+    const QRect itemRect = visualRect(index);
+    const QRect branchRect = isRightToLeft()
+        ? QRect(itemRect.right() + 1, rowRect.top(), rowRect.right() - itemRect.right(), rowRect.height())
+        : QRect(rowRect.left(), rowRect.top(), itemRect.left() - rowRect.left(), rowRect.height());
+    QStyleOptionViewItem itemOption(option);
+    const bool selected = selectionModel() != nullptr && selectionModel()->isSelected(index);
+    const bool hovered = hoveredIndex_ == index;
+    const bool focused = hasFocus() && currentIndex() == index;
+    const bool guide = index.data(LayerTreeModel::IsGuideRole).toBool();
+
+    itemOption.rect = itemRect;
+    itemOption.state.setFlag(QStyle::State_Selected, selected);
+    itemOption.state.setFlag(QStyle::State_MouseOver, hovered);
+    itemOption.state.setFlag(QStyle::State_HasFocus, focused);
+    painter->save();
+    painter->fillRect(rowRect, hovered ? colors.hover : selected ? colors.selection
+        : guide ? colors.guide : colors.navigationBackground);
+    if (!leewayEntryId_.isEmpty() && index.data(LayerTreeModel::EntryIdRole).toString() == leewayEntryId_) {
+        QColor fill = kLeewayAccentColor;
+
+        fill.setAlpha(kLeewayFillAlpha);
+        painter->fillRect(rowRect, fill);
+        painter->setPen(QPen(kLeewayAccentColor, kLeewayLineWidth));
+        painter->drawLine(rowRect.topLeft(), rowRect.bottomLeft());
+    }
+    drawBranches(painter, branchRect, index);
+    itemDelegateForIndex(index)->paint(painter, itemOption, index);
+    painter->setPen(QPen(colors.separator, kUiControlBorderWidth));
+    painter->drawLine(rowRect.topLeft(), rowRect.topRight());
+    painter->drawLine(QPoint(rowRect.left(), rowRect.bottom() + 1), QPoint(rowRect.right(), rowRect.bottom() + 1));
+    if (focused && !hovered) {
+        painter->setPen(QPen(colors.focus, kUiControlBorderWidth));
+        painter->setBrush(Qt::NoBrush);
+        painter->drawRect(rowRect.adjusted(0, 0, -1, -1));
+    }
+    painter->restore();
+}
+
+void LayerTreeView::drawBranches(QPainter *painter, const QRect &rect, const QModelIndex &index) const {
+    const UiColors colors = uiColors(currentUiTheme());
+    const QRect itemRect = visualRect(index);
+    const bool highlighted = hoveredIndex_ == index
+        || (selectionModel() != nullptr && selectionModel()->isSelected(index));
+    const int indent = indentation();
+    const int direction = isRightToLeft() ? 1 : -1;
+    const int itemEdge = isRightToLeft() ? itemRect.right() : itemRect.left();
+    int depth = 0;
+
+    if (rect.isEmpty() || indent <= 0) {
+        return;
+    }
+    for (QModelIndex ancestor = index.parent(); ancestor.isValid(); ancestor = ancestor.parent()) {
+        ++depth;
+    }
+    painter->save();
+    painter->setPen(QPen(colors.separator, kUiControlBorderWidth));
+    for (int level = 0; level < depth; ++level) {
+        const int x = itemEdge + direction * ((depth - level) * indent - indent / 2);
+
+        painter->drawLine(QPoint(x, rect.top()), QPoint(x, rect.bottom()));
+    }
+    if (itemsExpandable() && model() != nullptr && model()->hasChildren(index)) {
+        const qreal halfExtent = kBranchGlyphExtent / 2.0;
+        const QPolygonF glyph{{-halfExtent / 2, -halfExtent},
+            {halfExtent / 2, 0}, {-halfExtent / 2, halfExtent}};
+
+        painter->translate(itemEdge + direction * indent / 2, rect.center().y());
+        painter->rotate(isExpanded(index) ? 90 : isRightToLeft() ? 180 : 0);
+        painter->setRenderHint(QPainter::Antialiasing);
+        painter->setPen(Qt::NoPen);
+        painter->setBrush(highlighted ? colors.selectedText : colors.icon);
+        painter->drawPolygon(glyph);
+    }
+    painter->restore();
+}
+
+bool LayerTreeView::viewportEvent(QEvent *event) {
+    if (event->type() == QEvent::HoverEnter || event->type() == QEvent::HoverMove) {
+        setHoveredIndex(indexAt(static_cast<QHoverEvent *>(event)->position().toPoint()));
+    } else if (event->type() == QEvent::HoverLeave || event->type() == QEvent::Leave) {
+        setHoveredIndex(QModelIndex());
+    }
+
+    return QTreeView::viewportEvent(event);
+}
+
+void LayerTreeView::scrollContentsBy(int dx, int dy) {
+    QTreeView::scrollContentsBy(dx, dy);
+    setHoveredIndex(viewport()->underMouse()
+        ? indexAt(viewport()->mapFromGlobal(QCursor::pos())) : QModelIndex());
+}
+
+void LayerTreeView::selectionChanged(const QItemSelection &selected, const QItemSelection &deselected) {
+    QTreeView::selectionChanged(selected, deselected);
+    viewport()->update();
+}
+
+void LayerTreeView::currentChanged(const QModelIndex &current, const QModelIndex &previous) {
+    QTreeView::currentChanged(current, previous);
+    if (previous.isValid()) {
+        viewport()->update(fullRowRect(previous).adjusted(0, 0, 0, 1));
+    }
+    if (current.isValid()) {
+        viewport()->update(fullRowRect(current).adjusted(0, 0, 0, 1));
+    }
 }
 
 void LayerTreeView::mousePressEvent(QMouseEvent *event) {
@@ -302,6 +386,30 @@ void LayerTreeView::updateDragAutoScroll(const QPoint &position) {
 void LayerTreeView::stopDragAutoScroll() {
     dragScrollDirection_ = 0;
     dragScrollTimer_.stop();
+}
+
+QRect LayerTreeView::fullRowRect(const QModelIndex &index) const {
+    QRect rect = visualRect(index);
+
+    rect.setLeft(viewport()->rect().left());
+    rect.setRight(viewport()->rect().right());
+
+    return rect;
+}
+
+void LayerTreeView::setHoveredIndex(const QModelIndex &index) {
+    if (hoveredIndex_ == index) {
+        return;
+    }
+    const QPersistentModelIndex previous = hoveredIndex_;
+
+    hoveredIndex_ = index;
+    if (previous.isValid()) {
+        viewport()->update(fullRowRect(previous).adjusted(0, 0, 0, 1));
+    }
+    if (hoveredIndex_.isValid()) {
+        viewport()->update(fullRowRect(hoveredIndex_).adjusted(0, 0, 0, 1));
+    }
 }
 
 QModelIndexList LayerTreeView::normalizedSelectedRows() const {

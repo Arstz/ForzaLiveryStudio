@@ -65,6 +65,7 @@ LiverySectionBar::LiverySectionBar(QWidget *parent)
     : QListWidget(parent) {
     setObjectName(QStringLiteral("LiverySectionBar"));
     setProperty("uiMainSurface", true);
+    setProperty("uiDividedItems", true);
     setItemDelegate(new SectionCountDelegate(this));
     setVisible(false);
     refreshTheme();

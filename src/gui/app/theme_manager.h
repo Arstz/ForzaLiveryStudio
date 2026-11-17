@@ -70,6 +70,11 @@ struct UiColors {
     QColor tooltipText;
     QColor browserBackground;
     QColor browserPreview;
+    QColor separator;
+    QColor panelBackground;
+    QColor panelHeaderBackground;
+    QColor navigationBackground;
+    QColor popupBackground;
 };
 
 struct UiColorRole {
@@ -98,7 +103,6 @@ QFont uiTextFont();
 QFont uiSecondaryTextFont();
 int uiTextPixelSize(const QFont &font);
 QMargins uiTextInsets(const QFont &font);
-QColor uiSelectionHoverColor(const QColor &color);
 void applyUiToolbarMetrics(QToolBar &toolbar);
 QIcon uiAddIcon();
 QString colorSwatchStyle(const QColor &color);

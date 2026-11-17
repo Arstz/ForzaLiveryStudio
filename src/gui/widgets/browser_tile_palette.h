@@ -18,7 +18,7 @@ inline BrowserTilePalette browserTilePalette(UiTheme theme) {
 
     return {
         colors.browserBackground,
-        uiSelectionHoverColor(colors.selection),
+        colors.hover,
         colors.border,
         colors.browserPreview,
         colors.text,

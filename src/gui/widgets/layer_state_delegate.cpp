@@ -10,12 +10,13 @@
 #include <QtWidgets>
 
 #include <algorithm>
-#include <cmath>
 
 namespace gui {
 namespace {
 
 constexpr int kPositionGap = 6;
+constexpr int kThumbnailPadding = 4;
+constexpr int kPositionTextAlpha = 150;
 
 QPixmap badgePixmap(const QString &fileName) {
     QPixmap pixmap(iconAssetPath(fileName));
@@ -40,32 +41,6 @@ QPixmap tinted(const QPixmap &source, const QColor &color) {
     return out;
 }
 
-double relativeLuminance(const QColor &color) {
-    const auto channel = [](int value) {
-        const double v = value / 255.0;
-        return v <= 0.03928 ? v / 12.92 : std::pow((v + 0.055) / 1.055, 2.4);
-    };
-    return 0.2126 * channel(color.red()) + 0.7152 * channel(color.green()) + 0.0722 * channel(color.blue());
-}
-
-double contrastRatio(const QColor &a, const QColor &b) {
-    const double l1 = relativeLuminance(a);
-    const double l2 = relativeLuminance(b);
-    return (std::max(l1, l2) + 0.05) / (std::min(l1, l2) + 0.05);
-}
-
-QColor badgeForeground(const QStyleOptionViewItem &option) {
-    if (!(option.state & QStyle::State_Selected)) {
-        return option.palette.color(QPalette::Text);
-    }
-    const QColor highlight = option.palette.color(QPalette::Highlight);
-    const QColor highlightedText = option.palette.color(QPalette::HighlightedText);
-    const QColor text = option.palette.color(QPalette::Text);
-    return contrastRatio(highlightedText, highlight) >= contrastRatio(text, highlight)
-        ? highlightedText
-        : text;
-}
-
 } // namespace
 
 LayerStateDelegate::LayerStateDelegate(EditorState *state, QObject *parent)
@@ -79,29 +54,45 @@ LayerStateDelegate::LayerStateDelegate(EditorState *state, QObject *parent)
 }
 
 void LayerStateDelegate::paint(QPainter *painter, const QStyleOptionViewItem &option, const QModelIndex &index) const {
-    const bool isGuide = index.data(LayerTreeModel::IsGuideRole).toBool();
-    if (isGuide && !(option.state & QStyle::State_Selected)) {
-        painter->fillRect(option.rect, uiColors(currentUiTheme()).guide);
-    }
+    const UiColors colors = uiColors(currentUiTheme());
     QStyleOptionViewItem itemOption(option);
-    const bool isContour = index.data(LayerTreeModel::IsContourRole).toBool();
-    const int badgeCount = isGuide || isContour ? 2 : 3;
-    const int badgesBlock = kLayerBadgeRightMargin + kLayerBadgeSize * badgeCount
-        + kLayerBadgeGap * (badgeCount - 1);
+    initStyleOption(&itemOption, index);
     const QString positionText = index.data(LayerTreeModel::PositionTextRole).toString();
-    const int positionWidth = positionText.isEmpty()
-        ? 0
-        : option.fontMetrics.horizontalAdvance(positionText) + kPositionGap * 2;
-    itemOption.rect.adjust(0, 0, -(badgesBlock + positionWidth), 0);
-    QStyledItemDelegate::paint(painter, itemOption, index);
-
+    const bool isGuide = index.data(LayerTreeModel::IsGuideRole).toBool();
+    const bool isContour = index.data(LayerTreeModel::IsContourRole).toBool();
+    const bool highlighted = option.state.testFlag(QStyle::State_Selected)
+        || option.state.testFlag(QStyle::State_MouseOver);
     const bool visible = index.data(LayerTreeModel::VisibleRole).toBool();
     const bool mask = index.data(LayerTreeModel::MaskRole).toBool();
     const bool locked = index.data(LayerTreeModel::EffectiveLockedRole).toBool();
-
-    const QColor fg = badgeForeground(option);
+    const int badgeCount = isGuide || isContour ? 2 : 3;
+    const int badgesBlock = kLayerBadgeRightMargin + kLayerBadgeSize * badgeCount
+        + kLayerBadgeGap * (badgeCount - 1);
+    const int positionWidth = positionText.isEmpty()
+        ? 0
+        : itemOption.fontMetrics.horizontalAdvance(positionText) + kPositionGap * 2;
+    const int thumbnailExtent = std::max(0,
+        std::min(itemOption.decorationSize.width(), option.rect.height() - 2 * kThumbnailPadding));
+    const QRect thumbnailRect(option.rect.left() + kThumbnailPadding,
+        option.rect.top() + (option.rect.height() - thumbnailExtent) / 2, thumbnailExtent, thumbnailExtent);
+    const QRect labelRect(thumbnailRect.right() + 1 + kUiSpacing, option.rect.top(),
+        std::max(0, option.rect.right() - badgesBlock - positionWidth - thumbnailRect.right() - kUiSpacing),
+        option.rect.height());
+    const QColor fg = !option.state.testFlag(QStyle::State_Enabled) ? colors.disabledText
+        : highlighted ? colors.selectedText : itemOption.palette.color(QPalette::Text);
 
     painter->save();
+    painter->setFont(itemOption.font);
+    painter->fillRect(thumbnailRect, colors.preview);
+    itemOption.icon.paint(painter,
+        thumbnailRect.adjusted(kUiControlBorderWidth, kUiControlBorderWidth, -kUiControlBorderWidth, -kUiControlBorderWidth),
+        Qt::AlignCenter, QIcon::Normal);
+    painter->setPen(QPen(colors.border, kUiControlBorderWidth));
+    painter->setBrush(Qt::NoBrush);
+    painter->drawRect(thumbnailRect.adjusted(0, 0, -1, -1));
+    painter->setPen(fg);
+    painter->drawText(labelRect, Qt::AlignVCenter | Qt::AlignLeft,
+        itemOption.fontMetrics.elidedText(itemOption.text, itemOption.textElideMode, labelRect.width()));
     const auto drawBadge = [&](Badge badge, const QPixmap &glyph, double opacity) {
         if (glyph.isNull()) {
             return;
@@ -124,7 +115,7 @@ void LayerStateDelegate::paint(QPainter *painter, const QStyleOptionViewItem &op
         const int right = option.rect.right() - badgesBlock - kPositionGap;
         const QRect positionRect(right - positionWidth, option.rect.top(), positionWidth, option.rect.height());
         QColor positionColor = fg;
-        positionColor.setAlpha(150);
+        positionColor.setAlpha(kPositionTextAlpha);
         painter->save();
         painter->setPen(positionColor);
         painter->drawText(positionRect, Qt::AlignVCenter | Qt::AlignRight, positionText);

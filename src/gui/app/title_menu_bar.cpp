@@ -203,7 +203,7 @@ protected:
         painter.setRenderHint(QPainter::Antialiasing);
         if (isDown() || hovered) {
             painter.setPen(Qt::NoPen);
-            painter.setBrush(isDown() ? colors.selection : uiSelectionHoverColor(colors.selection));
+            painter.setBrush(isDown() ? colors.selection : colors.hover);
             painter.drawRoundedRect(highlight, kUiCornerRadius, kUiCornerRadius);
         }
         painter.setPen(QPen(isDown() || hovered ? colors.selectedText : colors.text,
@@ -217,7 +217,7 @@ protected:
             if (nativeWindowMaximized(*window_)) {
                 painter.drawRect(glyph.adjusted(kRestoreOffset, 0, 0, -kRestoreOffset));
                 painter.fillRect(glyph.adjusted(0, kRestoreOffset, -kRestoreOffset, 0),
-                    isDown() ? colors.selection : hovered ? uiSelectionHoverColor(colors.selection) : colors.main);
+                    isDown() ? colors.selection : hovered ? colors.hover : colors.main);
                 painter.drawRect(glyph.adjusted(0, kRestoreOffset, -kRestoreOffset, 0));
             } else {
                 painter.drawRect(glyph);
