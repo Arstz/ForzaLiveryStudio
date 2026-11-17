@@ -1,6 +1,7 @@
 #include "car_preview_widget.h"
 
 #include "car_scene.h"
+#include "car_part_selection.h"
 #include "editor_state.h"
 #include "gui_assets.h"
 #include "material_hashes.h"
@@ -8,6 +9,7 @@
 #include "model_material.h"
 #include "paint_database.h"
 #include "paint_color_popup.h"
+#include "part_radial_selector.h"
 #include "scene_view.h"
 #include "theme_manager.h"
 #include "zip_extract.h"
@@ -423,15 +425,6 @@ std::vector<std::vector<fls::CarMesh> *> renderMeshSets(fls::CarModel &model) {
     }
     return meshSets;
 }
-
-constexpr std::array<int, 6> kSelectablePartTypes = {
-    fls::car_part_types::CarBody,
-    fls::car_part_types::RearWing,
-    fls::car_part_types::FrontBumper,
-    fls::car_part_types::RearBumper,
-    fls::car_part_types::Hood,
-    fls::car_part_types::SideSkirts,
-};
 
 QColor defaultPreviewCarColor() {
     return QColor(180, 182, 190);
@@ -1045,7 +1038,7 @@ std::shared_ptr<PreparedCar> prepareCar(
         checkpoint(QStringLiteral("masks_ms"));
         prepared->liveryMasksDir = masksDir;
         QSet<int> selectablePartTypes;
-        for (int partType : kSelectablePartTypes) {
+        for (int partType : fls::kSelectableCarPartTypes) {
             selectablePartTypes.insert(partType);
         }
         QJsonObject unwrapTimings;
@@ -1087,7 +1080,7 @@ QJsonObject profileCarLoading(const QString &path, bool loadTextures, int repeti
         if (verifyUnwrap && prepared->liveryMasks.valid()) {
             QSet<int> partTypes;
             bool matches = true;
-            for (int partType : kSelectablePartTypes) {
+            for (int partType : fls::kSelectableCarPartTypes) {
                 partTypes.insert(partType);
             }
             for (int lod = 0; lod < prepared->model.lodCount(); ++lod) {
@@ -1162,6 +1155,7 @@ CarPreviewWidget::CarPreviewWidget(QWidget *parent)
         setSidePanelVisible(!sidePanelVisible_);
     });
 
+    initializePartControls();
     resetPartSelections();
     updateCarColorControl();
 
@@ -1292,6 +1286,7 @@ void CarPreviewWidget::loadCarAsync(const QString &path, CarLoadCallback callbac
 }
 
 void CarPreviewWidget::cancelCarLoad() {
+    if (partSelector_ != nullptr) partSelector_->cancelSelection();
     if (carLoadCancelled_) {
         carLoadCancelled_->store(true, std::memory_order_relaxed);
     }
@@ -1431,6 +1426,7 @@ void CarPreviewWidget::selectLod(int lodIndex) {
         || selectedLodIndex_ == lodIndex) {
         return;
     }
+    partSelector_->cancelSelection();
     selectedLodIndex_ = lodIndex;
     switchCarUnwrapOverlay();
     modelUploadPending_ = true;
@@ -2020,6 +2016,7 @@ void CarPreviewWidget::paintEvent(QPaintEvent *event) {
         graphicsApiSuitable_ = false;
         updateModelStatus();
     }
+    layoutPartControls();
 }
 
 void CarPreviewWidget::setGameFolder(const QString &folder) {
@@ -2144,6 +2141,7 @@ void CarPreviewWidget::layoutOverlayControls() {
     sidePanelToggle_->move(toggleX, 5);
     sidePanel_->raise();
     sidePanelToggle_->raise();
+    layoutPartControls();
 }
 
 void CarPreviewWidget::updateModelStatus() {
@@ -2189,19 +2187,10 @@ int CarPreviewWidget::previewViewportWidth() const {
 }
 
 void CarPreviewWidget::resetPartSelections() {
-    selectedPartOptions_.clear();
-    for (int partType : kSelectablePartTypes) {
-        const fls::CarPartOption *selected = nullptr;
-        for (const fls::CarPartOption &option : model_.partOptions) {
-            if (option.partType != partType || !option.stock) continue;
-            if (selected == nullptr || option.level < selected->level
-                || (option.level == selected->level && option.id < selected->id)) {
-                selected = &option;
-            }
-        }
-        if (selected != nullptr) selectedPartOptions_.insert(partType, selected->id);
-    }
+    selectedPartOptions_ = fls::stockCarPartSelections(model_);
+    individualPartOptions_ = selectedPartOptions_;
     carRenderer_.setPartSelections(selectedPartOptions_);
+    rebuildPartControls();
 }
 
 void CarPreviewWidget::switchCarUnwrapOverlay() {

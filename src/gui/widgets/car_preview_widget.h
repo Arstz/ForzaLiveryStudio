@@ -19,6 +19,7 @@
 #include <optional>
 
 class QTemporaryDir;
+class QAbstractButton;
 class QComboBox;
 class QFrame;
 class QLabel;
@@ -33,6 +34,7 @@ struct Project;
 namespace gui {
 
 class EditorState;
+class PartRadialSelector;
 
 QJsonObject profileCarLoading(const QString &path, bool loadTextures, int repetitions, bool verifyUnwrap);
 
@@ -98,6 +100,13 @@ private:
         QPushButton *secondary = nullptr;
     };
 
+    struct PartHotspot {
+        QAbstractButton *button = nullptr;
+        QHash<int, fls::ModelBounds> optionBounds;
+        QVector<const fls::CarPartOption *> options;
+        int partType = -1;
+    };
+
     QMatrix4x4 cameraView() const;
     QMatrix4x4 cameraProjection() const;
     QSize liveryTextureSize() const;
@@ -107,6 +116,14 @@ private:
     void updateModelStatus();
     void layoutOverlayControls();
     void resetPartSelections();
+    void initializePartControls();
+    void rebuildPartControls();
+    QVector<const fls::CarPartOption *> availablePartOptions(int partType) const;
+    void syncPartControls();
+    void layoutPartControls();
+    void beginPartSelection(int partType, QAbstractButton *anchor);
+    QImage renderPartOptionPreview(int partType, int optionId);
+    void selectPartOption(int partType, int optionId);
     void rebuildColorsPanel();
     void syncPaintControls();
     void selectLod(int lodIndex);
@@ -176,7 +193,12 @@ private:
     QPushButton *clearPaintButton_ = nullptr;
     QVector<PaintControls> paintControls_;
     QVector<CarPaintFinish> paintFinishChoices_;
+    QToolButton *partsToggle_ = nullptr;
+    PartRadialSelector *partSelector_ = nullptr;
+    QVector<PartHotspot> partHotspots_;
     QHash<int, int> selectedPartOptions_;
+    QHash<int, int> individualPartOptions_;
+    int partSelectorType_ = -1;
     int selectedLodIndex_ = 0;
     bool sidePanelVisible_ = false;
 

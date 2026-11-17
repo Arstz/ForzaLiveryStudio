@@ -104,6 +104,8 @@ add_library(fls_core STATIC
     src/core/livery_masks.h
     src/core/car_scene.cpp
     src/core/car_scene.h
+    src/core/car_part_selection.cpp
+    src/core/car_part_selection.h
     src/core/matrix_math.cpp
     src/core/matrix_math.h
     src/core/material_hashes.h
@@ -347,6 +349,9 @@ qt_add_library(fls_editor_ui STATIC
     src/gui/canvas/project_canvas_paint.cpp
     src/gui/canvas/project_canvas_events.cpp
     src/gui/widgets/car_preview_widget.cpp
+    src/gui/widgets/car_preview_parts.cpp
+    src/gui/widgets/part_radial_selector.cpp
+    src/gui/widgets/part_radial_selector.h
     src/gui/widgets/car_preview_widget.h
     src/gui/widgets/car_paint_catalog.cpp
     src/gui/widgets/car_paint_catalog.h
@@ -447,7 +452,21 @@ target_compile_definitions(fls_editor_ui
         FLS_ENABLE_IMGGEN_MENU=$<BOOL:${FLS_ENABLE_IMGGEN_MENU}>
 )
 
+add_executable(fls_part_radial_selector_tests EXCLUDE_FROM_ALL tools/tests/part_radial_selector/main.cpp)
+target_link_libraries(fls_part_radial_selector_tests PRIVATE fls_editor_ui)
+if(WIN32)
+    add_custom_command(TARGET fls_part_radial_selector_tests POST_BUILD
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "$<TARGET_FILE_DIR:fls_part_radial_selector_tests>/platforms"
+        COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+            "${Qt6_DIR}/../../Qt6/plugins/platforms/qminimal.dll"
+            "$<TARGET_FILE_DIR:fls_part_radial_selector_tests>/platforms/qminimal.dll")
+endif()
+add_executable(fls_car_part_selection_tests EXCLUDE_FROM_ALL tools/tests/car_part_selection/main.cpp)
+target_link_libraries(fls_car_part_selection_tests PRIVATE fls_core)
+
 if(FLS_BUILD_TESTS)
+    set_target_properties(fls_part_radial_selector_tests fls_car_part_selection_tests
+        PROPERTIES EXCLUDE_FROM_ALL FALSE)
     add_executable(fls_profile_compute_tests tools/tests/profile_fit_compute/main.cpp)
     target_link_libraries(fls_profile_compute_tests PRIVATE fls_profile_compute)
     if(FLS_CUDA_AVAILABLE AND WIN32)
@@ -668,6 +687,8 @@ if(FLS_BUILD_TESTS)
     add_executable(fls_car_unwrap_cache_tests tools/tests/car_unwrap_cache/main.cpp)
     target_link_libraries(fls_car_unwrap_cache_tests PRIVATE fls_editor_ui)
     add_test(NAME car_unwrap_cache COMMAND fls_car_unwrap_cache_tests)
+    add_test(NAME part_radial_selector COMMAND fls_part_radial_selector_tests)
+    add_test(NAME car_part_selection COMMAND fls_car_part_selection_tests)
     add_executable(fls_paint_finish_tests tools/tests/paint_finishes/main.cpp)
     target_link_libraries(fls_paint_finish_tests PRIVATE fls_core Qt6::Core)
     add_test(NAME paint_finishes COMMAND fls_paint_finish_tests)
