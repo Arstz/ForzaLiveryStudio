@@ -986,6 +986,7 @@ set(FLS_GUI_ASSET_FILES
     raster/MissingTexture.png
     cars/car_ids.json
     cars/part_names.json
+    cars/rim_ids.json
     cars/wheel_sizes.json
     cars/paint_colors.json
 )
