@@ -3264,7 +3264,8 @@ void CarModelRenderer::render(
     const QColor &basePaint,
     const fls::LiveryPaintState *paintState,
     const fls::ManufacturerColorPalette *manufacturerColors,
-    const fls::PaintFinishLibrary *paintFinishes) {
+    const fls::PaintFinishLibrary *paintFinishes,
+    int isolatedPartType) {
     if (!initialized_ || meshes_.empty()) {
         return;
     }
@@ -3274,9 +3275,10 @@ void CarModelRenderer::render(
     }
     QOpenGLFunctions *functions = context->functions();
 
-    const auto partVisible = [this](int partType, bool stockPart,
+    const auto partVisible = [this, isolatedPartType](int partType, bool stockPart,
                                     const std::vector<int> &optionIds) {
-        return visibleCarPart(partType, stockPart, optionIds, partSelections_);
+        return (isolatedPartType < 0 || partType == isolatedPartType)
+            && visibleCarPart(partType, stockPart, optionIds, partSelections_);
     };
 
     functions->glEnable(GL_DEPTH_TEST);

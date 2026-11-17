@@ -42,6 +42,7 @@ constexpr int kThumbnailCacheWidth = 512;
 constexpr int kAssetRowHeight = 104;
 constexpr int kFolderRowPadding = 12;
 constexpr int kMaximumRecentFolders = 10;
+constexpr int kRecentFoldersCharacterCount = 14;
 constexpr bool kShowGenericForzaFoldersDefault = true;
 
 enum class AssetKind {
@@ -590,15 +591,9 @@ public:
         recentFolders_->setPlaceholderText(QStringLiteral("Recent folders"));
         recentFolders_->setToolTip(QStringLiteral("Recently visited folders"));
         recentFolders_->setMaxVisibleItems(kMaximumRecentFolders);
-        recentFolders_->ensurePolished();
-        QStyleOptionComboBox recentFoldersStyle;
-        recentFoldersStyle.initFrom(recentFolders_);
-        recentFoldersStyle.currentText = recentFolders_->placeholderText();
-        recentFolders_->setFixedWidth(recentFolders_->style()->sizeFromContents(
-            QStyle::CT_ComboBox, &recentFoldersStyle,
-            recentFolders_->fontMetrics().size(
-                Qt::TextSingleLine, recentFoldersStyle.currentText),
-            recentFolders_).width());
+        recentFolders_->setMinimumContentsLength(kRecentFoldersCharacterCount);
+        recentFolders_->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+        recentFolders_->setSizePolicy(QSizePolicy::Fixed, recentFolders_->sizePolicy().verticalPolicy());
         pathEdit_ = new QLineEdit(this);
         pathEdit_->setClearButtonEnabled(true);
         navigation->addWidget(backButton_);
