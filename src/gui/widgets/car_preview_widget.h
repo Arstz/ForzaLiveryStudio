@@ -105,6 +105,8 @@ private:
         QAbstractButton *button = nullptr;
         QHash<int, fls::ModelBounds> optionBounds;
         QVector<const fls::CarPartOption *> options;
+        std::optional<QVector3D> surfaceAnchor;
+        std::optional<QPoint> visibleCenter;
         int partType = -1;
     };
 
@@ -118,9 +120,12 @@ private:
     void layoutOverlayControls();
     void resetPartSelections();
     void initializePartControls();
+    void initializePartDepthTest();
     void rebuildPartControls();
     QVector<const fls::CarPartOption *> availablePartOptions(int partType) const;
     void syncPartControls();
+    void rebuildPartAnchors();
+    void updatePartVisibility();
     void layoutPartControls();
     void beginPartSelection(int partType, QAbstractButton *anchor);
     QImage renderPartOptionPreview(int partType, int optionId);
@@ -206,6 +211,11 @@ private:
     QToolButton *partsToggle_ = nullptr;
     PartRadialSelector *partSelector_ = nullptr;
     QVector<PartHotspot> partHotspots_;
+    QOpenGLShaderProgram partDepthProgram_;
+    QOpenGLVertexArrayObject partDepthVao_;
+    std::optional<QMatrix4x4> partDepthViewProjection_;
+    QSize partDepthViewport_;
+    bool partAnchorsDirty_ = true;
     QHash<int, int> selectedPartOptions_;
     QHash<int, int> individualPartOptions_;
     int partSelectorType_ = -1;

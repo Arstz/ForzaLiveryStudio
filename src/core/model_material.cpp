@@ -131,7 +131,8 @@ void applyPreviewParameter(ModelMaterial &material, const ModelMaterialParameter
     const bool vectorValue = parameter.type == ModelMaterialParameterType::Vector
         || parameter.type == ModelMaterialParameterType::Color;
     if (vectorValue
-        && material_hashes::contains(material_hashes::parameter::kBaseColor, parameter.nameHash)) {
+        && (material_hashes::contains(material_hashes::parameter::kBaseColor, parameter.nameHash)
+            || parameter.nameHash == material_hashes::parameter::kTireBaseColor)) {
         material.hasBaseColor = true;
         material.baseColor = {parameter.vector[0], parameter.vector[1], parameter.vector[2]};
         if (parameter.vector[3] > 0.0f && parameter.vector[3] < 1.0f) {
@@ -178,7 +179,8 @@ void applyPreviewParameter(ModelMaterial &material, const ModelMaterialParameter
         material.vTiling = std::abs(parameter.scalar) > 0.000001f ? parameter.scalar : 1.0f;
     }
     if (parameter.type == ModelMaterialParameterType::Vector2
-        && parameter.nameHash == material_hashes::parameter::kTextureTiling
+        && (parameter.nameHash == material_hashes::parameter::kTextureTiling
+            || parameter.nameHash == material_hashes::parameter::kTireMapTiling)
         && std::isfinite(parameter.vector[0]) && std::isfinite(parameter.vector[1])) {
         material.uTiling = std::abs(parameter.vector[0]) > 0.000001f ? parameter.vector[0] : 1.0f;
         material.vTiling = std::abs(parameter.vector[1]) > 0.000001f ? parameter.vector[1] : 1.0f;

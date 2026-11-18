@@ -19,7 +19,8 @@ inline constexpr std::array<int, 6> kSelectableCarPartTypes = {
 QVector<const CarPartOption *> carPartOptions(const CarModel &model, int partType);
 QHash<int, int> stockCarPartSelections(const CarModel &model);
 QVector<const CarPartOption *> individualCarPartOptions(const CarModel &model, int partType);
+bool bodyKitReplacesPart(int partType);
 QHash<int, int> carPartSelectionsForOption(const CarModel &model,
-    const QHash<int, int> &individualParts, int partType, int optionId);
+    const QHash<int, int> &activeParts, const QHash<int, int> &individualParts, int partType, int optionId);
 
 } // namespace fls

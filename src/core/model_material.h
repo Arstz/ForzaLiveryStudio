@@ -73,6 +73,7 @@ struct ModelMaterial {
     std::shared_ptr<const ModelMaterialTexture> diffuseTexture;
     std::shared_ptr<const ModelMaterialTexture> alphaTexture;
     std::shared_ptr<const ModelMaterialTexture> normalTexture;
+    std::shared_ptr<const ModelMaterialTexture> tireHeightTexture;
     std::shared_ptr<const ModelMaterialTexture> surfaceTexture;
     std::shared_ptr<const ModelMaterialTexture> emissiveTexture;
 };

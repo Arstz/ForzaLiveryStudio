@@ -20,6 +20,8 @@ struct ModelMaterialTexture;
 
 namespace gui {
 
+bool isVisibleCarMesh(const fls::CarMesh &mesh, const QHash<int, int> &selections);
+
 CarUnwrapOverlay buildCarUnwrapOverlay(const fls::CarModel &model,
                                        const fls::LiveryMaskSet &masks,
                                        int lodIndex = 0);
@@ -96,6 +98,7 @@ private:
         GLuint diffuseTexture = 0;
         GLuint alphaTexture = 0;
         GLuint normalTexture = 0;
+        GLuint tireHeightTexture = 0;
         GLuint surfaceTexture = 0;
         GLuint emissiveTexture = 0;
         QVector3D center;
@@ -188,6 +191,8 @@ private:
     int nativeDiffuseLocation_ = -1;
     int nativeAlphaLocation_ = -1;
     int nativeNormalLocation_ = -1;
+    int tireHeightLocation_ = -1;
+    int tireHeightChannelLocation_ = -1;
     int nativeSurfaceLocation_ = -1;
     int nativeEmissiveLocation_ = -1;
     int hasNativeDiffuseLocation_ = -1;

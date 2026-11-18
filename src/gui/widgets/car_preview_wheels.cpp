@@ -125,6 +125,10 @@ std::shared_ptr<const fls::CarModel> wheelTemplate(WheelPreviewState &state, con
         auto model = std::make_shared<fls::CarModel>(fls::decodeModel(fls::parseModelBundle(
             fls::readZipEntry(path, entry, error))));
         if (model->meshes.empty()) return {};
+        if (!rim) {
+            for (auto &mesh : model->meshes) mesh.sourceModelPath = path;
+            resolveTireTemplateMaterials(*model, path, state.loadCarTextures);
+        }
         if (state.templates.size() >= kWheelTemplateCacheLimit) state.templates.erase(state.templates.begin());
         state.templates.insert(key, model);
 

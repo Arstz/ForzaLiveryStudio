@@ -1,9 +1,12 @@
 #include "car_preview_wheels.h"
+#include "material_hashes.h"
+#include "model_material.h"
 #include "zip_extract.h"
 
 #include <QCoreApplication>
 #include <QDirIterator>
 #include <QTemporaryDir>
+#include <QVector3D>
 
 #include <algorithm>
 #include <cmath>
@@ -19,6 +22,47 @@ void require(bool condition, const char *message) {
 int meshCount(const fls::CarModel &model, int partType) {
     return static_cast<int>(std::count_if(model.meshes.cbegin(), model.meshes.cend(),
         [partType](const auto &mesh) { return mesh.carPartType == partType; }));
+}
+
+void requireTireMaterial(const fls::CarMesh &mesh) {
+    namespace hashes = fls::material_hashes::parameter;
+    require(mesh.material && mesh.material->normalTexture
+        && mesh.material->normalTexture->image.valid(), "compound lost its stationary normal map");
+    require(!mesh.material->normalTexture->path.contains(QStringLiteral("blur"), Qt::CaseInsensitive),
+        "stationary tyre received a motion-blur map");
+    for (const auto &parameter : mesh.material->parameters) {
+        if (parameter.nameHash == hashes::kTireNormalHeightTexture) {
+            require(mesh.material->tireHeightTexture == mesh.material->normalTexture,
+                "packed tyre height is missing from the normal map binding");
+        }
+        if (parameter.nameHash == hashes::kLegacyTireHeightTexture && !parameter.texturePath.isEmpty()) {
+            require(mesh.material->tireHeightTexture && mesh.material->tireHeightTexture->image.valid()
+                && mesh.material->tireHeightTexture != mesh.material->normalTexture,
+                "legacy compound lost its separate height map");
+        }
+        if (parameter.nameHash == hashes::kTireSurfaceMasks && !parameter.texturePath.isEmpty()) {
+            require(mesh.material->surfaceTexture && mesh.material->surfaceTexture->image.valid(),
+                "compound lost its surface masks");
+        }
+    }
+    const auto &height = mesh.material->tireHeightTexture;
+    if (height && height->path.contains(QStringLiteral("tread_street_nrml"), Qt::CaseInsensitive)) {
+        const auto &pixels = height->image.rgba;
+        size_t alpha = 3;
+        while (alpha < pixels.size() && pixels[alpha] == pixels[3]) alpha += 4;
+        require(alpha < pixels.size(), "street tread height decoded to a constant");
+    }
+    const auto vector = [](const fls::ModelVec3 &v) { return QVector3D(v.x, v.y, v.z); };
+    double orientation = 0;
+    for (size_t i = 0; i + 2 < mesh.indices.size(); i += 3) {
+        const auto a = mesh.indices[i];
+        const auto b = mesh.indices[i + 1];
+        const auto c = mesh.indices[i + 2];
+        const auto edge1 = vector(mesh.positions[b]) - vector(mesh.positions[a]);
+        const auto edge2 = vector(mesh.positions[c]) - vector(mesh.positions[a]);
+        orientation += QVector3D::dotProduct(QVector3D::crossProduct(edge1, edge2), vector(mesh.normals[a]));
+    }
+    require(orientation > 0, "fitted tyre winding disagrees with its normals");
 }
 
 void requirePair(const fls::CarModel &model, int partType) {
@@ -95,6 +139,7 @@ void testCar(const QString &archive) {
     require(state->independentRimStyles && legacyState && !legacyState->independentRimStyles,
         "per-axle rim styles were not limited to FH6");
     require(state->tires.size() > 2, "tire compounds missing");
+    state->loadCarTextures = true;
     installWheelPartOptions(model, *state);
 
     auto front = buildWheelPreviewGeometry(*state, true, kStockRimStyle, state->tireId, &error);
@@ -136,6 +181,10 @@ void testCar(const QString &archive) {
             }
         }
         requirePair(geometry, kTireSelector);
+        for (const auto &mesh : geometry.meshes) {
+            if (mesh.carPartType != kTireSelector) continue;
+            requireTireMaterial(mesh);
+        }
     }
     const auto unchangedRear = buildWheelPreviewGeometry(*state, false, kStockRimStyle, state->tireId, &error);
     require(unchangedRear.meshes.front().positions.size() == rearPositions.size(), "front sizing altered rear topology");

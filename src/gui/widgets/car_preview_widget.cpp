@@ -451,9 +451,7 @@ QString materialArchiveEntry(QString resourcePath) {
     return materials < 0 ? QString() : resourcePath.mid(materials + 11);
 }
 
-// Wheel and tire modelbins reference their materials only by slot name (rim, hub, tread…),
-// not by a materialbin path, so the shared-library binding is a fixed convention. Map the
-// slot name to its _library materialbin so the normal material resolver can pick it up.
+// Wheel slots follow the shared library's material naming convention.
 QString sharedSlotMaterialEntry(const QString &materialName) {
     const QString n = materialName.toLower();
     if (n == QStringLiteral("rim") || n == QStringLiteral("rim2")) {
@@ -470,8 +468,6 @@ QString sharedSlotMaterialEntry(const QString &materialName) {
     return QString();
 }
 
-// Give wheel/tire meshes a synthetic materialbin resourcePath (from their slot name) unless
-// they already carry a resolvable one, so resolveExteriorMaterials loads the real tuning.
 void assignSharedSlotMaterials(fls::CarModel &model) {
     for (std::vector<fls::CarMesh> *meshes : renderMeshSets(model)) {
         for (fls::CarMesh &mesh : *meshes) {
@@ -481,8 +477,6 @@ void assignSharedSlotMaterials(fls::CarModel &model) {
             QString path = mesh.sourceModelPath.toLower();
             path.replace(QLatin1Char('\\'), QLatin1Char('/'));
             const bool wheel = path.contains(QStringLiteral("/wheels/"));
-            // Tires stay on the solid rubber fallback for now: the shared tire materials decode
-            // with sub-1 opacity, which renders the approximated tires see-through.
             if (!wheel || !materialArchiveEntry(mesh.material->resourcePath).isEmpty()) {
                 continue;
             }
@@ -578,10 +572,23 @@ enum class NativeTextureSlot {
     Diffuse,
     Alpha,
     Normal,
+    TireNormalHeight,
+    TireHeight,
     Surface,
+    TireSurface,
     Emissive,
     Unknown,
 };
+
+NativeTextureSlot tireTextureSlot(quint32 hash) {
+    using namespace fls::material_hashes;
+    if (hash == parameter::kTireNormalHeightTexture) return NativeTextureSlot::TireNormalHeight;
+    if (hash == parameter::kLegacyTireNormalTexture) return NativeTextureSlot::Normal;
+    if (hash == parameter::kLegacyTireHeightTexture) return NativeTextureSlot::TireHeight;
+    if (hash == parameter::kTireSurfaceMasks) return NativeTextureSlot::TireSurface;
+
+    return NativeTextureSlot::Unknown;
+}
 
 NativeTextureSlot nativeTextureSlot(const fls::ModelMaterialParameter &parameter) {
     QString path = parameter.texturePath.toLower();
@@ -661,7 +668,14 @@ void assignNativeTexture(fls::ModelMaterial &material,
     case NativeTextureSlot::Normal:
         material.normalTexture = texture;
         break;
+    case NativeTextureSlot::TireNormalHeight:
+        material.normalTexture = texture;
+        [[fallthrough]];
+    case NativeTextureSlot::TireHeight:
+        material.tireHeightTexture = texture;
+        break;
     case NativeTextureSlot::Surface:
+    case NativeTextureSlot::TireSurface:
         material.surfaceTexture = texture;
         break;
     case NativeTextureSlot::Emissive:
@@ -724,9 +738,16 @@ void cacheMaterialDefaults(const QString &archivePath, const QString &archiveKey
     }
 }
 
+QMutex &materialCacheMutex() {
+    static QMutex mutex;
+
+    return mutex;
+}
+
 void resolveExteriorMaterials(
     fls::CarModel &model, const QString &sourcePath, const QString &carRoot,
     bool includeTextures) {
+    QMutexLocker lock(&materialCacheMutex());
     const QString archivePath = findSharedCarAsset(
         sourcePath, QStringLiteral("_library/Materials.zip"));
     if (archivePath.isEmpty()) {
@@ -802,12 +823,16 @@ void resolveExteriorMaterials(
                 continue;
             }
             visited.insert(mesh.material.get());
+            const bool tire = std::any_of(mesh.material->parameters.cbegin(), mesh.material->parameters.cend(),
+                [](const auto &parameter) {
+                    return tireTextureSlot(parameter.nameHash) != NativeTextureSlot::Unknown;
+                });
             bool hasNormal = false;
             for (const fls::ModelMaterialParameter &parameter : mesh.material->parameters) {
                 if (parameter.type != fls::ModelMaterialParameterType::Texture2D || parameter.texturePath.isEmpty()) {
                     continue;
                 }
-                const NativeTextureSlot slot = nativeTextureSlot(parameter);
+                const NativeTextureSlot slot = tire ? tireTextureSlot(parameter.nameHash) : nativeTextureSlot(parameter);
                 if (slot == NativeTextureSlot::Unknown) {
                     continue;
                 }
@@ -864,6 +889,7 @@ void resolveExteriorMaterials(
                 ? assetFileIdentity(item.localPath)
                 : QDir::cleanPath(carRoot).toLower() + QLatin1Char('|')
                     + normalizedTexturePath(item.path));
+        if (item.slot == NativeTextureSlot::TireSurface) item.cacheKey += QStringLiteral("|tireSurface");
         bool known = false;
         const auto texture = textureCache.find(item.cacheKey, known);
         if (known) {
@@ -898,6 +924,15 @@ void resolveExteriorMaterials(
             if (!bytes.isEmpty()) {
                 fls::SwatchImage image = fls::decodeSwatchImage(bytes);
                 if (image.valid()) {
+                    if (item.slot == NativeTextureSlot::TireSurface) {
+                        // The tyre shader packs roughness in green and occlusion in alpha.
+                        for (size_t i = 0; i < image.rgba.size(); i += 4) {
+                            image.rgba[i] = image.rgba[i + 1];
+                            image.rgba[i + 1] = 0;
+                            image.rgba[i + 2] = image.rgba[i + 3];
+                            image.rgba[i + 3] = 255;
+                        }
+                    }
                     auto decoded = std::make_shared<fls::ModelMaterialTexture>();
                     decoded->path = item.path;
                     decoded->image = std::move(image);
@@ -913,6 +948,7 @@ void resolveExteriorMaterials(
 
 fls::ManufacturerColorPalette loadManufacturerColors(
     const QString &carRoot, const QString &sourcePath) {
+    QMutexLocker lock(&materialCacheMutex());
     QFile file(QDir(carRoot).filePath(QStringLiteral("ManufacturerColors.bin")));
     if (!file.open(QIODevice::ReadOnly)) {
         return {};
@@ -1022,6 +1058,7 @@ std::shared_ptr<PreparedCar> prepareCar(
     resolveExteriorMaterials(model, path, QFileInfo(loadPath).absolutePath(), loadCarTextures);
     auto wheelPreview = prepareWheelPreview(model, path, game, wheelSizing);
     if (wheelPreview) {
+        wheelPreview->loadCarTextures = loadCarTextures;
         auto front = buildWheelPreviewGeometry(*wheelPreview, true, wheelPreview->axles[0].rimId,
             wheelPreview->tireId);
         auto rear = buildWheelPreviewGeometry(*wheelPreview, false, wheelPreview->axles[1].rimId,
@@ -1076,6 +1113,10 @@ std::shared_ptr<PreparedCar> prepareCar(
 }
 
 } // namespace
+
+void resolveTireTemplateMaterials(fls::CarModel &model, const QString &archivePath, bool loadTextures) {
+    resolveExteriorMaterials(model, archivePath, QFileInfo(archivePath).absolutePath(), loadTextures);
+}
 
 QJsonObject profileCarLoading(const QString &path, bool loadTextures, int repetitions, bool verifyUnwrap) {
     QJsonArray runs;
@@ -1199,6 +1240,7 @@ CarPreviewWidget::~CarPreviewWidget() {
     cancelCarLoad();
     makeCurrent();
     carRenderer_.release();
+    partDepthVao_.destroy();
     wheelRenderer_.release();
     shapeRenderer_.release();
     doneCurrent();
@@ -1833,6 +1875,7 @@ void CarPreviewWidget::initializeGL() {
     }
     carRenderer_.initialize();
     graphicsApiSuitable_ = carRenderer_.isInitialized();
+    if (graphicsApiSuitable_) initializePartDepthTest();
     liveryTexture_ = 0;
     liveLiveryFullDirty_ = true;
     liveryDirty_ = true;
@@ -1841,6 +1884,7 @@ void CarPreviewWidget::initializeGL() {
 
 void CarPreviewWidget::resizeGL(int width, int) {
     (void)width;
+    partDepthViewProjection_.reset();
     layoutOverlayControls();
 }
 
@@ -1866,6 +1910,7 @@ void CarPreviewWidget::paintGL() {
     };
 
     if (modelUploadPending_ && carRenderer_.isInitialized()) {
+        partAnchorsDirty_ = true;
         carRenderer_.uploadModel(model_, selectedLodIndex_);
         modelUploadPending_ = false;
         if (modelFitPending_) {
@@ -2026,6 +2071,7 @@ void CarPreviewWidget::paintGL() {
         manufacturerColors_.colors.isEmpty() ? nullptr : &manufacturerColors_,
         paintFinishes_.loaded() ? &paintFinishes_ : nullptr);
     checkpoint(QStringLiteral("render_submit_ms"));
+    updatePartVisibility();
 }
 
 void CarPreviewWidget::paintEvent(QPaintEvent *event) {

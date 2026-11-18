@@ -50,12 +50,14 @@ struct WheelPreviewState {
     QHash<QString, std::shared_ptr<const fls::CarModel>> templates;
     int tireId = 0;
     bool independentRimStyles = false;
+    bool loadCarTextures = false;
 };
 
 bool isWheelSelector(int partType);
 bool isFrontWheelSelector(int partType);
 bool isRimSelector(int partType);
 bool selectWheelPreviewStyle(WheelPreviewState &state, int partType, int optionId);
+void resolveTireTemplateMaterials(fls::CarModel &model, const QString &archivePath, bool loadTextures);
 std::shared_ptr<WheelPreviewState> prepareWheelPreview(
     const fls::CarModel &model, const QString &sourcePath, const QString &game, const fls::WheelSizing &sizing);
 void installWheelPartOptions(fls::CarModel &model, const WheelPreviewState &state);

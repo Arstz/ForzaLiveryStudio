@@ -50,7 +50,8 @@ QHash<int, int> selectionsForBody(const CarModel &model, const CarPartOption *bo
             continue;
         }
         const auto selected = std::find_if(options.cbegin(), options.cend(),
-            [family](const auto *option) {
+            [family, kitPart = body && !body->stock && bodyKitReplacesPart(partType)](const auto *option) {
+                if (kitPart) return family >= 0 && option->carBodyId == family;
                 return family < 0 || option->carBodyId < 0 || option->carBodyId == family;
             });
         selections.insert(partType, selected != options.cend() ? (*selected)->id : -1);
@@ -91,16 +92,27 @@ QVector<const CarPartOption *> individualCarPartOptions(const CarModel &model, i
     return options;
 }
 
+bool bodyKitReplacesPart(int partType) {
+    return partType == car_part_types::SideSkirts || partType == car_part_types::FrontBumper
+        || partType == car_part_types::RearBumper;
+}
+
 QHash<int, int> carPartSelectionsForOption(const CarModel &model,
-    const QHash<int, int> &individualParts, int partType, int optionId) {
+    const QHash<int, int> &activeParts, const QHash<int, int> &individualParts, int partType, int optionId) {
     const auto options = individualCarPartOptions(model, partType);
     const auto selected = std::find_if(options.cbegin(), options.cend(),
         [optionId](const auto *option) { return option->id == optionId; });
-    QHash<int, int> selections = individualParts;
+    const bool body = partType == car_part_types::CarBody;
+    QHash<int, int> selections = body || bodyKitReplacesPart(partType) ? individualParts : activeParts;
 
-    if (selected == options.cend()) return selections;
-    if (partType == car_part_types::CarBody && !(*selected)->stock) {
-        return selectionsForBody(model, *selected);
+    if (selected == options.cend()) return activeParts;
+    if (body && !(*selected)->stock) {
+        const auto kitParts = selectionsForBody(model, *selected);
+        for (auto it = kitParts.cbegin(); it != kitParts.cend(); ++it) {
+            if (bodyKitReplacesPart(it.key()) || selections.value(it.key(), -1) < 0) {
+                selections.insert(it.key(), it.value());
+            }
+        }
     }
     selections.insert(partType, optionId);
 

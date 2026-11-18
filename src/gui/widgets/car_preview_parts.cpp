@@ -11,18 +11,20 @@
 #include <QJsonDocument>
 #include <QLabel>
 #include <QOpenGLFramebufferObject>
+#include <QOpenGLExtraFunctions>
 #include <QPainter>
 #include <QToolButton>
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 namespace gui {
 namespace {
 
 constexpr int kPartHotspotExtent = 34;
 constexpr int kPartHotspotMargin = 4;
-constexpr int kPartHotspotPlacementAttempts = 12;
+constexpr float kPartAnchorOffset = 0.001f;
 constexpr int kPartHotspotOpacity = 225;
 constexpr qreal kPartHotspotRingInset = 3.0;
 constexpr qreal kPartHotspotHaloWidth = 4.0;
@@ -163,7 +165,7 @@ QString partOptionName(const QString &mediaName, const fls::CarPartOption &optio
     return QStringLiteral("Option %1").arg(index + 1);
 }
 
-QVector3D partAnchor(const fls::ModelBounds &bounds, int partType, const QVector3D &eye) {
+QVector3D partAnchorTarget(const fls::ModelBounds &bounds, int partType) {
     const auto &minimum = bounds.minimum;
     const auto &maximum = bounds.maximum;
     QVector3D anchor((minimum.x + maximum.x) * 0.5f,
@@ -174,8 +176,8 @@ QVector3D partAnchor(const fls::ModelBounds &bounds, int partType, const QVector
     case kFrontRimSelector:
     case kRearRimSelector:
     case kTireSelector:
-        anchor.setX(eye.x() >= 0.0f ? minimum.x : maximum.x);
-        if (!isRimSelector(partType)) anchor.setY(maximum.y);
+        anchor.setX(minimum.x);
+        if (partType == kTireSelector) anchor.setZ(maximum.z);
         break;
     case fls::car_part_types::CarBody:
     case fls::car_part_types::Hood:
@@ -189,10 +191,39 @@ QVector3D partAnchor(const fls::ModelBounds &bounds, int partType, const QVector
         anchor.setZ(minimum.z);
         break;
     case fls::car_part_types::SideSkirts:
-        anchor.setX(eye.x() >= 0.0f ? minimum.x : maximum.x);
+        anchor.setX(minimum.x);
         break;
     }
     anchor.setX(-anchor.x());
+
+    return anchor;
+}
+
+struct AnchorMesh {
+    const fls::CarMesh *mesh;
+    fls::ModelBounds bounds;
+};
+
+std::optional<QVector3D> nearestSurfaceAnchor(const QVector<const AnchorMesh *> &surfaces, const QVector3D &target) {
+    std::optional<QVector3D> anchor;
+    float nearestDistance = std::numeric_limits<float>::max();
+    for (const AnchorMesh *surface : surfaces) {
+        const auto &mesh = *surface->mesh;
+        for (size_t i = 0; i + 2 < mesh.indices.size(); i += 3) {
+            // Triangle interiors provide stable depth samples along silhouette edges.
+            const auto &a = mesh.positions[mesh.indices[i]];
+            const auto &b = mesh.positions[mesh.indices[i + 1]];
+            const auto &c = mesh.positions[mesh.indices[i + 2]];
+            const auto p = mesh.boneTransform.transformPoint(
+                {(a.x + b.x + c.x) / 3, (a.y + b.y + c.y) / 3, (a.z + b.z + c.z) / 3});
+            const QVector3D point(-p.x, p.y, p.z);
+            const float distance = (point - target).lengthSquared();
+            if (distance < nearestDistance) {
+                anchor = point;
+                nearestDistance = distance;
+            }
+        }
+    }
 
     return anchor;
 }
@@ -213,6 +244,7 @@ void CarPreviewWidget::initializePartControls() {
     connect(partsToggle_, &QToolButton::toggled, this, [this]() {
         partSelector_->cancelSelection();
         layoutPartControls();
+        update();
     });
 }
 
@@ -286,12 +318,14 @@ QVector<const fls::CarPartOption *> CarPreviewWidget::availablePartOptions(int p
 }
 
 void CarPreviewWidget::syncPartControls() {
+    partAnchorsDirty_ = true;
     const auto *body = findPartOption(model_, fls::car_part_types::CarBody,
         selectedPartOptions_.value(fls::car_part_types::CarBody, -1));
     const bool fullKit = body != nullptr && !body->stock;
     bool hasChoices = false;
 
     for (PartHotspot &hotspot : partHotspots_) {
+        hotspot.visibleCenter.reset();
         QString currentName;
         const int selected = selectedPartOptions_.value(hotspot.partType, -1);
 
@@ -303,12 +337,13 @@ void CarPreviewWidget::syncPartControls() {
                 break;
             }
         }
-        if (fullKit && hotspot.partType != fls::car_part_types::CarBody && !isWheelSelector(hotspot.partType)) {
+        const bool replacedByKit = fullKit && fls::bodyKitReplacesPart(hotspot.partType);
+        if (replacedByKit) {
             currentName = QStringLiteral("Full body kit active");
         }
         hotspot.button->setToolTip(QStringLiteral("%1\n%2\n%3")
             .arg(partTypeName(hotspot.partType, wheelPreview_.get()), currentName,
-                fullKit && hotspot.partType != fls::car_part_types::CarBody && !isWheelSelector(hotspot.partType)
+                replacedByKit
                     ? QStringLiteral("Hold to choose an individual part and leave full-kit mode")
                     : QStringLiteral("Hold, drag to a part, and release to apply")));
         hotspot.button->setAccessibleDescription(currentName);
@@ -319,12 +354,128 @@ void CarPreviewWidget::syncPartControls() {
     layoutPartControls();
 }
 
-void CarPreviewWidget::layoutPartControls() {
-    if (partsToggle_ == nullptr) return;
+void CarPreviewWidget::rebuildPartAnchors() {
+    QVector<AnchorMesh> active;
+    const auto collect = [&](const std::vector<fls::CarMesh> &meshes) {
+        for (const auto &mesh : meshes) {
+            if (mesh.indices.size() < 3 || !isVisibleCarMesh(mesh, selectedPartOptions_)) continue;
+            AnchorMesh surface{&mesh, {}};
+            surface.bounds.include(mesh);
+            active.push_back(surface);
+        }
+    };
+    collect(model_.meshesForLod(selectedLodIndex_));
+    collect(model_.variantMeshesForLod(selectedLodIndex_));
+    QVector<const AnchorMesh *> mountingSurfaces;
+    for (const auto &surface : active) {
+        if (!isWheelSelector(surface.mesh->carPartType)) mountingSurfaces.push_back(&surface);
+    }
+    for (auto &hotspot : partHotspots_) {
+        hotspot.surfaceAnchor.reset();
+        if (hotspot.options.size() < 2) continue;
+        QVector<const AnchorMesh *> surfaces;
+        fls::ModelBounds bounds;
+        for (const auto &surface : active) {
+            if (surface.mesh->carPartType != hotspot.partType) continue;
+            if (hotspot.partType == kTireSelector && surface.bounds.minimum.z + surface.bounds.maximum.z < 0.0f) continue;
+            surfaces.push_back(&surface);
+            bounds.include(surface.bounds.minimum);
+            bounds.include(surface.bounds.maximum);
+        }
+        if (surfaces.isEmpty()) {
+            if (mountingSurfaces.isEmpty()) continue;
+            surfaces = mountingSurfaces;
+            bounds = hotspot.optionBounds.value(kPartBoundsFallback);
+        }
+        hotspot.surfaceAnchor = nearestSurfaceAnchor(surfaces, partAnchorTarget(bounds, hotspot.partType));
+    }
+    partAnchorsDirty_ = false;
+    partDepthViewProjection_.reset();
+}
+
+void CarPreviewWidget::initializePartDepthTest() {
+    constexpr char kVertexShader[] = R"(#version 330 core
+uniform vec3 anchor;
+void main() {
+    gl_Position = vec4(anchor, 1);
+    gl_PointSize = 1.0;
+}
+)";
+    constexpr char kFragmentShader[] = R"(#version 330 core
+out vec4 color;
+void main() {
+    color = vec4(0);
+}
+)";
+    if (!partDepthProgram_.addShaderFromSourceCode(QOpenGLShader::Vertex, kVertexShader)
+        || !partDepthProgram_.addShaderFromSourceCode(QOpenGLShader::Fragment, kFragmentShader)
+        || !partDepthProgram_.link() || !partDepthVao_.create()) {
+        qWarning().noquote() << "Part selector depth test initialization failed" << partDepthProgram_.log();
+    }
+}
+
+void CarPreviewWidget::updatePartVisibility() {
+    if (transparentBackground_ || !partDepthVao_.isCreated() || !partsToggle_->isChecked() || partHotspots_.isEmpty()) return;
+    if (partAnchorsDirty_) rebuildPartAnchors();
     const QMatrix4x4 view = cameraView();
     const QMatrix4x4 viewProjection = cameraProjection() * view;
     const QVector3D eye = view.inverted().map(QVector3D());
-    QVector<QRect> occupied;
+    const QSize viewport(previewViewportWidth(), height());
+    const QSize pixels = viewport * devicePixelRatioF();
+    if (partDepthViewProjection_ == viewProjection && partDepthViewport_ == pixels) return;
+    partDepthViewProjection_ = viewProjection;
+    partDepthViewport_ = pixels;
+
+    struct Sample {
+        PartHotspot *hotspot;
+        QVector3D projected;
+    };
+    QVector<Sample> samples;
+    for (auto &hotspot : partHotspots_) {
+        hotspot.visibleCenter.reset();
+        if (!hotspot.surfaceAnchor) continue;
+        const QVector3D &anchor = *hotspot.surfaceAnchor;
+        const QVector4D clip = viewProjection * QVector4D(anchor, 1);
+        if (clip.w() <= 0 || std::abs(clip.z()) >= clip.w()
+            || std::abs(clip.x()) >= clip.w() || std::abs(clip.y()) >= clip.w()) continue;
+        const QVector3D offset = (eye - anchor).normalized() * (modelRadius_ * kPartAnchorOffset);
+        const QVector4D depthClip = viewProjection * QVector4D(anchor + offset, 1);
+        QVector3D projected = clip.toVector3DAffine();
+        projected.setZ(std::max(-1.0f, depthClip.z() / depthClip.w()));
+        samples.push_back({&hotspot, projected});
+    }
+    if (samples.isEmpty()) return;
+    auto *gl = context()->extraFunctions();
+    QVector<GLuint> queries(samples.size());
+    gl->glGenQueries(static_cast<GLsizei>(queries.size()), queries.data());
+    partDepthProgram_.bind();
+    partDepthVao_.bind();
+    gl->glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
+    gl->glDepthMask(GL_FALSE);
+    const int location = partDepthProgram_.uniformLocation("anchor");
+    for (qsizetype i = 0; i < samples.size(); ++i) {
+        partDepthProgram_.setUniformValue(location, samples[i].projected);
+        gl->glBeginQuery(GL_ANY_SAMPLES_PASSED, queries[i]);
+        gl->glDrawArrays(GL_POINTS, 0, 1);
+        gl->glEndQuery(GL_ANY_SAMPLES_PASSED);
+    }
+    gl->glDepthMask(GL_TRUE);
+    gl->glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+    partDepthVao_.release();
+    partDepthProgram_.release();
+    for (qsizetype i = 0; i < samples.size(); ++i) {
+        GLuint visible = GL_FALSE;
+        gl->glGetQueryObjectuiv(queries[i], GL_QUERY_RESULT, &visible);
+        if (!visible) continue;
+        const auto &p = samples[i].projected;
+        samples[i].hotspot->visibleCenter = QPoint(qRound((1 + p.x()) * viewport.width() * 0.5f),
+            qRound((1 - p.y()) * viewport.height() * 0.5f));
+    }
+    gl->glDeleteQueries(static_cast<GLsizei>(queries.size()), queries.constData());
+}
+
+void CarPreviewWidget::layoutPartControls() {
+    if (partsToggle_ == nullptr) return;
     QRect viewport;
     const int viewportWidth = previewViewportWidth();
     const int controlsTop = referenceNote_->geometry().bottom() + kUiSpacing;
@@ -340,41 +491,14 @@ void CarPreviewWidget::layoutPartControls() {
     for (const PartHotspot &hotspot : partHotspots_) {
         const bool selectable = hotspot.options.size() > 1;
         hasChoices = hasChoices || selectable;
-        if (!ready || !partsToggle_->isChecked() || !selectable) {
+        if (!ready || !partsToggle_->isChecked() || !selectable || !hotspot.visibleCenter) {
             hotspot.button->hide();
             continue;
         }
-        const auto bounds = hotspot.optionBounds.value(selectedPartOptions_.value(hotspot.partType, -1),
-            hotspot.optionBounds.value(kPartBoundsFallback));
-        const QVector4D clip = viewProjection * QVector4D(partAnchor(bounds, hotspot.partType, eye), 1.0f);
-        if (clip.w() <= 0.0f || std::abs(clip.z()) > clip.w()) {
-            hotspot.button->hide();
-            continue;
-        }
-        const QVector3D projected = clip.toVector3DAffine();
-        const QPoint center(qRound((projected.x() + 1.0f) * viewportWidth * 0.5f),
-                            qRound((1.0f - projected.y()) * height() * 0.5f));
-        const QPoint origin = center - QPoint(kPartHotspotExtent / 2, kPartHotspotExtent / 2);
-        QRect placement(origin, hotspot.button->size());
-        bool placed = false;
-        for (int attempt = 0; attempt < kPartHotspotPlacementAttempts; ++attempt) {
-            const int displacement = ((attempt + 1) / 2)
-                * (kPartHotspotExtent + kPartHotspotMargin) * (attempt % 2 == 0 ? 1 : -1);
-            placement.moveTop(origin.y() + displacement);
-            const bool overlaps = std::any_of(occupied.cbegin(), occupied.cend(),
-                [&placement](const QRect &other) {
-                    return placement.adjusted(-kPartHotspotMargin, -kPartHotspotMargin,
-                        kPartHotspotMargin, kPartHotspotMargin).intersects(other);
-                });
-            if (viewport.contains(placement) && !overlaps) {
-                placed = true;
-                break;
-            }
-        }
-        hotspot.button->setVisible(placed);
-        if (!placed) continue;
-        occupied.push_back(placement);
+        QRect placement(QPoint(), hotspot.button->size());
+        placement.moveCenter(*hotspot.visibleCenter);
         hotspot.button->move(placement.topLeft());
+        hotspot.button->setVisible(viewport.contains(placement));
     }
     partsToggle_->setEnabled(ready && hasChoices);
     partsToggle_->setVisible(!transparentBackground_
@@ -407,7 +531,7 @@ QImage CarPreviewWidget::renderPartOptionPreview(int partType, int optionId) {
     const auto *option = findPartOption(model_, partType, optionId);
     const auto hotspot = std::find_if(partHotspots_.cbegin(), partHotspots_.cend(),
         [partType](const PartHotspot &candidate) { return candidate.partType == partType; });
-    const auto selections = fls::carPartSelectionsForOption(model_, individualPartOptions_, partType, optionId);
+    const auto selections = fls::carPartSelectionsForOption(model_, selectedPartOptions_, individualPartOptions_, partType, optionId);
     const bool wholeCar = partType == fls::car_part_types::CarBody;
 
     if (option == nullptr || hotspot == partHotspots_.cend() || !context()
@@ -490,16 +614,13 @@ void CarPreviewWidget::selectPartOption(int partType, int optionId) {
     const auto options = availablePartOptions(partType);
     const auto selected = std::find_if(options.cbegin(), options.cend(),
         [optionId](const auto *option) { return option->id == optionId; });
-    auto selections = fls::carPartSelectionsForOption(model_, individualPartOptions_, partType, optionId);
-    for (int wheelType : kWheelSelectors) {
-        if (selectedPartOptions_.contains(wheelType)) selections.insert(wheelType, selectedPartOptions_.value(wheelType));
-    }
+    const auto selections = fls::carPartSelectionsForOption(model_, selectedPartOptions_, individualPartOptions_, partType, optionId);
 
     if (modelLoadPending_ || modelUploadPending_ || selected == options.cend()
         || selectedPartOptions_ == selections) return;
     selectedPartOptions_ = selections;
     if (partType != fls::car_part_types::CarBody || (*selected)->stock) {
-        individualPartOptions_ = selections;
+        individualPartOptions_.insert(partType, optionId);
     }
     if (wheelPreview_ && normalizeWheelPreviewSizing(*wheelPreview_,
         selectedPartOptions_.value(fls::car_part_types::CarBody, -1))) {

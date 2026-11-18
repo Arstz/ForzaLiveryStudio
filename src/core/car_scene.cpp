@@ -1079,6 +1079,11 @@ void appendApproximateTires(
             mesh.paintMaterialHash = 0;
             mesh.boneTransform = ModelMat4{};
             mesh.tangentChannels.clear();
+            if (side > 0.0f) {
+                for (size_t i = 0; i + 2 < mesh.indices.size(); i += 3) {
+                    std::swap(mesh.indices[i + 1], mesh.indices[i + 2]);
+                }
+            }
 
             for (size_t i = 0; i < mesh.positions.size(); ++i) {
                 const ModelVec3 p = sourceMesh.boneTransform.transformPoint(sourceMesh.positions[i]);

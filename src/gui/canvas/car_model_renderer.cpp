@@ -179,6 +179,8 @@ uniform sampler2D native_diffuse;
 uniform sampler2D native_alpha;
 uniform sampler2D native_normal;
 uniform sampler2D native_surface;
+uniform sampler2D tire_height;
+uniform int tire_height_channel;
 uniform sampler2D native_emissive;
 uniform int has_native_diffuse;
 uniform int has_native_alpha;
@@ -313,7 +315,8 @@ mat3 materialTangentFrame(vec3 normal, vec3 position, vec2 uv)
     vec3 dp1perp = cross(normal, dp1);
     vec3 tangent = dp2perp * duv1.x + dp1perp * duv2.x;
     vec3 bitangent = dp2perp * duv1.y + dp1perp * duv2.y;
-    float scale = inversesqrt(max(max(dot(tangent, tangent), dot(bitangent, bitangent)), 0.000001));
+    float lengthSquared = max(dot(tangent, tangent), dot(bitangent, bitangent));
+    float scale = lengthSquared > 0.0 ? inversesqrt(lengthSquared) : 0.0;
     return mat3(tangent * scale, bitangent * scale, normal);
 }
 
@@ -347,6 +350,48 @@ vec3 mappedNormal(sampler2D normalTexture, vec2 uv, float intensity)
     return normalize(mapped);
 }
 
+float tireHeight(vec2 uv, vec2 uvDx, vec2 uvDy)
+{
+    return textureGrad(tire_height, uv, uvDx, uvDy)[tire_height_channel];
+}
+
+vec2 tireParallaxRay(vec3 direction)
+{
+    const float strength = 0.03;
+    return strength * direction.xy / max(direction.z, 0.25);
+}
+
+vec2 tireReliefUv(vec2 uv, mat3 frame, vec3 viewDir, vec3 lightDir, out float lightVisibility)
+{
+    const int layers = 16;
+    vec2 uvDx = dFdx(uv);
+    vec2 uvDy = dFdy(uv);
+    vec2 viewRay = tireParallaxRay(transpose(frame) * viewDir);
+    vec2 top = uv + 0.5 * viewRay;
+    float previousGap = 1.0 - tireHeight(top, uvDx, uvDy);
+    float depth = 0.0;
+    for (int layer = 1; layer <= layers && previousGap > 0.0; ++layer) {
+        depth = float(layer) / float(layers);
+        float gap = 1.0 - depth - tireHeight(top - depth * viewRay, uvDx, uvDy);
+        if (gap <= 0.0) {
+            depth -= (-gap / (previousGap - gap)) / float(layers);
+            break;
+        }
+        previousGap = gap;
+    }
+    vec2 hit = top - depth * viewRay;
+    vec2 lightRay = tireParallaxRay(transpose(frame) * lightDir);
+    float obstruction = 0.0;
+    const int shadowSteps = 4;
+    for (int stepIndex = 1; stepIndex <= shadowSteps; ++stepIndex) {
+        float rise = depth * float(stepIndex) / float(shadowSteps);
+        float blocker = tireHeight(hit + rise * lightRay, uvDx, uvDy);
+        obstruction = max(obstruction, blocker - (1.0 - depth + rise));
+    }
+    lightVisibility = 1.0 - smoothstep(0.02, 0.25, obstruction);
+    return hit;
+}
+
 // Procedural metal-flake sparkle: quantise world space into tiny cells, keep only the
 // cells dense enough to hold a flake, and light each one when its (randomly offset)
 // facing lines up with the highlight so the sparkle twinkles as the view moves.
@@ -376,10 +421,16 @@ void main()
         n = -n;
     }
     vec2 materialUv = v_material_uv;
-    if (has_native_normal == 1 && finish_own_uv == 0) {
-        n = normalize(materialTangentFrame(n, v_world, materialUv) * mappedNormal(native_normal, materialUv, 1.0));
-    }
     vec3 viewDir = normalize(eye_position - v_world);
+    vec3 l = normalize(vec3(0.4, 0.8, 0.6));
+    float lightVisibility = 1.0;
+    if (has_native_normal == 1 && finish_own_uv == 0) {
+        mat3 frame = materialTangentFrame(n, v_world, materialUv);
+        if (tire_height_channel >= 0) {
+            materialUv = tireReliefUv(materialUv, frame, viewDir, l, lightVisibility);
+        }
+        n = normalize(frame * mappedNormal(native_normal, materialUv, 1.0));
+    }
     float edge = pow(1.0 - max(dot(n, viewDir), 0.0), 2.0);
     vec3 surfacePaint = mix(base_paint, secondary_paint, secondary_mix * edge);
     float outputAlpha = material_alpha;
@@ -558,7 +609,6 @@ void main()
     vec3 nativeEmission = has_native_emissive == 1
         ? texture(native_emissive, materialUv).rgb
         : vec3(0.0);
-    vec3 l = normalize(vec3(0.4, 0.8, 0.6));
     vec3 v = viewDir;
     float NdotV = max(dot(n, v), 0.0);
     vec3 F0 = mix(vec3(0.04), albedo, surfaceMetallic);
@@ -593,7 +643,7 @@ void main()
     vec3 kD = (vec3(1.0) - kS) * (1.0 - surfaceMetallic);
     vec3 diffuse = kD * albedo / PI;
     vec3 specular = (D * G * F) / max(4.0 * NdotV * NdotL, 0.001);
-    vec3 lo = (diffuse + specular) * vec3(3.0) * NdotL;
+    vec3 lo = (diffuse + specular) * vec3(3.0) * NdotL * lightVisibility;
     vec3 ambient = vec3(0.25) * albedo * surfaceAo;
     vec3 color = ambient + lo;
     vec3 reflected = reflect(-v, environmentNormal);
@@ -627,6 +677,7 @@ void main()
 )";
 
 constexpr int kMaskTextureScale = 2;
+constexpr int kTireHeightUnit = 11;
 
 bool isBodyPaintMaterial(const QString &material) {
     const QString name = material.toLower();
@@ -796,6 +847,8 @@ const QVector3D kSteelColor(0.28f, 0.30f, 0.33f);
 const QVector3D kPaintedMetalColor(0.055f, 0.058f, 0.064f);
 const QVector3D kCarbonColor(0.085f, 0.092f, 0.10f);
 const QVector3D kRubberColor(0.018f, 0.019f, 0.021f);
+const QVector3D kTireRubberColor(0.12f, 0.125f, 0.13f);
+constexpr float kTireGloss = 0.42f;
 const QVector3D kBlackExteriorColor(0.008f, 0.009f, 0.011f);
 const QVector3D kPlasticColor(0.025f, 0.027f, 0.030f);
 const QVector3D kBadgeColor(0.46f, 0.49f, 0.53f);
@@ -934,6 +987,8 @@ void CarModelRenderer::initialize() {
     nativeDiffuseLocation_ = program_.uniformLocation("native_diffuse");
     nativeAlphaLocation_ = program_.uniformLocation("native_alpha");
     nativeNormalLocation_ = program_.uniformLocation("native_normal");
+    tireHeightLocation_ = program_.uniformLocation("tire_height");
+    tireHeightChannelLocation_ = program_.uniformLocation("tire_height_channel");
     nativeSurfaceLocation_ = program_.uniformLocation("native_surface");
     nativeEmissiveLocation_ = program_.uniformLocation("native_emissive");
     hasNativeDiffuseLocation_ = program_.uniformLocation("has_native_diffuse");
@@ -1009,6 +1064,8 @@ void CarModelRenderer::release() {
     nativeDiffuseLocation_ = -1;
     nativeAlphaLocation_ = -1;
     nativeNormalLocation_ = -1;
+    tireHeightLocation_ = -1;
+    tireHeightChannelLocation_ = -1;
     nativeSurfaceLocation_ = -1;
     nativeEmissiveLocation_ = -1;
     hasNativeDiffuseLocation_ = -1;
@@ -2254,13 +2311,17 @@ std::vector<uint8_t> upsampleCoverageMask(const fls::SwatchMask &mask, int dstW,
 
 } // namespace
 
+bool isVisibleCarMesh(const fls::CarMesh &mesh, const QHash<int, int> &selections) {
+    return visibleCarPart(mesh.carPartType, mesh.stockPart, mesh.partOptionIds, selections)
+        && !isPrebakedLiveryMesh(mesh) && !isInteriorWindowShell(mesh.name) && !isCoarseInteriorLod(mesh);
+}
+
 QSet<quint64> carPaintableBindings(const fls::CarModel &model, int lodIndex,
                                  const QHash<int, int> &partSelections) {
     QSet<quint64> bindings;
     const auto collect = [&](const std::vector<fls::CarMesh> &meshes) {
         for (const auto &mesh : meshes) {
-            if (!visibleCarPart(mesh.carPartType, mesh.stockPart, mesh.partOptionIds, partSelections)
-                || isPrebakedLiveryMesh(mesh) || isInteriorWindowShell(mesh.name) || isCoarseInteriorLod(mesh)) continue;
+            if (!isVisibleCarMesh(mesh, partSelections)) continue;
             const auto hashes = paintMaterialHashes(mesh, isCockpitOnly(mesh));
             if (!hashes.empty() && meshHasSurfaceArea(mesh)) bindings.insert(hashes.front());
         }
@@ -2682,6 +2743,7 @@ void CarModelRenderer::uploadModel(const fls::CarModel &model, int lodIndex) {
         requireTexture(mesh.material->diffuseTexture, false);
         requireTexture(mesh.material->alphaTexture, false);
         requireTexture(mesh.material->normalTexture, false);
+        requireTexture(mesh.material->tireHeightTexture, false);
         requireTexture(mesh.material->surfaceTexture, false);
         requireTexture(mesh.material->emissiveTexture, true);
     }
@@ -2861,6 +2923,7 @@ void CarModelRenderer::uploadModel(const fls::CarModel &model, int lodIndex) {
                 buffers->diffuseTexture = uploadTexture(mesh.material->diffuseTexture, false);
                 buffers->alphaTexture = uploadTexture(mesh.material->alphaTexture, false);
                 buffers->normalTexture = uploadTexture(mesh.material->normalTexture, false);
+                buffers->tireHeightTexture = uploadTexture(mesh.material->tireHeightTexture, false);
                 buffers->surfaceTexture = uploadTexture(mesh.material->surfaceTexture, false);
                 buffers->emissiveTexture = uploadTexture(mesh.material->emissiveTexture, true);
             }
@@ -2877,15 +2940,18 @@ void CarModelRenderer::uploadModel(const fls::CarModel &model, int lodIndex) {
         const bool libraryMaterial = mesh.material && mesh.material->resolvedFromLibrary;
         const std::optional<WheelMaterialFallback> wheel = wheelMaterialFallback(mesh);
         const std::optional<MaterialFallback> material = exteriorMaterialFallback(mesh);
-        if (mesh.name.startsWith(QStringLiteral("tire"), Qt::CaseInsensitive)) {
-            if (!libraryMaterial || !mesh.material->hasBaseColor) {
+        QString wheelPath = mesh.sourceModelPath.toLower();
+        wheelPath.replace(QLatin1Char('\\'), QLatin1Char('/'));
+        const bool tire = mesh.name.startsWith(QStringLiteral("tire"), Qt::CaseInsensitive)
+            || wheelPath.contains(QStringLiteral("/tires/"));
+        if (tire) {
+            if (!buffers->hasMaterialColor) {
                 buffers->hasMaterialColor = true;
-                buffers->materialColor = kRubberColor;
+                buffers->materialColor = kTireRubberColor;
             }
-            if (!libraryMaterial) {
-                buffers->gloss = 0.22f;
-                buffers->metallic = 0.0f;
-            }
+            buffers->gloss = kTireGloss;
+            buffers->metallic = 0.0f;
+            buffers->alpha = 1.0f;
         } else if (wheel) {
             if (!buffers->hasMaterialColor) {
                 buffers->hasMaterialColor = true;
@@ -2966,17 +3032,8 @@ void CarModelRenderer::uploadModel(const fls::CarModel &model, int lodIndex) {
             buffers->alpha = 0.42f;
         }
         buffers->translucent = buffers->alpha < 0.995f;
-        // Wheels/tires don't play well with back-face culling: the generated tires bake an
-        // X-mirror into their right-side vertices (flipping winding) and the wheel discs
-        // pair with motion-blur geometry, so cull them double-sided like before.
-        {
-            QString wheelPath = mesh.sourceModelPath.toLower();
-            wheelPath.replace(QLatin1Char('\\'), QLatin1Char('/'));
-            buffers->doubleSided = wheelPath.contains(QStringLiteral("/wheels/"))
-                || wheelPath.contains(QStringLiteral("/tires/"))
-                || mesh.name.startsWith(QStringLiteral("tire"), Qt::CaseInsensitive)
-                || mesh.name.startsWith(QStringLiteral("wheel"), Qt::CaseInsensitive);
-        }
+        buffers->doubleSided = tire || wheelPath.contains(QStringLiteral("/wheels/"))
+            || mesh.name.startsWith(QStringLiteral("wheel"), Qt::CaseInsensitive);
 
         buffers->model = carMeshModelMatrix(mesh);
 
@@ -3505,6 +3562,11 @@ void CarModelRenderer::render(
                             finishSurfaceLocation_, hasFinishSurfaceLocation_);
         bindMaterialTexture(10, finishTextures != nullptr ? finishTextures->weaveMask : 0,
                             weaveMaskLocation_, hasWeaveMaskLocation_);
+        functions->glActiveTexture(GL_TEXTURE0 + kTireHeightUnit);
+        functions->glBindTexture(GL_TEXTURE_2D, mesh.tireHeightTexture);
+        program_.setUniformValue(tireHeightLocation_, kTireHeightUnit);
+        const int heightChannel = mesh.tireHeightTexture == mesh.normalTexture ? 3 : 0;
+        program_.setUniformValue(tireHeightChannelLocation_, mesh.tireHeightTexture ? heightChannel : -1);
         program_.setUniformValue(weaveColorTintALocation_, finish != nullptr
             ? displayColor(finish->weaveColorTintA) : QVector3D());
         program_.setUniformValue(weaveColorTintBLocation_, finish != nullptr
@@ -3628,7 +3690,7 @@ void CarModelRenderer::render(
         functions->glActiveTexture(GL_TEXTURE0);
         functions->glBindTexture(GL_TEXTURE_2D, 0);
     }
-    for (int unit = 2; unit <= 6; ++unit) {
+    for (int unit = 2; unit <= kTireHeightUnit; ++unit) {
         functions->glActiveTexture(GL_TEXTURE0 + unit);
         functions->glBindTexture(GL_TEXTURE_2D, 0);
     }
