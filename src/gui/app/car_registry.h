@@ -23,6 +23,11 @@ public:
         QString game;
     };
 
+    struct ModelAlternative {
+        QString name;
+        ModelSource source;
+    };
+
     bool loadDefault(QString *error = nullptr);
     bool loadFromFile(const QString &path, QString *error = nullptr);
 
@@ -34,6 +39,8 @@ public:
     bool isSupported(int id, const QString &game) const;
     ModelSource findModel(int id, const QMap<QString, QString> &gameFolders,
                           const QString &preferredGame = {}) const;
+    ModelAlternative findClosestModel(int id, const QMap<QString, QString> &gameFolders,
+                                      const QString &preferredGame) const;
     QHash<int, QStringList> modelAvailability(const QMap<QString, QString> &gameFolders) const;
     QString displayName(int id) const;
     const QVector<Entry> &entries() const { return sorted_; }
@@ -44,11 +51,16 @@ private:
     QHash<int, QString> models_;
     QHash<int, QHash<QString, QString>> gameModels_;
     QHash<int, QString> versions_;
+    QHash<int, int> years_;
     QVector<Entry> sorted_;
 };
 
 const CarRegistry &sharedCarRegistry();
 
-bool chooseCarModel(QWidget *parent, int currentId, int *outId);
+enum class MissingCarModelChoice { Cancel, Continue, LoadClosest };
+
+MissingCarModelChoice chooseMissingCarModel(
+    QWidget *parent, int carId, const QString &targetGame, const QString &alternativeModel = {});
+bool chooseCarModel(QWidget *parent, int currentId, int *outId, bool confirmMissingModel = false);
 
 } // namespace gui

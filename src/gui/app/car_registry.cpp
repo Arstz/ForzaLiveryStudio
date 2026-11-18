@@ -12,9 +12,11 @@
 #include <QJsonObject>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMessageBox>
 #include <QHeaderView>
 #include <QPainter>
 #include <QPushButton>
+#include <QRegularExpression>
 #include <QStyledItemDelegate>
 #include <QStyle>
 #include <QStyleOptionViewItem>
@@ -22,6 +24,7 @@
 #include <QVBoxLayout>
 
 #include <algorithm>
+#include <cstdlib>
 #include <numeric>
 
 namespace gui {
@@ -33,6 +36,20 @@ constexpr int kVersionSpacing = 10;
 constexpr int kVersionMargin = 4;
 constexpr int kCarDialogWidth = 1000;
 constexpr int kCarDialogHeight = 560;
+constexpr int kClosestModelYearDifference = 5;
+
+QString modelFamily(const QString &modelCode) {
+    static const QRegularExpression familyPattern(QStringLiteral(
+        "^([A-Z]+[0-9]+|[0-9]+|[A-Z]?[a-z]+|[A-Z]+(?=[A-Z][a-z]|$))"));
+    const QStringList parts = modelCode.split(QLatin1Char('_'));
+    if (parts.size() < 3) {
+        return {};
+    }
+    const qsizetype familyIndex = parts.size() > 3 && parts[1].toInt() > 0 ? 2 : 1;
+    const QString family = familyPattern.match(parts[familyIndex]).captured(1);
+
+    return family.isEmpty() ? QString() : (parts.front() + QLatin1Char('_') + family).toCaseFolded();
+}
 
 class CarVersionDelegate final : public QStyledItemDelegate {
 public:
@@ -129,6 +146,7 @@ bool CarRegistry::loadFromFile(const QString &path, QString *error) {
     QHash<int, QString> parsed;
     QHash<int, QString> parsedModels;
     QHash<int, QString> parsedVersions;
+    QHash<int, int> parsedYears;
     QHash<int, QHash<QString, QString>> parsedGameModels;
     for (auto it = root.begin(); it != root.end(); ++it) {
         bool ok = false;
@@ -143,6 +161,7 @@ bool CarRegistry::loadFromFile(const QString &path, QString *error) {
             const QJsonObject entry = it.value().toObject();
             model = entry.value(QStringLiteral("model")).toString().trimmed();
             name = entry.value(QStringLiteral("name")).toString().trimmed();
+            parsedYears.insert(id, entry.value(QStringLiteral("year")).toInt());
             const QJsonObject games = entry.value(QStringLiteral("games")).toObject();
             for (auto game = games.begin(); game != games.end(); ++game) {
                 const QString gameModel = game.value().toObject().value(QStringLiteral("model")).toString().trimmed();
@@ -172,6 +191,7 @@ bool CarRegistry::loadFromFile(const QString &path, QString *error) {
     models_ = parsedModels;
     gameModels_ = parsedGameModels;
     versions_ = parsedVersions;
+    years_ = parsedYears;
     sorted_.clear();
     sorted_.reserve(names_.size());
     for (auto it = names_.constBegin(); it != names_.constEnd(); ++it) {
@@ -229,6 +249,40 @@ CarRegistry::ModelSource CarRegistry::findModel(int id, const QMap<QString, QStr
     return {};
 }
 
+CarRegistry::ModelAlternative CarRegistry::findClosestModel(
+    int id, const QMap<QString, QString> &gameFolders, const QString &preferredGame) const {
+    const QString family = modelFamily(models_.value(id));
+    const QStringList games = fls::carModelGames(preferredGame);
+    ModelAlternative closest;
+    const int year = years_.value(id);
+    int closestDifference = kClosestModelYearDifference + 1;
+    qsizetype closestGameRank = games.size();
+
+    if (year <= 0 || family.isEmpty()) {
+        return {};
+    }
+    for (const Entry &entry : sorted_) {
+        const int candidateYear = years_.value(entry.id);
+        const int difference = std::abs(year - candidateYear);
+        if (entry.id == id || candidateYear <= 0 || difference > closestDifference
+            || difference > kClosestModelYearDifference || modelFamily(models_.value(entry.id)) != family) {
+            continue;
+        }
+        const ModelSource source = findModel(entry.id, gameFolders, preferredGame);
+        if (source.path.isEmpty() || modelFamily(modelCode(entry.id, source.game)) != family) {
+            continue;
+        }
+        const qsizetype gameRank = games.indexOf(source.game);
+        if (difference < closestDifference || gameRank < closestGameRank) {
+            closest = {entry.name, source};
+            closestDifference = difference;
+            closestGameRank = gameRank;
+        }
+    }
+
+    return closest;
+}
+
 QHash<int, QStringList> CarRegistry::modelAvailability(const QMap<QString, QString> &gameFolders) const {
     QHash<int, QStringList> available;
 
@@ -263,7 +317,37 @@ const CarRegistry &sharedCarRegistry() {
     return registry;
 }
 
-bool chooseCarModel(QWidget *parent, int currentId, int *outId) {
+MissingCarModelChoice chooseMissingCarModel(
+    QWidget *parent, int carId, const QString &targetGame, const QString &alternativeModel) {
+    const QString versions = sharedCarRegistry().version(carId);
+    const QString expectation = versions.isEmpty() ? QStringLiteral("supported games unknown")
+        : versions.contains(QLatin1Char(',')) ? QStringLiteral("expected one of %1").arg(versions)
+        : QStringLiteral("expected %1").arg(versions);
+    const QString expected = targetGame.isEmpty() ? expectation
+        : QStringLiteral("%1, targets %2").arg(expectation, targetGame);
+    QString message = QStringLiteral(
+        "No model found within configured games folders (%1), continue without?").arg(expected);
+    if (!alternativeModel.isEmpty()) {
+        message += QStringLiteral("\n\nCan load %1 instead.").arg(alternativeModel);
+    }
+
+    QMessageBox dialog(QMessageBox::Warning, QStringLiteral("Car Model Missing"), message,
+                       QMessageBox::Cancel, parent);
+    dialog.setTextFormat(Qt::PlainText);
+    const QPushButton *proceed = dialog.addButton(QStringLiteral("Continue"), QMessageBox::AcceptRole);
+    const QPushButton *loadClosest = alternativeModel.isEmpty() ? nullptr
+        : dialog.addButton(QStringLiteral("Load closest"), QMessageBox::ActionRole);
+    dialog.setDefaultButton(QMessageBox::Cancel);
+    dialog.exec();
+
+    if (dialog.clickedButton() == proceed) {
+        return MissingCarModelChoice::Continue;
+    }
+    return loadClosest != nullptr && dialog.clickedButton() == loadClosest
+        ? MissingCarModelChoice::LoadClosest : MissingCarModelChoice::Cancel;
+}
+
+bool chooseCarModel(QWidget *parent, int currentId, int *outId, bool confirmMissingModel) {
     const CarRegistry &registry = sharedCarRegistry();
     const auto availability = registry.modelAvailability(loadBehaviorSettings().gameFolders);
 
@@ -343,8 +427,21 @@ bool chooseCarModel(QWidget *parent, int currentId, int *outId) {
     });
     QObject::connect(list, &QTreeWidget::currentItemChanged, list,
                      [&updateOkEnabled](QTreeWidgetItem *, QTreeWidgetItem *) { updateOkEnabled(); });
-    QObject::connect(list, &QTreeWidget::itemDoubleClicked, &dialog, [&dialog](QTreeWidgetItem *, int) { dialog.accept(); });
-    QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    const auto acceptCar = [&] {
+        const QTreeWidgetItem *current = list->currentItem();
+        if (current == nullptr || current->isHidden()) {
+            return;
+        }
+        const int carId = current->data(0, Qt::UserRole).toInt();
+        if (confirmMissingModel && carId != currentId
+            && registry.findModel(carId, loadBehaviorSettings().gameFolders).path.isEmpty()
+            && chooseMissingCarModel(&dialog, carId, {}) == MissingCarModelChoice::Cancel) {
+            return;
+        }
+        dialog.accept();
+    };
+    QObject::connect(list, &QTreeWidget::itemDoubleClicked, &dialog, acceptCar);
+    QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog, acceptCar);
     QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
 
     filter->setFocus();

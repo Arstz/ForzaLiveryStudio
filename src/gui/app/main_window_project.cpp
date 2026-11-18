@@ -33,7 +33,7 @@ constexpr int kSectionBarLabelSlots[fls::kLiverySideCount] = {
 
 } // namespace
 
-void MainWindow::setProject(fls::Project project) {
+void MainWindow::setProject(fls::Project project, bool importedWithoutModel) {
     clearScratchCopy();
     if (carPreview_ != nullptr) {
         carPreview_->cancelCarLoad();
@@ -66,7 +66,7 @@ void MainWindow::setProject(fls::Project project) {
     if (carUnwrapAction_ != nullptr) {
         carUnwrapAction_->setChecked(state_->project_.isLivery);
     }
-    maybeAutoLoadCarForProject();
+    maybeAutoLoadCarForProject(importedWithoutModel, !importedWithoutModel);
     updateCarUnwrapOverlay();
 }
 
@@ -107,7 +107,7 @@ void MainWindow::loadCarModel(const QString &path, bool automatic, const QString
     }, modelGame);
 }
 
-void MainWindow::maybeAutoLoadCarForProject(bool replaceLoadedModel) {
+void MainWindow::maybeAutoLoadCarForProject(bool replaceLoadedModel, bool offerGameFolderSetup) {
     if (carPreview_ == nullptr || state_ == nullptr || !state_->hasProject_) {
         return;
     }
@@ -134,7 +134,7 @@ void MainWindow::maybeAutoLoadCarForProject(bool replaceLoadedModel) {
     }
 
     CarRegistry::ModelSource source = sharedCarRegistry().findModel(project.carId, settings.gameFolders, project.liveryPaint.game);
-    if (source.path.isEmpty()) {
+    if (source.path.isEmpty() && offerGameFolderSetup) {
         for (const QString &game : fls::carModelGames(project.liveryPaint.game)) {
             if (!sharedCarRegistry().isSupported(project.carId, game)
                 || !fls::gameCarsDirs(settings.gameFolders.value(game)).isEmpty()
@@ -555,7 +555,7 @@ void MainWindow::setTargetCarDialog() {
         return;
     }
     int carId = state_->project_.carId;
-    if (!chooseCarModel(this, carId, &carId)) {
+    if (!chooseCarModel(this, carId, &carId, true)) {
         return;
     }
     if (carId == state_->project_.carId) {
@@ -581,7 +581,7 @@ void MainWindow::setTargetCarDialog() {
     refreshHeaderMetadataWidget();
     canvasStatusBar_->showMessage(
         QStringLiteral("Target car set to %1").arg(sharedCarRegistry().displayName(carId)), 5000);
-    maybeAutoLoadCarForProject(true);
+    maybeAutoLoadCarForProject(true, false);
 }
 
 } // namespace gui

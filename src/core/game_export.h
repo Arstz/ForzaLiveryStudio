@@ -17,6 +17,7 @@ enum class ExportGameVersion {
     Horizon4,
 };
 
+QString exportGameCode(ExportGameVersion game);
 QString exportThumbnailName(ExportGameVersion game, bool livery);
 bool exportGameSupportsMasks(ExportGameVersion game);
 quint64 exportMaskedLayerCount(const Project &project);

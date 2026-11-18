@@ -156,7 +156,7 @@ private:
                                    const QString &id,
                                    const QString &label,
                                    const QKeySequence &shortcut) const;
-    void setProject(fls::Project project);
+    void setProject(fls::Project project, bool importedWithoutModel = false);
     void updateStatus();
     void updateClipboardWidget();
     void updateColorPaletteWidget();
@@ -260,7 +260,7 @@ private:
     void setupWindowMenu();
     void importCarModel();
     void loadCarModel(const QString &path, bool automatic, const QString &game = {});
-    void maybeAutoLoadCarForProject(bool replaceLoadedModel = false);
+    void maybeAutoLoadCarForProject(bool replaceLoadedModel = false, bool offerGameFolderSetup = true);
 
     EditorState *state_ = nullptr;
     KeyBindingRouter *keyBindings_ = nullptr;

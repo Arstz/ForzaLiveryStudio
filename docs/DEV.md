@@ -161,29 +161,3 @@ undo, and livery export. The preview approximates the game renderer.
 | `tools/` | Build and deployment scripts, asset generation, and inspection tools. |
 | `tools/tests/` | Test suites, shared fixtures, and benchmark scripts. |
 | `third_party/` | Clipper2, Potrace, and libmspack. |
-
-## Validation
-
-For code changes, build with `tools/build.ps1 -DisablePrivacyPolicy`. GUI
-appearance and in-game acceptance require user verification.
-
-For automated checks, enable tests after configuration and build directly with
-CMake:
-
-```powershell
-.\tools\configure.ps1 -DisablePrivacyPolicy
-cmake -S . -B build -DFLS_BUILD_TESTS=ON
-cmake --build build --config Release
-ctest --test-dir build -C Release --output-on-failure
-```
-
-Run the CTest selection relevant to the change. `CMakeLists.txt` defines tests
-and fixture requirements. Sources live in `tools/tests/<suite>/` and shared data
-in `tools/tests/fixtures/`. Local assets in the root `tests/` directory are
-optional and untracked; fixture-dependent checks are registered at configuration
-time.
-
-Codec checks validate scene geometry, masks, ordering, section membership, and
-serialization. Native-reference comparisons distinguish byte equality from
-scene equivalence. State and widget checks cover commands, history, selection,
-and startup; deployment checks cover runtime asset consistency.

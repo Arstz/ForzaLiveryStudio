@@ -450,7 +450,9 @@ bool MainWindow::handleExternalDropUrls(const QList<QUrl> &urls) {
         return true;
     case ExternalDropKind::CGroup:
         if (!importAny(path, &error)) {
-            QMessageBox::critical(this, QStringLiteral("Import failed"), error);
+            if (!error.isEmpty()) {
+                QMessageBox::critical(this, QStringLiteral("Import failed"), error);
+            }
             return false;
         }
         return true;
@@ -558,9 +560,33 @@ bool MainWindow::loadLivery(const QString &path, QString *error) {
 bool MainWindow::loadImportedProject(const std::function<fls::Project()> &load,
                                      const QString &statusMessage,
                                      QString *error) {
+    if (error != nullptr) {
+        error->clear();
+    }
     try {
         fls::Project project = load();
-        setProject(std::move(project));
+        const CarRegistry &registry = sharedCarRegistry();
+        const auto gameFolders = loadBehaviorSettings().gameFolders;
+        CarRegistry::ModelSource alternativeSource;
+        const bool missingModel = project.isLivery
+            && registry.findModel(project.carId, gameFolders, project.liveryPaint.game).path.isEmpty();
+
+        if (missingModel) {
+            const auto alternative = registry.findClosestModel(project.carId, gameFolders, project.liveryPaint.game);
+            const QString targetGame = project.liveryPaint.game.isEmpty()
+                ? QStringLiteral("unknown game") : project.liveryPaint.game;
+            const auto choice = chooseMissingCarModel(this, project.carId, targetGame, alternative.name);
+            if (choice == MissingCarModelChoice::Cancel) {
+                return false;
+            }
+            if (choice == MissingCarModelChoice::LoadClosest) {
+                alternativeSource = alternative.source;
+            }
+        }
+        setProject(std::move(project), missingModel);
+        if (!alternativeSource.path.isEmpty()) {
+            loadCarModel(alternativeSource.path, true, alternativeSource.game);
+        }
         canvasStatusBar_->showMessage(statusMessage, 5000);
         return true;
     } catch (const std::exception &ex) {
@@ -782,51 +808,57 @@ bool MainWindow::importAny(const QString &path, QString *error) {
 }
 
 void MainWindow::importFileDialog() {
-    const ImportAssetSelection selection = showImportAssetDialog(
-        this,
-        importBrowserStartDirectory(
-            QStringLiteral("sourceBrowser"),
-            QStringList{
-                QStringLiteral("source"),
-                QStringLiteral("motorsportFolder"),
-                QStringLiteral("liveryFolder"),
-                QStringLiteral("cgroupFolder"),
-            }));
-    if (!selection.directory.isEmpty()) {
-        rememberImportDirectory(selection.directory, QStringLiteral("sourceBrowser"));
-    }
-    if (selection.path.isEmpty() || !confirmDiscardUnsavedChanges()) {
-        return;
-    }
-
-    QString error;
-    bool imported = false;
-    if (selection.wgsAsset) {
-        const fls::WgsAsset asset = *selection.wgsAsset;
-        rememberImportDirectory(selection.directory, QStringLiteral("source"));
-        rememberImportDirectory(
-            selection.directory,
-            asset.kind == fls::WgsAssetKind::Livery
-                ? QStringLiteral("liveryFolder")
-                : QStringLiteral("cgroupFolder"));
-        imported = loadImportedProject(
-            [asset]() {
-                const QByteArray payload = readImportFile(asset.payloadPath);
-                const QByteArray header = readImportFile(asset.headerPath, true);
-                return asset.kind == fls::WgsAssetKind::Livery
-                    ? fls::importCLiveryData(payload, header, asset.containerName)
-                    : fls::importCGroupNestedData(payload, header, asset.containerName);
-            },
-            QStringLiteral("Imported WGS asset %1").arg(asset.containerName),
-            &error);
-    } else {
-        if (selection.motorsport) {
-            rememberImportDirectory(selection.path, QStringLiteral("motorsportFolder"));
+    for (;;) {
+        const ImportAssetSelection selection = showImportAssetDialog(
+            this,
+            importBrowserStartDirectory(
+                QStringLiteral("sourceBrowser"),
+                QStringList{
+                    QStringLiteral("source"),
+                    QStringLiteral("motorsportFolder"),
+                    QStringLiteral("liveryFolder"),
+                    QStringLiteral("cgroupFolder"),
+                }));
+        if (!selection.directory.isEmpty()) {
+            rememberImportDirectory(selection.directory, QStringLiteral("sourceBrowser"));
         }
-        imported = importAny(selection.path, &error);
-    }
-    if (!imported) {
-        QMessageBox::critical(this, QStringLiteral("Import failed"), error);
+        if (selection.path.isEmpty() || !confirmDiscardUnsavedChanges()) {
+            return;
+        }
+
+        QString error;
+        bool imported = false;
+        if (selection.wgsAsset) {
+            const fls::WgsAsset asset = *selection.wgsAsset;
+            rememberImportDirectory(selection.directory, QStringLiteral("source"));
+            rememberImportDirectory(
+                selection.directory,
+                asset.kind == fls::WgsAssetKind::Livery
+                    ? QStringLiteral("liveryFolder")
+                    : QStringLiteral("cgroupFolder"));
+            imported = loadImportedProject(
+                [asset]() {
+                    const QByteArray payload = readImportFile(asset.payloadPath);
+                    const QByteArray header = readImportFile(asset.headerPath, true);
+                    return asset.kind == fls::WgsAssetKind::Livery
+                        ? fls::importCLiveryData(payload, header, asset.containerName)
+                        : fls::importCGroupNestedData(payload, header, asset.containerName);
+                },
+                QStringLiteral("Imported WGS asset %1").arg(asset.containerName),
+                &error);
+        } else {
+            if (selection.motorsport) {
+                rememberImportDirectory(selection.path, QStringLiteral("motorsportFolder"));
+            }
+            imported = importAny(selection.path, &error);
+        }
+        if (imported) {
+            return;
+        }
+        if (!error.isEmpty()) {
+            QMessageBox::critical(this, QStringLiteral("Import failed"), error);
+            return;
+        }
     }
 }
 
@@ -1120,6 +1152,15 @@ void MainWindow::exportDialog() {
     if (!selection) {
         return;
     }
+    const QString game = fls::exportGameCode(selection->gameVersion);
+    const CarRegistry &registry = sharedCarRegistry();
+    if (state_->project_.isLivery && !registry.isSupported(state_->project_.carId, game)) {
+        const QString car = registry.displayName(state_->project_.carId);
+        QMessageBox::critical(this, QStringLiteral("Export failed"), car.isEmpty()
+            ? QStringLiteral("Choose a target car before exporting this livery to %1.").arg(game)
+            : QStringLiteral("%1 is not listed as supported in %2.").arg(car, game));
+        return;
+    }
     if (selection->containerFormat == ExportContainerFormat::WgsContainer) {
         if (!selection->wgsTarget) {
             return;
@@ -1136,24 +1177,6 @@ void MainWindow::exportDialog() {
         confirmation.setStandardButtons(QMessageBox::Yes | QMessageBox::Cancel);
         confirmation.setDefaultButton(QMessageBox::Cancel);
         if (confirmation.exec() != QMessageBox::Yes) {
-            return;
-        }
-    }
-    if (state_->project_.isLivery
-        && selection->gameVersion == ExportGameVersion::Horizon6
-        && sharedCarRegistry().isFh6Unsupported(state_->project_.carId)) {
-        QMessageBox warning(this);
-        warning.setIcon(QMessageBox::Warning);
-        warning.setWindowTitle(QStringLiteral("Unsupported FH6 Car"));
-        warning.setText(QStringLiteral(
-            "This car is not supported in Forza Horizon 6. "
-            "The exported livery will not be available in the game."));
-        QPushButton *proceed = warning.addButton(
-            QStringLiteral("Proceed"), QMessageBox::AcceptRole);
-        QPushButton *cancel = warning.addButton(QMessageBox::Cancel);
-        warning.setDefaultButton(cancel);
-        warning.exec();
-        if (warning.clickedButton() != proceed) {
             return;
         }
     }

@@ -194,7 +194,9 @@ QByteArray nativeHeader(const Project &project, ExportGameVersion game,
     return buildHeader(metadata);
 }
 
-QString paintGame(ExportGameVersion game) {
+} // namespace
+
+QString exportGameCode(ExportGameVersion game) {
     switch (game) {
     case ExportGameVersion::Horizon2: return QStringLiteral("FH2");
     case ExportGameVersion::Horizon3: return QStringLiteral("FH3");
@@ -207,6 +209,8 @@ QString paintGame(ExportGameVersion game) {
     default: return QStringLiteral("FH6");
     }
 }
+
+namespace {
 
 void prepareNativeArtworkLayers(scene::Group &group) {
     auto &children = group.children;
@@ -430,7 +434,7 @@ QByteArray nativeLiveryPayload(const Project &project, ExportGameVersion game,
     const ExportProfile profile = exportProfile(game);
     const bool early = profile.liveryVersion <= kLastEarlyLiveryVersion;
     const bool tagged = profile.liveryVersion != 2;
-    const QByteArray paint = encodePositionalPaint(project, profile.paintRecordCount, paintGame(game));
+    const QByteArray paint = encodePositionalPaint(project, profile.paintRecordCount, exportGameCode(game));
     const QByteArray artwork = nativeArtwork(project, profile, game, counts);
     QByteArray payload("vlrc", 4);
     QByteArray sourceEntries;

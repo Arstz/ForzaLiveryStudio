@@ -1,4 +1,5 @@
 #include "export_asset_dialog.h"
+#include "car_registry.h"
 #include "theme_manager.h"
 
 #include <QComboBox>
@@ -245,15 +246,31 @@ private:
     }
 
     void updateDestination() {
+        const auto game = static_cast<ExportGameVersion>(gameVersion_->currentData().toInt());
+        const bool unsupported = livery_ && !sharedCarRegistry().isSupported(carId_, fls::exportGameCode(game));
+
         wgsTarget_.reset();
+        setUiState(hint_, unsupported ? QStringLiteral("error") : QString());
+        if (unsupported) {
+            profileEdit_->clear();
+            containerNameEdit_->clear();
+            if (wgsSelected()) {
+                const QSignalBlocker blocker(directoryEdit_);
+                directoryEdit_->clear();
+            }
+            buttons_->button(QDialogButtonBox::Save)->setEnabled(false);
+            hint_->setText(carId_ == 0
+                ? QStringLiteral("Choose a target car before exporting.")
+                : QStringLiteral("Model not supported in %1.").arg(gameVersion_->currentText()));
+            return;
+        }
         if (wgsSelected()) {
             profileEdit_->clear();
             containerNameEdit_->clear();
             buttons_->button(QDialogButtonBox::Save)->setEnabled(false);
             try {
                 const QString path = QDir::fromNativeSeparators(descriptorEdit_->text().trimmed());
-                wgsTarget_ = fls::inspectWgsExportTarget(path,
-                    static_cast<ExportGameVersion>(gameVersion_->currentData().toInt()), livery_, carId_);
+                wgsTarget_ = fls::inspectWgsExportTarget(path, game, livery_, carId_);
                 const QString profile = QFileInfo(wgsTarget_->indexPath).absolutePath();
                 const QSignalBlocker blocker(directoryEdit_);
                 directoryEdit_->setText(QDir::toNativeSeparators(profile));

@@ -51,8 +51,10 @@ void openStartupFiles(gui::MainWindow &window, const QStringList &paths) {
         const bool opened = isLivery ? window.importAny(projectPath, &error)
                                      : window.loadProjectJson(projectPath, &error);
         if (!opened) {
-            qWarning().noquote() << QStringLiteral("Could not open startup project %1: %2")
-                                        .arg(projectPath, error);
+            if (!error.isEmpty()) {
+                qWarning().noquote() << QStringLiteral("Could not open startup project %1: %2")
+                                            .arg(projectPath, error);
+            }
             window.newProject();
         }
     } else {
