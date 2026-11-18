@@ -20,8 +20,8 @@ public:
     explicit HeaderMetadataWidget(QWidget *parent = nullptr);
 
     void setMetadata(const fls::HeaderMetadata &seed, const QString &targetCar,
-                     bool hasProject, bool canChangeTargetCar,
-                     bool targetCarSupported = true);
+                     bool hasProject, bool canChangeTargetCar);
+    void setTargetCarLabel(const QString &targetCar);
 
     fls::HeaderMetadata metadata() const;
 

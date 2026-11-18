@@ -116,8 +116,8 @@ void setDockTitleIcon(QDockWidget *dock, const QString &iconName) {
     titleBar->setMinimumHeight(kUiHeaderHeight);
     titleBar->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
     auto *layout = new QHBoxLayout(titleBar);
-    layout->setContentsMargins(kUiSpacing, kUiHighlightMargin,
-                               kUiSpacing, kUiHighlightMargin + kUiControlBorderWidth);
+    layout->setContentsMargins(kUiHighlightMargin, kUiHighlightMargin,
+                               kUiHighlightMargin, kUiHighlightMargin + kUiControlBorderWidth);
     layout->setSpacing(kUiSpacing);
     titleBar->setProperty(kDockTitleLayoutProperty, QVariant::fromValue<QObject *>(layout));
 
@@ -169,7 +169,7 @@ QToolButton *addDockAreaCollapseButton(QDockWidget *dock) {
     }
 
     auto *button = new DockTitleButton(titleBar, DockGlyph::Left, QStringLiteral("Collapse dock area"));
-    layout->insertWidget(0, button);
+    layout->insertWidget(0, button, 0, Qt::AlignLeft);
     return button;
 }
 
@@ -203,6 +203,17 @@ void configureDockAreaCollapseButton(QToolButton *button, Qt::DockWidgetArea are
             : text == QStringLiteral("v") ? DockGlyph::Down : DockGlyph::Left;
         titleButton->setGlyph(glyph);
     }
+}
+
+void setHorizontalDockTitleFolded(QDockWidget &dock, bool folded) {
+    QWidget *titleBar = dock.titleBarWidget();
+    if (titleBar == nullptr) {
+        return;
+    }
+    titleBar->setProperty("horizontalDockFolded", folded);
+    titleBar->style()->unpolish(titleBar);
+    titleBar->style()->polish(titleBar);
+    titleBar->update();
 }
 
 void refreshDockTitleIcon(QDockWidget *dock) {

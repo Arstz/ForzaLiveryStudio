@@ -69,7 +69,12 @@ class CaptionLogo final : public QWidget {
 public:
     CaptionLogo(QWidget &window, QWidget *parent) : QWidget(parent), window_(&window) {
         setAttribute(Qt::WA_TransparentForMouseEvents);
-        setFixedSize(kDefaultCaptionHeight, kDefaultCaptionHeight);
+        setCaptionHeight(kDefaultCaptionHeight);
+    }
+
+    void setCaptionHeight(int height) {
+        const int leadingInset = (height - kCaptionLogoExtent) / 2;
+        setFixedSize(leadingInset + kCaptionLogoExtent, height);
     }
 
     QSize sizeHint() const override {
@@ -85,7 +90,7 @@ protected:
         QPainter painter(this);
         QRect logo(QPoint(), QSize(kCaptionLogoExtent, kCaptionLogoExtent));
 
-        logo.moveCenter(rect().center());
+        logo.moveTopRight(QPoint(rect().right(), (height() - kCaptionLogoExtent) / 2));
         window_->windowIcon().paint(&painter, logo);
     }
 
@@ -592,7 +597,7 @@ private:
             (menuPadding + textMargins.top() - textMargins.bottom()) / 2, 0, menuPadding);
         const int menuBottomPadding = menuPadding - menuTopPadding;
         const QString sheet = QStringLiteral(
-            "QMenuBar#WindowTitleMenu { padding: 0; }"
+            "QMenuBar#WindowTitleMenu { padding: 0; spacing: 0; }"
             "QMenuBar#WindowTitleMenu::item { padding: %1px %2px %3px %2px;"
             " margin: %4px %4px %5px %4px; }")
             .arg(menuTopPadding).arg(kCaptionMenuHorizontalPadding).arg(menuBottomPadding)
@@ -602,7 +607,7 @@ private:
             setFont(menuFont);
         }
         controls_->setCaptionHeight(captionHeight);
-        logo_->setFixedSize(captionHeight, captionHeight);
+        logo_->setCaptionHeight(captionHeight);
         setFixedHeight(captionHeight + kUiControlBorderWidth);
         if (styleSheet() != sheet) {
             setStyleSheet(sheet);

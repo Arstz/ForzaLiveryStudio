@@ -16,6 +16,7 @@ QToolButton *addDockAreaCollapseButton(QDockWidget *dock);
 
 QString dockAreaCollapseText(Qt::DockWidgetArea area, bool collapsed);
 void configureDockAreaCollapseButton(QToolButton *button, Qt::DockWidgetArea area, bool collapsed);
+void setHorizontalDockTitleFolded(QDockWidget &dock, bool folded);
 
 void installSplitterResizeCursor(QSplitter *splitter);
 

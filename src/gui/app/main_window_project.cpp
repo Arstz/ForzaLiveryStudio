@@ -8,6 +8,7 @@
 #include "clipboard_buffer_widget.h"
 #include "color_palette_widget.h"
 #include "header_codec.h"
+#include "header_metadata_widget.h"
 #include "livery_codec.h"
 #include "livery_section_bar.h"
 #include "perf_utils.h"
@@ -90,6 +91,9 @@ void MainWindow::loadCarModel(const QString &path, bool automatic, const QString
     }
     canvasStatusBar_->showMessage(QStringLiteral("Loading car model: %1").arg(QFileInfo(path).fileName()));
     carPreview_->loadCarAsync(path, [this, path, automatic, duration](bool loaded, const QString &error) {
+        if (headerMetadata_ != nullptr) {
+            headerMetadata_->setTargetCarLabel(targetCarLabel());
+        }
         if (!loaded) {
             const QString fallback = automatic ? QStringLiteral("Failed to auto-load car model")
                                                : QStringLiteral("Failed to load car model");
@@ -123,6 +127,9 @@ void MainWindow::maybeAutoLoadCarForProject(bool replaceLoadedModel, bool offerG
             return;
         }
         carPreview_->clearModel();
+        if (headerMetadata_ != nullptr) {
+            headerMetadata_->setTargetCarLabel(targetCarLabel());
+        }
     }
     if (project.carId == 0) {
         return;

@@ -1367,11 +1367,19 @@ void MainWindow::refreshHeaderMetadataWidget() {
         meta.name = state_->project_.name;
     }
 
-    const int carId = state_->project_.carId;
-    headerMetadata_->setMetadata(
-        meta, sharedCarRegistry().displayName(carId),
-        true, state_->project_.isLivery,
-        carId == 0 || sharedCarRegistry().isFh6Supported(carId));
+    headerMetadata_->setMetadata(meta, targetCarLabel(), true, state_->project_.isLivery);
+}
+
+QString MainWindow::targetCarLabel() const {
+    if (!state_->hasProject_ || !state_->project_.isLivery) {
+        return {};
+    }
+    QString label = sharedCarRegistry().displayName(state_->project_.carId);
+    if (!label.isEmpty() && (carPreview_ == nullptr || !carPreview_->hasModel())) {
+        label += QStringLiteral(" (No model found)");
+    }
+
+    return label;
 }
 
 void MainWindow::showHeaderMetadataDock() {
@@ -1428,7 +1436,10 @@ void MainWindow::saveLayout() {
     }
     QSettings settings;
     settings.setValue(QStringLiteral("layout/geometry"), saveGeometry());
-    settings.setValue(QStringLiteral("layout/state"), saveState());
+    if (std::none_of(dockAreaCollapseStates_.cbegin(), dockAreaCollapseStates_.cend(),
+            [](const DockAreaCollapseState &state) { return state.collapsed; })) {
+        settings.setValue(QStringLiteral("layout/state"), saveState());
+    }
     settings.sync();
 }
 
@@ -1457,7 +1468,7 @@ void MainWindow::resetLayout() {
     const QSize availableSize = screen()->availableGeometry().size();
 
     for (DockAreaCollapseState &state : dockAreaCollapseStates_) {
-        state.layoutState.clear();
+        state.expandedExtent = 0;
     }
     for (const DockAreaCollapseState &state : dockAreaCollapseStates_) {
         if (state.collapsed) {

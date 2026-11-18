@@ -911,9 +911,9 @@ else()
 endif()
 
 set(FLS_GUI_ASSETS
-    ComboArrowDark.xpm
-    ComboArrowLight.xpm
-    ComboArrowMuted.xpm
+    ComboArrowDark.png
+    ComboArrowLight.png
+    ComboArrowMuted.png
     CompVisibility.xpm
     Cursor.xpm
     CursorClosedHand.xpm

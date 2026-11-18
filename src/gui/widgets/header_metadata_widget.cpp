@@ -1,5 +1,4 @@
 #include "header_metadata_widget.h"
-#include "theme_manager.h"
 
 #include <QtCore>
 #include <QtMath>
@@ -86,7 +85,7 @@ HeaderMetadataWidget::HeaderMetadataWidget(QWidget *parent)
 
 void HeaderMetadataWidget::setMetadata(
     const fls::HeaderMetadata &seed, const QString &targetCar,
-    bool hasProject, bool canChangeTargetCar, bool targetCarSupported) {
+    bool hasProject, bool canChangeTargetCar) {
     seed_ = seed;
 
     nameEdit_->setText(seed.name);
@@ -95,11 +94,7 @@ void HeaderMetadataWidget::setMetadata(
     monthSpin_->setValue(seed.month == 0 ? QDate::currentDate().month() : seed.month);
     publishedCheck_->setChecked(seed.published);
     descriptionEdit_->setPlainText(seed.description);
-    targetCar_->setText(targetCar.isEmpty() ? QStringLiteral("Not set") : targetCar);
-    setUiState(targetCar_,
-        !targetCar.isEmpty() && !targetCarSupported
-            ? QStringLiteral("warning")
-            : QString());
+    setTargetCarLabel(targetCar);
 
     nameEdit_->setEnabled(hasProject);
     creatorEdit_->setEnabled(hasProject);
@@ -107,6 +102,10 @@ void HeaderMetadataWidget::setMetadata(
     monthSpin_->setEnabled(hasProject);
     changeTargetCar_->setEnabled(hasProject && canChangeTargetCar);
     hint_->setVisible(!hasProject);
+}
+
+void HeaderMetadataWidget::setTargetCarLabel(const QString &targetCar) {
+    targetCar_->setText(targetCar.isEmpty() ? QStringLiteral("Not set") : targetCar);
 }
 
 fls::HeaderMetadata HeaderMetadataWidget::metadata() const {

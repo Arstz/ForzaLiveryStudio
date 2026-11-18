@@ -132,6 +132,7 @@ private:
     void showHeaderMetadataDock();
     void applyHeaderMetadata();
     void refreshHeaderMetadataWidget();
+    QString targetCarLabel() const;
     void scheduleLayoutSave();
     void saveLayout();
     bool restoreLayout();
@@ -313,9 +314,10 @@ private:
         QDockWidget *anchorDock = nullptr;
         QToolButton *anchorButton = nullptr;
         bool anchorWidgetWasVisible = false;
+        QSize anchorMaximumSize;
         QVector<QWidget *> hiddenTitleWidgets;
         QVector<QDockWidget *> hiddenDocks;
-        QByteArray layoutState;
+        int expandedExtent = 0;
     };
     QVector<DockAreaCollapseState> dockAreaCollapseStates_;
     struct DockCollapseButton {

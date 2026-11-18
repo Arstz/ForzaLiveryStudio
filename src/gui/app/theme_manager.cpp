@@ -452,6 +452,7 @@ QString themeStyleSheet(UiTheme theme) {
             background: @panelHeaderSurface; border: none; border-bottom: @separatorExtentpx solid @surfaceSeparator;
         }
         QWidget#dockHeader[panelFocused="true"] { background: @accent; }
+        QWidget#dockHeader[horizontalDockFolded="true"] { border-bottom: none; }
         QWidget#dockHeader QLabel { background: transparent; border: none; margin: 0; padding: 0; }
         QFrame#dockBody {
             background: @panelSurface; border: none;
@@ -765,11 +766,11 @@ QString themeStyleSheet(UiTheme theme) {
     sheet.replace(QStringLiteral("@radius"), QString::number(kUiCornerRadius));
     const auto comboArrow = [](const QColor &foreground) {
         return iconAssetPath(foreground.lightness() >= kColorLightnessMidpoint
-            ? QStringLiteral("ComboArrowLight.xpm") : QStringLiteral("ComboArrowDark.xpm"));
+            ? QStringLiteral("ComboArrowLight.png") : QStringLiteral("ComboArrowDark.png"));
     };
     sheet.replace(QStringLiteral("@comboArrowNormal"), comboArrow(colors.text));
     sheet.replace(QStringLiteral("@comboArrowHover"), comboArrow(colors.selectedText));
-    sheet.replace(QStringLiteral("@comboArrowDisabled"), iconAssetPath(QStringLiteral("ComboArrowMuted.xpm")));
+    sheet.replace(QStringLiteral("@comboArrowDisabled"), iconAssetPath(QStringLiteral("ComboArrowMuted.png")));
     sheet.replace(QStringLiteral("@comboDropDownWidth"), QString::number(kComboDropDownWidth));
     sheet.replace(QStringLiteral("@fieldHeight"), QString::number(kUiControlHeight - 8));
     sheet.replace(QStringLiteral("@controlHeight"), QString::number(kUiControlHeight));

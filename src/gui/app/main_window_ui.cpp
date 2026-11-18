@@ -1223,15 +1223,23 @@ void MainWindow::installDockAreaCollapseButton(QDockWidget *dock, Qt::DockWidget
 
 void MainWindow::updateDockCollapseButtonVisibility() {
     QHash<QDockWidget *, QToolButton *> buttonFor;
+    QSet<QToolButton *> visibleButtons;
     for (const DockCollapseButton &entry : dockCollapseButtons_) {
         if (entry.button != nullptr) {
             buttonFor.insert(entry.dock, entry.button);
-            entry.button->setVisible(false);
         }
     }
     const Qt::DockWidgetArea areas[] = {Qt::LeftDockWidgetArea, Qt::RightDockWidgetArea,
                                         Qt::TopDockWidgetArea, Qt::BottomDockWidgetArea};
     for (Qt::DockWidgetArea area : areas) {
+        const auto folded = std::find_if(dockAreaCollapseStates_.cbegin(), dockAreaCollapseStates_.cend(),
+            [area](const DockAreaCollapseState &state) { return state.area == area && state.collapsed; });
+        if (folded != dockAreaCollapseStates_.cend()) {
+            if (folded->anchorButton != nullptr) {
+                visibleButtons.insert(folded->anchorButton);
+            }
+            continue;
+        }
         QVector<QDockWidget *> granted;
         for (QDockWidget *dock : dockWidgetsInArea(area)) {
             QToolButton *button = buttonFor.value(dock, nullptr);
@@ -1247,10 +1255,13 @@ void MainWindow::updateDockCollapseButtonVisibility() {
                 }
             }
             if (!duplicatesVisible) {
-                button->setVisible(true);
+                visibleButtons.insert(button);
                 granted.push_back(dock);
             }
         }
+    }
+    for (QToolButton *button : std::as_const(buttonFor)) {
+        button->setVisible(visibleButtons.contains(button));
     }
 }
 
@@ -1288,11 +1299,20 @@ void MainWindow::syncDockCollapseButtons() {
 }
 
 void MainWindow::toggleDockAreaCollapsed(Qt::DockWidgetArea area, QDockWidget *anchorDock, QToolButton *anchorButton) {
+    const bool horizontalDock = area == Qt::TopDockWidgetArea || area == Qt::BottomDockWidgetArea;
+    const Qt::Orientation resizeAxis = horizontalDock ? Qt::Vertical : Qt::Horizontal;
+
     for (DockAreaCollapseState &control : dockAreaCollapseStates_) {
         if (control.area != area) {
             continue;
         }
         if (control.collapsed) {
+            if (control.anchorDock != nullptr) {
+                control.anchorDock->setMaximumSize(control.anchorMaximumSize);
+                if (horizontalDock) {
+                    setHorizontalDockTitleFolded(*control.anchorDock, false);
+                }
+            }
             if (control.anchorDock != nullptr && control.anchorDock->widget() != nullptr && control.anchorWidgetWasVisible) {
                 control.anchorDock->widget()->show();
             }
@@ -1308,34 +1328,31 @@ void MainWindow::toggleDockAreaCollapsed(Qt::DockWidgetArea area, QDockWidget *a
                 }
             }
             control.collapsed = false;
-            if (!control.layoutState.isEmpty()) {
-                restoreState(control.layoutState);
-                positionToolSettings();
-            }
-            for (QDockWidget *dock : control.hiddenDocks) {
-                if (dock != nullptr) {
-                    dock->show();
+            if (control.anchorDock != nullptr) {
+                control.anchorDock->raise();
+                if (control.expandedExtent > 0) {
+                    resizeDocks({control.anchorDock}, {control.expandedExtent}, resizeAxis);
                 }
             }
             control.hiddenDocks.clear();
-            control.layoutState.clear();
+            control.expandedExtent = 0;
             control.anchorDock = nullptr;
             control.anchorButton = nullptr;
             control.anchorWidgetWasVisible = false;
-            syncDockCollapseButtons();
         } else {
             control.hiddenDocks.clear();
             control.anchorDock = anchorDock;
             control.anchorButton = anchorButton;
             control.anchorWidgetWasVisible = anchorDock != nullptr && anchorDock->widget() != nullptr && anchorDock->widget()->isVisible();
-            control.layoutState = saveState();
+            if (anchorDock != nullptr) {
+                control.expandedExtent = horizontalDock ? anchorDock->height() : anchorDock->width();
+            }
             for (QDockWidget *dock : dockWidgetsInArea(area)) {
                 if (dock != nullptr && dock != anchorDock && !dock->isHidden()) {
                     control.hiddenDocks.push_back(dock);
                 }
             }
             if (control.hiddenDocks.isEmpty() && anchorDock == nullptr) {
-                control.layoutState.clear();
                 control.anchorDock = nullptr;
                 control.anchorButton = nullptr;
                 return;
@@ -1355,8 +1372,18 @@ void MainWindow::toggleDockAreaCollapsed(Qt::DockWidgetArea area, QDockWidget *a
                 }
             }
             control.collapsed = true;
+            if (anchorDock != nullptr) {
+                control.anchorMaximumSize = anchorDock->maximumSize();
+                if (horizontalDock) {
+                    setHorizontalDockTitleFolded(*anchorDock, true);
+                    resizeDocks({anchorDock}, {kUiHeaderHeight}, resizeAxis);
+                } else {
+                    anchorDock->setMaximumWidth(kUiCollapsedDockExtent);
+                }
+            }
             configureDockAreaCollapseButton(anchorButton, area, true);
         }
+        syncDockCollapseButtons();
         update();
         return;
     }
