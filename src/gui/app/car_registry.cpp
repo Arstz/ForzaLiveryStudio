@@ -2,7 +2,6 @@
 #include "game_paths.h"
 #include "theme_manager.h"
 
-#include <QApplication>
 #include <QCoreApplication>
 #include <QDialog>
 #include <QDialogButtonBox>
@@ -14,29 +13,142 @@
 #include <QLineEdit>
 #include <QMessageBox>
 #include <QHeaderView>
-#include <QPainter>
+#include <QHBoxLayout>
 #include <QPushButton>
 #include <QRegularExpression>
-#include <QStyledItemDelegate>
-#include <QStyle>
-#include <QStyleOptionViewItem>
+#include <QSet>
 #include <QTreeWidget>
 #include <QVBoxLayout>
 
 #include <algorithm>
 #include <cstdlib>
-#include <numeric>
+#include <tuple>
 
 namespace gui {
 namespace {
 
 constexpr int kVersionsRole = Qt::UserRole + 1;
-constexpr int kAvailableVersionsRole = Qt::UserRole + 2;
-constexpr int kVersionSpacing = 10;
-constexpr int kVersionMargin = 4;
+constexpr int kGameRankRole = Qt::UserRole + 2;
+constexpr int kManufacturerColumn = 0;
+constexpr int kYearColumn = 1;
+constexpr int kModelColumn = 2;
+constexpr int kFirstGameColumn = 3;
+constexpr int kGameHeaderExtraWidth = 4;
 constexpr int kCarDialogWidth = 1000;
 constexpr int kCarDialogHeight = 560;
 constexpr int kClosestModelYearDifference = 5;
+
+QStringList supportedGames(const QString &versions) {
+    QStringList games = versions.toUpper().split(QLatin1Char(','), Qt::SkipEmptyParts);
+    for (QString &game : games) {
+        game = game.trimmed();
+    }
+    games.removeAll(QString());
+    games.removeDuplicates();
+
+    return games;
+}
+
+QString gameTitle(const QString &game) {
+    const QString title = game.startsWith(QStringLiteral("FH"))
+        ? QStringLiteral("Forza Horizon %1") : QStringLiteral("Forza Motorsport %1");
+
+    return title.arg(game.mid(2));
+}
+
+QString nameWithoutYear(const QString &name) {
+    static const QRegularExpression yearPrefix(QStringLiteral("^\\d{4}\\s+"));
+
+    return QString(name).remove(yearPrefix);
+}
+
+QString manufacturerCode(const QString &modelCode) {
+    return modelCode.section(QLatin1Char('_'), 0, 0).toUpper();
+}
+
+QHash<QString, QString> manufacturerNames(const CarRegistry &registry) {
+    const QHash<QString, QString> knownNames = {
+        {QStringLiteral("AC"), QStringLiteral("Alumicraft")},
+        {QStringLiteral("ALF"), QStringLiteral("Alfa Romeo")},
+        {QStringLiteral("AST"), QStringLiteral("Aston Martin")},
+        {QStringLiteral("BM"), QStringLiteral("Hoonigan")},
+        {QStringLiteral("DEL"), QStringLiteral("DeLorean")},
+        {QStringLiteral("DET"), QStringLiteral("De Tomaso")},
+        {QStringLiteral("FAF"), QStringLiteral("Fast and Furious")},
+        {QStringLiteral("FIA"), QStringLiteral("Fiat")},
+        {QStringLiteral("GMA"), QStringLiteral("Gordon Murray Automotive")},
+        {QStringLiteral("GTA"), QStringLiteral("Spania GTA")},
+        {QStringLiteral("HOT"), QStringLiteral("Hot Wheels")},
+        {QStringLiteral("INT"), QStringLiteral("International")},
+        {QStringLiteral("LR"), QStringLiteral("Land Rover")},
+        {QStringLiteral("LYN"), QStringLiteral("Lynk & Co")},
+        {QStringLiteral("MEY"), QStringLiteral("Meyers Manx")},
+        {QStringLiteral("RJ"), QStringLiteral("RJ Anderson")},
+        {QStringLiteral("TG"), QStringLiteral("Top Gear")},
+        {QStringLiteral("WM"), QStringLiteral("W Motors")},
+    };
+    QHash<QString, QMap<QString, int>> counts;
+    QHash<QString, QString> names = knownNames;
+
+    for (const auto &entry : registry.entries()) {
+        const QString code = manufacturerCode(registry.modelCode(entry.id));
+        if (!knownNames.contains(code)) {
+            ++counts[code][nameWithoutYear(entry.name).section(QLatin1Char(' '), 0, 0)];
+        }
+    }
+    for (auto manufacturer = counts.cbegin(); manufacturer != counts.cend(); ++manufacturer) {
+        const auto &labels = manufacturer.value();
+        const auto mostCommon = std::max_element(labels.keyValueBegin(), labels.keyValueEnd(),
+            [](const auto &left, const auto &right) { return left.second < right.second; });
+        names.insert(manufacturer.key(), (*mostCommon).first);
+    }
+
+    return names;
+}
+
+class CarPickerItem final : public QTreeWidgetItem {
+public:
+    using QTreeWidgetItem::QTreeWidgetItem;
+
+    bool operator<(const QTreeWidgetItem &other) const override {
+        const int column = treeWidget()->sortColumn();
+        const auto key = [column](const QTreeWidgetItem &item) {
+            const auto textKey = [&item](int index) { return item.text(index).toCaseFolded(); };
+
+            return std::tuple{
+                column >= kFirstGameColumn ? item.data(column, kGameRankRole).toInt() : 0,
+                column == kYearColumn ? item.data(kYearColumn, Qt::DisplayRole).toInt() : 0,
+                column == kModelColumn ? textKey(kModelColumn) : QString(),
+                textKey(kManufacturerColumn), textKey(kModelColumn),
+                item.data(kYearColumn, Qt::DisplayRole).toInt(),
+                item.data(kManufacturerColumn, Qt::UserRole).toInt()
+            };
+        };
+
+        return key(*this) < key(other);
+    }
+};
+
+enum class GameModelStatus { Unsupported, Missing, Available };
+
+void setGameCell(QTreeWidgetItem &item, int column, const QString &game, GameModelStatus status) {
+    const QString title = gameTitle(game);
+    item.setData(column, kGameRankRole, static_cast<int>(status));
+    item.setTextAlignment(column, Qt::AlignCenter);
+    switch (status) {
+    case GameModelStatus::Available:
+        item.setText(column, QStringLiteral("\u2713"));
+        item.setToolTip(column, QStringLiteral("%1 — model found").arg(title));
+        break;
+    case GameModelStatus::Missing:
+        item.setText(column, QStringLiteral("~"));
+        item.setToolTip(column, QStringLiteral("%1 — supported, model unavailable").arg(title));
+        break;
+    case GameModelStatus::Unsupported:
+        item.setToolTip(column, QStringLiteral("%1 — unsupported").arg(title));
+        break;
+    }
+}
 
 QString modelFamily(const QString &modelCode) {
     static const QRegularExpression familyPattern(QStringLiteral(
@@ -50,55 +162,6 @@ QString modelFamily(const QString &modelCode) {
 
     return family.isEmpty() ? QString() : (parts.front() + QLatin1Char('_') + family).toCaseFolded();
 }
-
-class CarVersionDelegate final : public QStyledItemDelegate {
-public:
-    using QStyledItemDelegate::QStyledItemDelegate;
-
-    void paint(QPainter *painter, const QStyleOptionViewItem &option, const QModelIndex &index) const override {
-        QStyleOptionViewItem itemOption(option);
-        const QStringList versions = index.data(kVersionsRole).toStringList();
-        const QStringList available = index.siblingAtColumn(1).data(kAvailableVersionsRole).toStringList();
-        const QWidget *widget = option.widget;
-        QStyle *style = widget != nullptr ? widget->style() : QApplication::style();
-
-        if (index.column() == 0) {
-            if (available.isEmpty()) {
-                itemOption.palette.setColor(QPalette::Text, uiColors(currentUiTheme()).warning);
-                itemOption.palette.setColor(QPalette::HighlightedText, uiColors(currentUiTheme()).warning);
-            }
-            QStyledItemDelegate::paint(painter, itemOption, index);
-            return;
-        }
-        initStyleOption(&itemOption, index);
-        const QRect textRect = style->subElementRect(QStyle::SE_ItemViewItemText, &itemOption, widget);
-        int x = textRect.left();
-        itemOption.text.clear();
-        style->drawControl(QStyle::CE_ItemViewItem, &itemOption, painter, widget);
-        painter->save();
-        painter->setClipRect(textRect);
-        painter->setFont(itemOption.font);
-        for (const QString &version : versions) {
-            const int width = itemOption.fontMetrics.horizontalAdvance(version);
-            painter->setPen(available.contains(version)
-                ? itemOption.palette.color(QPalette::Text) : uiColors(currentUiTheme()).warning);
-            painter->drawText(QRect(x, textRect.top(), width, textRect.height()), Qt::AlignLeft | Qt::AlignVCenter, version);
-            x += width + kVersionSpacing;
-        }
-        painter->restore();
-    }
-
-    QSize sizeHint(const QStyleOptionViewItem &option, const QModelIndex &index) const override {
-        QSize size = QStyledItemDelegate::sizeHint(option, index);
-        const QStringList versions = index.data(kVersionsRole).toStringList();
-        const int width = std::accumulate(versions.cbegin(), versions.cend(), 0,
-            [&option](int total, const QString &version) { return total + option.fontMetrics.horizontalAdvance(version) + kVersionSpacing; });
-
-        if (index.column() == 1) size.setWidth(width + 2 * kVersionMargin);
-
-        return size;
-    }
-};
 
 QStringList candidateAssetPaths() {
     const QString appDir = QCoreApplication::applicationDirPath();
@@ -218,6 +281,10 @@ QString CarRegistry::modelCode(int id, const QString &game) const {
 
 QString CarRegistry::version(int id) const {
     return versions_.value(id);
+}
+
+int CarRegistry::year(int id) const {
+    return years_.value(id);
 }
 
 bool CarRegistry::isFh6Supported(int id) const {
@@ -350,6 +417,22 @@ MissingCarModelChoice chooseMissingCarModel(
 bool chooseCarModel(QWidget *parent, int currentId, int *outId, bool confirmMissingModel) {
     const CarRegistry &registry = sharedCarRegistry();
     const auto availability = registry.modelAvailability(loadBehaviorSettings().gameFolders);
+    const auto manufacturers = manufacturerNames(registry);
+    QSet<QString> catalogGames;
+    for (const auto &entry : registry.entries()) {
+        const QStringList versions = supportedGames(entry.version);
+        for (const QString &game : versions) {
+            catalogGames.insert(game);
+        }
+    }
+    QStringList games = fls::carModelGames();
+    QStringList otherGames = catalogGames.values();
+    otherGames.sort();
+    for (const QString &game : otherGames) {
+        if (!games.contains(game)) {
+            games.append(game);
+        }
+    }
 
     QDialog dialog(parent);
     dialog.setWindowTitle(QStringLiteral("Choose Target Car"));
@@ -364,41 +447,80 @@ bool chooseCarModel(QWidget *parent, int currentId, int *outId, bool confirmMiss
     layout->addWidget(filter);
 
     auto *list = new QTreeWidget(&dialog);
-    list->setHeaderLabels({QStringLiteral("Car"), QStringLiteral("Supported versions")});
+    list->setHeaderLabels(QStringList{
+        QStringLiteral("Manufacturer"), QStringLiteral("Year"), QStringLiteral("Model")
+    } + games);
+    list->setProperty("uiMainSurface", true);
+    list->setProperty("uiDividedItems", true);
     list->setRootIsDecorated(false);
     list->setItemsExpandable(false);
     list->setUniformRowHeights(true);
-    list->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    list->setItemDelegate(new CarVersionDelegate(list));
+    list->setSelectionBehavior(QAbstractItemView::SelectRows);
     list->header()->setStretchLastSection(false);
+    list->header()->setSectionsClickable(true);
+    list->header()->setSectionsMovable(false);
     list->header()->setResizeContentsPrecision(-1);
-    list->header()->setSectionResizeMode(0, QHeaderView::Stretch);
-    list->header()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+    list->header()->setSortIndicatorShown(false);
+    list->header()->setSectionResizeMode(kManufacturerColumn, QHeaderView::Fixed);
+    list->header()->setSectionResizeMode(kYearColumn, QHeaderView::Fixed);
+    list->header()->setSectionResizeMode(kModelColumn, QHeaderView::Stretch);
+    for (int index = 0; index < games.size(); ++index) {
+        const int column = kFirstGameColumn + index;
+        list->headerItem()->setTextAlignment(column, Qt::AlignCenter);
+        list->headerItem()->setToolTip(column, gameTitle(games[index]));
+        list->header()->setSectionResizeMode(column, QHeaderView::Fixed);
+        list->header()->resizeSection(column,
+            list->header()->sectionSizeHint(column) + kGameHeaderExtraWidth);
+    }
     layout->addWidget(list, 1);
+    QTreeWidgetItem *currentCar = nullptr;
     for (const CarRegistry::Entry &entry : registry.entries()) {
-        QStringList versions;
-        QStringList versionTips;
+        const QStringList versions = supportedGames(entry.version);
         const QStringList available = availability.value(entry.id);
-        for (const QString &token : entry.version.split(QLatin1Char(','), Qt::SkipEmptyParts)) {
-            const QString version = token.trimmed().toUpper();
-            if (version.isEmpty() || versions.contains(version)) continue;
-            versions.push_back(version);
-            versionTips.push_back(QStringLiteral("%1: %2").arg(version,
-                available.contains(version) ? QStringLiteral("model found") : QStringLiteral("model missing")));
+        const QString manufacturer = manufacturers.value(manufacturerCode(registry.modelCode(entry.id)));
+        QString name = nameWithoutYear(entry.name);
+        const QString manufacturerPrefix = manufacturer + QLatin1Char(' ');
+        if (name.startsWith(manufacturerPrefix, Qt::CaseInsensitive)) {
+            name.remove(0, manufacturerPrefix.size());
         }
-        auto *item = new QTreeWidgetItem(list, {entry.name, versions.join(QStringLiteral("  "))});
-        item->setData(0, Qt::UserRole, entry.id);
-        item->setData(1, kVersionsRole, versions);
-        item->setData(1, kAvailableVersionsRole, available);
-        item->setToolTip(0, entry.name);
-        item->setToolTip(1, versionTips.join(QLatin1Char('\n')));
+        auto *item = new CarPickerItem(list);
+        item->setText(kManufacturerColumn, manufacturer);
+        item->setData(kManufacturerColumn, Qt::UserRole, entry.id);
+        item->setData(kManufacturerColumn, kVersionsRole, versions);
+        item->setText(kModelColumn, name);
+        item->setToolTip(kModelColumn, entry.name);
+        if (registry.year(entry.id) > 0) {
+            item->setData(kYearColumn, Qt::DisplayRole, registry.year(entry.id));
+        }
+        for (int index = 0; index < games.size(); ++index) {
+            const QString &game = games[index];
+            const auto status = available.contains(game) ? GameModelStatus::Available
+                : versions.contains(game) ? GameModelStatus::Missing : GameModelStatus::Unsupported;
+            setGameCell(*item, kFirstGameColumn + index, game, status);
+        }
         if (entry.id == currentId) {
-            list->setCurrentItem(item);
+            currentCar = item;
         }
+    }
+    int sortColumn = kManufacturerColumn;
+    Qt::SortOrder sortOrder = Qt::AscendingOrder;
+    list->header()->setSortIndicatorShown(true);
+    for (const int column : {kManufacturerColumn, kYearColumn}) {
+        list->header()->setSortIndicator(column, Qt::AscendingOrder);
+        list->resizeColumnToContents(column);
+    }
+    list->sortItems(sortColumn, sortOrder);
+    if (currentCar != nullptr) {
+        list->setCurrentItem(currentCar);
+        list->scrollToItem(currentCar, QAbstractItemView::PositionAtCenter);
     }
 
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
-    layout->addWidget(buttons);
+    auto *footer = new QHBoxLayout;
+    footer->addWidget(new QLabel(QStringLiteral(
+        "[\u2713] Model available, [~] Supported, model unavailable, [ ] Unsupported"), &dialog), 1);
+    footer->addWidget(buttons);
+    layout->addLayout(footer);
     auto *okButton = buttons->button(QDialogButtonBox::Ok);
 
     const auto updateOkEnabled = [&] {
@@ -407,12 +529,21 @@ bool chooseCarModel(QWidget *parent, int currentId, int *outId, bool confirmMiss
     };
     updateOkEnabled();
 
-    QObject::connect(filter, &QLineEdit::textChanged, list, [list, &updateOkEnabled](const QString &text) {
-        const QString needle = text.trimmed();
+    const auto updateFilter = [&] {
+        const QString needle = filter->text().trimmed();
+        const QString sortedGame = sortColumn >= kFirstGameColumn ? games[sortColumn - kFirstGameColumn] : QString();
+        const auto matchedGame = std::find_if(games.cbegin(), games.cend(), [&needle](const QString &game) {
+            return game.compare(needle, Qt::CaseInsensitive) == 0
+                || gameTitle(game).compare(needle, Qt::CaseInsensitive) == 0;
+        });
         for (int row = 0; row < list->topLevelItemCount(); ++row) {
             QTreeWidgetItem *item = list->topLevelItem(row);
-            const QString rowText = item->text(0) + QLatin1Char(' ') + item->text(1);
-            item->setHidden(!needle.isEmpty() && !rowText.contains(needle, Qt::CaseInsensitive));
+            const QStringList versions = item->data(kManufacturerColumn, kVersionsRole).toStringList();
+            const QString rowText = item->toolTip(kModelColumn) + QLatin1Char(' ')
+                + item->text(kManufacturerColumn) + QLatin1Char(' ') + item->text(kYearColumn);
+            const bool matchesSearch = matchedGame != games.cend() ? versions.contains(*matchedGame)
+                : rowText.contains(needle, Qt::CaseInsensitive);
+            item->setHidden(!matchesSearch || (!sortedGame.isEmpty() && !versions.contains(sortedGame)));
         }
         QTreeWidgetItem *current = list->currentItem();
         if (current == nullptr || current->isHidden()) {
@@ -424,6 +555,16 @@ bool chooseCarModel(QWidget *parent, int currentId, int *outId, bool confirmMiss
             }
         }
         updateOkEnabled();
+    };
+    QObject::connect(filter, &QLineEdit::textChanged, list, updateFilter);
+    QObject::connect(list->header(), &QHeaderView::sectionClicked, list, [&](int column) {
+        const bool gameColumn = column >= kFirstGameColumn;
+        sortOrder = gameColumn || (column == sortColumn && sortOrder == Qt::AscendingOrder)
+            ? Qt::DescendingOrder : Qt::AscendingOrder;
+        sortColumn = column;
+        list->sortItems(sortColumn, sortOrder);
+        list->header()->setSortIndicatorShown(!gameColumn);
+        updateFilter();
     });
     QObject::connect(list, &QTreeWidget::currentItemChanged, list,
                      [&updateOkEnabled](QTreeWidgetItem *, QTreeWidgetItem *) { updateOkEnabled(); });

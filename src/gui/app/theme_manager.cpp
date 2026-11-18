@@ -43,6 +43,8 @@ constexpr double kGlyphStrokeWidth = 1.5;
 constexpr double kCheckStrokeWidth = 2.0;
 constexpr int kMenuIconExtent = 16;
 constexpr int kMenuIconPadding = 6;
+constexpr int kComboDropDownWidth = 28;
+constexpr int kColorLightnessMidpoint = 128;
 constexpr int kDockTabExtent = 32;
 constexpr int kSliderGrooveExtent = 6;
 constexpr int kSliderHandleExtent = 14;
@@ -535,7 +537,8 @@ QString themeStyleSheet(UiTheme theme) {
             min-height: @inputContentpx; max-height: @inputContentpx;
             padding-top: @baselineTopInsetpx; padding-bottom: @baselineBottomInsetpx;
         }
-        QComboBox, QAbstractSpinBox { padding-right: 22px; }
+        QComboBox { padding-right: @comboDropDownWidthpx; }
+        QAbstractSpinBox { padding-right: 22px; }
         QLineEdit:hover, QComboBox:hover, QAbstractSpinBox:hover,
         QTextEdit:hover, QPlainTextEdit:hover { color: @selectedText; background: @highlightFill; border-color: transparent; }
         QLineEdit:focus, QComboBox:focus, QTextEdit:focus,
@@ -562,7 +565,16 @@ QString themeStyleSheet(UiTheme theme) {
         QAbstractSpinBox:hover QLineEdit, QComboBox:hover QLineEdit {
             color: @selectedText; background: @highlightFill;
         }
-        QComboBox::drop-down { subcontrol-origin: border; width: 20px; border: none; }
+        QComboBox::drop-down {
+            subcontrol-origin: border; subcontrol-position: center right;
+            width: @comboDropDownWidthpx; border: none; background: transparent;
+        }
+        QComboBox::down-arrow {
+            width: 10px; height: 9px; subcontrol-position: center;
+            image: url("@comboArrowNormal");
+        }
+        QComboBox::down-arrow:hover { image: url("@comboArrowHover"); }
+        QComboBox::down-arrow:disabled { image: url("@comboArrowDisabled"); }
         QAbstractSpinBox::up-button, QAbstractSpinBox::down-button {
             subcontrol-origin: padding; width: 18px; border: none; background: transparent;
         }
@@ -751,6 +763,14 @@ QString themeStyleSheet(UiTheme theme) {
             .arg(color.red()).arg(color.green()).arg(color.blue()).arg(color.alpha()));
     }
     sheet.replace(QStringLiteral("@radius"), QString::number(kUiCornerRadius));
+    const auto comboArrow = [](const QColor &foreground) {
+        return iconAssetPath(foreground.lightness() >= kColorLightnessMidpoint
+            ? QStringLiteral("ComboArrowLight.xpm") : QStringLiteral("ComboArrowDark.xpm"));
+    };
+    sheet.replace(QStringLiteral("@comboArrowNormal"), comboArrow(colors.text));
+    sheet.replace(QStringLiteral("@comboArrowHover"), comboArrow(colors.selectedText));
+    sheet.replace(QStringLiteral("@comboArrowDisabled"), iconAssetPath(QStringLiteral("ComboArrowMuted.xpm")));
+    sheet.replace(QStringLiteral("@comboDropDownWidth"), QString::number(kComboDropDownWidth));
     sheet.replace(QStringLiteral("@fieldHeight"), QString::number(kUiControlHeight - 8));
     sheet.replace(QStringLiteral("@controlHeight"), QString::number(kUiControlHeight));
     sheet.replace(QStringLiteral("@controlContent"), QString::number(controlContent));

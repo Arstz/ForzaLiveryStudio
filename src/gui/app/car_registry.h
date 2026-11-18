@@ -34,6 +34,7 @@ public:
     QString name(int id) const;
     QString modelCode(int id, const QString &game = {}) const;
     QString version(int id) const;
+    int year(int id) const;
     bool isFh6Supported(int id) const;
     bool isFh6Unsupported(int id) const;
     bool isSupported(int id, const QString &game) const;

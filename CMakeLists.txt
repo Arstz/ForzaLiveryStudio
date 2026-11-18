@@ -911,6 +911,9 @@ else()
 endif()
 
 set(FLS_GUI_ASSETS
+    ComboArrowDark.xpm
+    ComboArrowLight.xpm
+    ComboArrowMuted.xpm
     CompVisibility.xpm
     Cursor.xpm
     CursorClosedHand.xpm
