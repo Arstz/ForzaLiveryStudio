@@ -488,6 +488,10 @@ QString materialToken(QString value) {
 }
 
 quint64 materialBindingHash(const PartInstance &part, const CarMesh &mesh) {
+    const auto exact = std::find_if(part.materialBindings.cbegin(), part.materialBindings.cend(),
+        [&](const auto &binding) { return binding.name.compare(mesh.materialName, Qt::CaseInsensitive) == 0; });
+    if (!mesh.materialName.isEmpty() && exact != part.materialBindings.cend()) return exact->hash;
+
     QStringList candidates;
     candidates.push_back(materialToken(mesh.materialName));
     if (mesh.material) {

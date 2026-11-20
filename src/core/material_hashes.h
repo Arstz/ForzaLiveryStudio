@@ -14,6 +14,7 @@ constexpr bool contains(const Container &hashes, Value hash) {
 
 namespace binding {
 
+inline constexpr quint64 kLegacyLiveryOverlay = 2;
 inline constexpr quint64 kBodyPaint = 0xF7DBE8A7C839A675ULL;
 inline constexpr quint64 kHoodPaint = 0x6AC1E9D87FE5D953ULL;
 inline constexpr quint64 kMirrorPaint = 0x1E5FF0F50C741122ULL;

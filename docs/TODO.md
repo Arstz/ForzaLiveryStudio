@@ -4,6 +4,7 @@ Small changes:
     -Prebake rim models
     -Deny liv for xb1 titles and pgs/wgs for xb360
     -Adjust part handles
+    -Deprecate compact_fit_shapes_combined.json
 
 Medium changes:
     -Filter parts by game version (Single/Multiple), hide/paint

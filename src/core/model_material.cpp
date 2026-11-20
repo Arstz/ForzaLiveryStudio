@@ -341,6 +341,7 @@ constexpr quint32 kDetailNormalEnabled = 0x255EF28A;
 constexpr quint32 kSecondChannelTilingU = 0xB0B8947E;
 constexpr quint32 kSecondChannelTilingV = 0xCCD9B1A5;
 constexpr quint32 kSpecularColor = 0x1F9B6488;
+constexpr quint32 kSecondarySpecularColor = 2434032491;
 constexpr quint32 kSimpleSpecularColor = 0x938926B0;
 constexpr quint32 kSpecularTint = 0x0E29312A;
 constexpr quint32 kGlossLow = 0xB9DE26A0;
@@ -474,7 +475,6 @@ void applyLegacyBadgeSurface(ModelMaterial &material, LegacyMaterialSurface &sur
     constexpr quint32 kMaskTiling = 734603102;
     constexpr quint32 kGlossTexture = 1944199385;
     constexpr quint32 kGlossTiling = 4223801439;
-    constexpr quint32 kMaskedReflectance = 2434032491;
     constexpr quint32 kOuterReflectance = 2764571043;
     constexpr quint32 kOuterGloss = 1444695454;
     const bool mappedColor = parameters.enabled(kBadgeUsesColorMap);
@@ -484,7 +484,7 @@ void applyLegacyBadgeSurface(ModelMaterial &material, LegacyMaterialSurface &sur
 
     LegacyMetalBlend &blend = surface.metalBlend.emplace();
     blend.unmaskedReflectance = parameters.color(kSpecularColor, kDielectric);
-    blend.maskedReflectance = parameters.color(kMaskedReflectance, kDielectric);
+    blend.maskedReflectance = parameters.color(kSecondarySpecularColor, kDielectric);
     blend.opacityFromNormalAlpha = parameters.enabled(kBadgeUsesOpacity);
     material.useDiffuseTexture = mappedColor;
 
@@ -511,6 +511,147 @@ void applyLegacyBadgeSurface(ModelMaterial &material, LegacyMaterialSurface &sur
     surface.glossRange = {std::clamp(highGloss, 0.0f, 1.0f), std::clamp(lowGloss, 0.0f, 1.0f)};
     material.gloss = surface.glossRange[1];
     setLegacyNormal(material, surface, kNormalTexture, parameters.uv(0, kNormalTiling), normalStrength);
+}
+
+void applyLegacyBadgeOcclusion(ModelMaterial &material, LegacyMaterialSurface &surface,
+                              const MaterialParameters &parameters, bool separateOcclusion) {
+    constexpr quint32 kUseAmbientOcclusion = 3900104140;
+    constexpr quint32 kUseSpecularOcclusion = 4267420983;
+    constexpr quint32 kAmbientOcclusionMap = 4101427739;
+    constexpr quint32 kAmbientOcclusionTiling = 1737689294;
+    auto &blend = *surface.metalBlend;
+    blend.usesAmbientOcclusion = parameters.enabled(kUseAmbientOcclusion);
+    blend.usesSpecularOcclusion = separateOcclusion
+        ? parameters.enabled(kUseSpecularOcclusion) : blend.usesAmbientOcclusion;
+    if (blend.usesAmbientOcclusion || blend.usesSpecularOcclusion) {
+        surface.ambientOcclusionMap = kAmbientOcclusionMap;
+        material.surfaceUv = parameters.uv(0, kAmbientOcclusionTiling);
+    }
+}
+
+void applyLegacyBadgeGlossSurface(ModelMaterial &material, LegacyMaterialSurface &surface,
+                                 const MaterialParameters &parameters, float normalStrength) {
+    using material_hashes::parameter::kNormalTexture;
+    constexpr std::array kWhite = {1.0f, 1.0f, 1.0f};
+    constexpr std::array kDielectric = {0.04f, 0.04f, 0.04f};
+    constexpr quint32 kUseDiffuseMap = 83425786;
+    constexpr quint32 kUseSpecularMap = 259058124;
+    constexpr quint32 kUseReflectanceMask = 1898331831;
+    constexpr quint32 kDiffuseColor = 4111874494;
+    constexpr quint32 kDiffuseTiling = 1972415244;
+    constexpr quint32 kGlossTiling = 1711498804;
+    constexpr quint32 kSpecularTiling = 977636089;
+    const bool mappedColor = parameters.enabled(kUseDiffuseMap);
+    const bool mappedSpecular = parameters.enabled(kUseSpecularMap);
+    const bool mappedGloss = parameters.enabled(kFirstChannelGlossEnabled);
+    const auto reflectance = parameters.color(kSpecularColor, kDielectric);
+    const auto tint = parameters.color(kSpecularTint, kWhite);
+    const float highGloss = parameters.number(kGlossHigh, material.gloss);
+    const float lowGloss = mappedGloss ? parameters.number(kGlossLow, highGloss) : highGloss;
+
+    LegacyMetalBlend &blend = surface.metalBlend.emplace();
+    blend.mode = LegacyMetalBlendMode::GlossReflectance;
+    blend.unmaskedReflectance = parameters.color(kSecondarySpecularColor, kDielectric);
+    blend.maskedReflectance = mappedSpecular ? reflectance
+        : std::array{reflectance[0] * tint[0], reflectance[1] * tint[1], reflectance[2] * tint[2]};
+    blend.usesReflectanceMask = parameters.enabled(kUseReflectanceMask);
+    blend.opacityFromNormalAlpha = parameters.enabled(kFirstChannelOpacityEnabled);
+    material.useDiffuseTexture = mappedColor;
+    setMaterialColor(material, mappedColor ? kWhite : parameters.color(kDiffuseColor, kWhite));
+    if (mappedColor) {
+        surface.diffuseMap = kLegacyColorMap;
+        material.diffuseUv = parameters.uv(0, kDiffuseTiling);
+    } else if (mappedGloss || blend.usesReflectanceMask) {
+        surface.glossMap = kLegacyGlossMap;
+        surface.glossUv = parameters.uv(0, kGlossTiling);
+    }
+    if (mappedSpecular) {
+        surface.metalBlendMaskMap = kLegacySpecularMap;
+        blend.maskUv = parameters.uv(0, kSpecularTiling);
+    }
+    applyLegacyBadgeOcclusion(material, surface, parameters, true);
+    surface.glossRange = {std::clamp(lowGloss, 0.0f, 1.0f), std::clamp(highGloss, 0.0f, 1.0f)};
+    material.gloss = surface.glossRange[1];
+    setLegacyNormal(material, surface, kNormalTexture, parameters.uv(0, kNormalTiling), normalStrength);
+}
+
+void applyLegacySimpleBadgeSurface(ModelMaterial &material, LegacyMaterialSurface &surface,
+                                  const MaterialParameters &parameters, float normalStrength) {
+    using material_hashes::parameter::kNormalTexture;
+    constexpr quint32 kMetalEnabled = 2560295535;
+    constexpr std::array kWhite = {1.0f, 1.0f, 1.0f};
+    constexpr std::array kDielectric = {0.04f, 0.04f, 0.04f};
+    const bool metal = parameters.enabled(kMetalEnabled, true);
+    const auto reflectance = parameters.color(kSpecularColor, kDielectric);
+    const auto tint = parameters.color(kSpecularTint, kWhite);
+
+    LegacyMetalBlend &blend = surface.metalBlend.emplace();
+    blend.mode = LegacyMetalBlendMode::GlossReflectance;
+    blend.maskedReflectance = metal
+        ? std::array{reflectance[0] * tint[0], reflectance[1] * tint[1], reflectance[2] * tint[2]}
+        : kDielectric;
+    blend.opacityFromNormalAlpha = parameters.enabled(kFirstChannelOpacityEnabled);
+    if (metal) setLegacySpecular(material, blend.maskedReflectance);
+    material.useDiffuseTexture = false;
+    surface.glossRange = {material.gloss, material.gloss};
+    applyLegacyBadgeOcclusion(material, surface, parameters, false);
+    setLegacyNormal(material, surface, kNormalTexture, parameters.uv(0, kNormalTiling), normalStrength);
+}
+
+bool applyLegacyPaintSurface(ModelMaterial &material, LegacyMaterialSurface &surface, const MaterialParameters &parameters) {
+    constexpr quint32 kPaintColorMap = 3165326196;
+    constexpr quint32 kPaintOpacityMap = 3719701651;
+    constexpr quint32 kPaintOpacityEnabled = 3780761211;
+    constexpr quint32 kUseDiffuseColor = 3789039613;
+    constexpr quint32 kDiffuseUsesTexture = 2518010538;
+    constexpr quint32 kFlakeUsesTexture = 1902750849;
+    constexpr quint32 kPackedOpacity = 3494355569;
+    constexpr quint32 kFlakeColorMultiplier = 1948413061;
+    constexpr quint32 kFlakeColor = 3234539552;
+    constexpr quint32 kFlakeTiling = 2916271230;
+    constexpr quint32 kFlakeNormal = 1071456347;
+    constexpr quint32 kFlakeGloss = 2580310449;
+    constexpr quint32 kFlakeStrength = 2263846833;
+    constexpr quint32 kPaintNormalEnabled = 1992599822;
+    constexpr quint32 kPaintNormal = 3344015883;
+    constexpr quint32 kPaintNormalStrength = 224249680;
+    const bool diffuseColor = parameters.enabled(kUseDiffuseColor);
+    const bool flakeTexture = parameters.enabled(kFlakeUsesTexture);
+    const bool mappedColor = diffuseColor ? parameters.enabled(kDiffuseUsesTexture) : flakeTexture;
+    const bool mappedOpacity = parameters.enabled(kPaintOpacityEnabled);
+    const bool wheelPaint = material.resourcePath.contains(QStringLiteral("wheelmaterials"), Qt::CaseInsensitive);
+    const float flakes = parameters.number(kFlakeStrength, 0.0f);
+    if (!mappedColor && !mappedOpacity && !wheelPaint) return false;
+
+    material.useDiffuseTexture = mappedColor;
+    if (mappedColor) {
+        const float multiplier = diffuseColor ? 1.0f : parameters.number(kFlakeColorMultiplier, 1.0f);
+        surface.diffuseMap = kPaintColorMap;
+        surface.paintColorTexture = true;
+        material.diffuseUv = MaterialUvMapping{};
+        setMaterialColor(material, {multiplier, multiplier, multiplier});
+    } else if (wheelPaint && flakes > 0.0f) {
+        setMaterialColor(material, parameters.color(kFlakeColor, material.baseColor));
+    }
+    if (mappedOpacity) {
+        const bool packed = flakeTexture || parameters.enabled(kPackedOpacity);
+        surface.opacityCutout = true;
+        surface.opacityFromAlpha = packed;
+        surface.diffuseAlpha = mappedColor && packed;
+        if (!surface.diffuseAlpha) surface.opacityMap = packed ? kPaintColorMap : kPaintOpacityMap;
+        material.alphaUv = MaterialUvMapping{};
+    }
+    if (mappedColor || flakes > 0.0f) {
+        material.gloss = std::clamp(parameters.number(kFlakeGloss, material.gloss), 0.0f, 1.0f);
+    }
+    if (flakes > 0.0f) {
+        setLegacyNormal(material, surface, kFlakeNormal, parameters.uv(1, kFlakeTiling), flakes);
+    } else if (parameters.enabled(kPaintNormalEnabled)) {
+        setLegacyNormal(material, surface, kPaintNormal, MaterialUvMapping{},
+                        parameters.number(kPaintNormalStrength, 1.0f));
+    }
+
+    return true;
 }
 
 void applyLegacyShaderSurface(ModelMaterial &material, const QString &program) {
@@ -576,6 +717,8 @@ void applyLegacyShaderSurface(ModelMaterial &material, const QString &program) {
         surface.diffuseAlpha = interiorDual && mappedColor;
     } else if (separateBadgeMasks || program == QStringLiteral("badge_clc_diffusemetallerpch1masknorm.shaderbin")) {
         applyLegacyBadgeSurface(material, surface, parameters, normalStrength, separateBadgeMasks);
+    } else if (program == QStringLiteral("badge_ch1difnormglossao.shaderbin")) {
+        applyLegacyBadgeGlossSurface(material, surface, parameters, normalStrength);
     } else if (program == QStringLiteral("clc_metalch2normalch1mask.shaderbin")) {
         if (parameters.enabled(0x05A401E7)) {
             surface.diffuseMap = 0xCA4E3249;
@@ -642,8 +785,7 @@ void applyLegacyShaderSurface(ModelMaterial &material, const QString &program) {
         || program == QStringLiteral("ext_simplemetal.shaderbin")) {
         setLegacySpecular(material, parameters.color(kSimpleSpecularColor, kDielectric));
     } else if (program == QStringLiteral("badge_simplemetal.shaderbin")) {
-        setLegacySpecular(material, parameters.color(kSpecularColor, kDielectric));
-        setLegacyNormal(material, surface, kNormalTexture, parameters.uv(0, kNormalTiling), normalStrength);
+        applyLegacySimpleBadgeSurface(material, surface, parameters, normalStrength);
     } else if (program == QStringLiteral("lod1interior.shaderbin")) {
         setMaterialColor(material, kWhite);
         surface.diffuseMap = kLegacyColorMap;
@@ -657,19 +799,8 @@ void applyLegacyShaderSurface(ModelMaterial &material, const QString &program) {
         setMaterialColor(material, parameters.color(kRubberColor, material.baseColor));
         setLegacyNormal(material, surface, kTreadNormal, parameters.uv(0, kTreadNormalTiling),
                         parameters.number(kTreadNormalStrength, 1.0f));
-    } else if (program == QStringLiteral("carpaint_standard.shaderbin")
-        && material.resourcePath.contains(QStringLiteral("wheelmaterials"), Qt::CaseInsensitive)) {
-        constexpr quint32 kFlakeColor = 0xC0CB2820;
-        constexpr quint32 kFlakeTiling = 0xADD2C47E;
-        constexpr quint32 kFlakeNormal = 0x3FDD205B;
-        constexpr quint32 kFlakeGloss = 0x99CC69B1;
-        constexpr quint32 kFlakeStrength = 0x86EF8FB1;
-        const float flakes = parameters.number(kFlakeStrength, 0.0f);
-        if (flakes > 0.0f) {
-            setMaterialColor(material, parameters.color(kFlakeColor, material.baseColor));
-            material.gloss = std::clamp(parameters.number(kFlakeGloss, material.gloss), 0.0f, 1.0f);
-            setLegacyNormal(material, surface, kFlakeNormal, parameters.uv(1, kFlakeTiling), flakes);
-        }
+    } else if (program == QStringLiteral("carpaint_standard.shaderbin")) {
+        if (!applyLegacyPaintSurface(material, surface, parameters)) return;
     } else {
         return;
     }

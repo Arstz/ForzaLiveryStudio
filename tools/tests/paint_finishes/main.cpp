@@ -253,6 +253,89 @@ void checkLegacyShaderMappings() {
             && material->legacySurface->metalBlend->opacityFromNormalAlpha,
             "separate-mask badge lost one of its texture bindings or material layers");
 
+    defaults.linkedPaths = {QStringLiteral("badge_ch1difnormglossao.shaderbin")};
+    defaults.parameters = {
+        flag(0x04F8F9FA, true), flag(0x71263EB7, true), flag(0x5A0DA36A, true), flag(0xA6BF15E8, true),
+        vector(0x7590AB0C, Type::Vector2, {2, 3, 0, 0}), vector(0x942CA044, Type::Vector2, {4, 5, 0, 0}),
+        vector(0x66036634, Type::Vector2, {6, 7, 0, 0}), vector(0x3A458AF9, Type::Vector2, {8, 9, 0, 0}),
+        vector(0x679308CE, Type::Vector2, {10, 11, 0, 0}),
+        vector(0x1F9B6488, Type::Color, {0.25f, 0.5f, 0.75f, 1.0f}),
+        vector(0x0E29312A, Type::Color, {0.5f, 0.5f, 1.0f, 1.0f}),
+        number(0xB9DE26A0, 0.5f), number(0x52E99DA3, 0.9f)};
+    material = fls::mergeModelMaterialDefaults(*shader(std::nullopt), defaults);
+    require(material->legacySurface && material->legacySurface->metalBlend
+            && material->legacySurface->metalBlend->mode == fls::LegacyMetalBlendMode::GlossReflectance
+            && material->useDiffuseTexture == true && material->legacySurface->diffuseMap == 0x810E7224
+            && material->diffuseUv && material->diffuseUv->channel == 0
+            && material->diffuseUv->tiling == std::array<float, 2>{2, 3}
+            && material->legacySurface->glossMap == 0 && material->legacySurface->glossRange == std::array<float, 2>{0.5f, 0.9f}
+            && material->legacySurface->metalBlend->usesReflectanceMask
+            && material->legacySurface->metalBlend->maskedReflectance == std::array<float, 3>{0.125f, 0.25f, 0.75f}
+            && material->legacySurface->metalBlend->opacityFromNormalAlpha && !material->legacySurface->diffuseAlpha
+            && material->normalUv && material->normalUv->tiling == std::array<float, 2>{4, 5},
+            "first-channel badge lost its artwork, gloss, reflectance mask, or packed opacity");
+    instance.parameters = {flag(0x04F8F9FA, false), flag(0x0F70E9CC, true), flag(0xFE5BAD37, true)};
+    material = fls::mergeModelMaterialDefaults(
+        *shader(std::nullopt), *fls::mergeModelMaterialDefaults(defaults, instance));
+    require(material->legacySurface && material->legacySurface->metalBlend
+            && material->useDiffuseTexture == false && material->legacySurface->diffuseMap == 0
+            && material->legacySurface->glossMap == 0xA91F5977
+            && material->legacySurface->glossUv.tiling == std::array<float, 2>{6, 7}
+            && material->legacySurface->metalBlendMaskMap == 0x4C96A196
+            && material->legacySurface->metalBlend->maskUv.tiling == std::array<float, 2>{8, 9}
+            && material->legacySurface->ambientOcclusionMap == 0xF476D21B && material->surfaceUv
+            && !material->legacySurface->metalBlend->usesAmbientOcclusion
+            && material->legacySurface->metalBlend->usesSpecularOcclusion
+            && material->surfaceUv->tiling == std::array<float, 2>{10, 11},
+            "first-channel badge lost its separate gloss, reflectance, or occlusion map");
+    instance.parameters = {flag(0x04F8F9FA, false), flag(0xE876DDCC, true)};
+    material = fls::mergeModelMaterialDefaults(
+        *shader(std::nullopt), *fls::mergeModelMaterialDefaults(defaults, instance));
+    require(material->legacySurface && material->legacySurface->metalBlend
+            && material->legacySurface->metalBlend->usesAmbientOcclusion
+            && !material->legacySurface->metalBlend->usesSpecularOcclusion
+            && material->legacySurface->ambientOcclusionMap == 0xF476D21B,
+            "badge ambient occlusion incorrectly enabled specular occlusion");
+
+    defaults.linkedPaths = {QStringLiteral("badge_simplemetal.shaderbin")};
+    defaults.parameters = {
+        flag(0x989B026F, true), flag(0xA6BF15E8, true), number(0x52E99DA3, 0.8f),
+        vector(0x942CA044, Type::Vector2, {2, 4, 0, 0}),
+        vector(0x1F9B6488, Type::Color, {0.4f, 0.5f, 0.6f, 1.0f})};
+    material = fls::mergeModelMaterialDefaults(*shader(std::nullopt), defaults);
+    require(material->legacySurface && material->legacySurface->metalBlend
+            && material->legacySurface->metalBlend->opacityFromNormalAlpha
+            && material->legacySurface->metalBlend->maskedReflectance == std::array<float, 3>{0.4f, 0.5f, 0.6f}
+            && material->legacySurface->normalMap == 0xF9E8078D && material->normalUv
+            && material->normalUv->tiling == std::array<float, 2>{2, 4}
+            && material->legacySurface->glossRange == std::array<float, 2>{0.8f, 0.8f}
+            && material->legacySurface->ambientOcclusionMap == 0,
+            "simple metal badge lost its packed opacity or constant reflectance");
+
+    defaults.linkedPaths = {QStringLiteral("carpaint_standard.shaderbin")};
+    defaults.parameters = {flag(0x7169AC81, true), number(0x74226C85, 1.0f), number(0x99CC69B1, 0.4f)};
+    material = fls::mergeModelMaterialDefaults(*shader(std::nullopt), defaults);
+    require(material->legacySurface && material->useDiffuseTexture == true
+            && material->legacySurface->paintColorTexture && material->legacySurface->diffuseMap == 0xBCAB0B74
+            && material->diffuseUv && material->diffuseUv->channel == 0 && material->gloss == 0.4f
+            && !material->legacySurface->diffuseAlpha && material->legacySurface->opacityMap == 0
+            && !material->legacySurface->opacityCutout && material->opacity == 1.0f,
+            "legacy paint lost its opaque colour binding");
+    instance.parameters = {flag(0xE159D67B, true)};
+    material = fls::mergeModelMaterialDefaults(
+        *shader(std::nullopt), *fls::mergeModelMaterialDefaults(defaults, instance));
+    require(material->legacySurface && material->legacySurface->diffuseAlpha
+            && material->legacySurface->opacityCutout && material->legacySurface->opacityFromAlpha
+            && material->legacySurface->opacityMap == 0 && material->alphaUv && material->alphaUv->channel == 0,
+            "legacy paint lost its enabled packed opacity binding");
+    instance.parameters.push_back(flag(0x7169AC81, false));
+    material = fls::mergeModelMaterialDefaults(
+        *shader(std::nullopt), *fls::mergeModelMaterialDefaults(defaults, instance));
+    require(material->legacySurface && material->useDiffuseTexture == false
+            && material->legacySurface->opacityMap == 0xDDB62493 && material->legacySurface->opacityCutout
+            && !material->legacySurface->diffuseAlpha && !material->legacySurface->opacityFromAlpha,
+            "legacy paint lost its separate opacity binding");
+
     defaults.linkedPaths = {QStringLiteral("sparetire.shaderbin")};
     defaults.parameters = {
         vector(0xBA9B668F, Type::Color, {0.006f, 0.006f, 0.007f, 1.0f}),

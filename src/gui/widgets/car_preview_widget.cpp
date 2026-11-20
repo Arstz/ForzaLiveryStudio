@@ -641,6 +641,7 @@ NativeTextureSlot legacyTextureSlot(const fls::LegacyMaterialSurface &surface, q
     if (hash == surface.opacityMap) return NativeTextureSlot::Alpha;
     if (hash == surface.glossMap) return NativeTextureSlot::Gloss;
     if (hash == surface.metalBlendMaskMap) return NativeTextureSlot::MetalBlendMask;
+    if (hash == surface.ambientOcclusionMap) return NativeTextureSlot::Surface;
     if (hash == surface.emissionMap) return NativeTextureSlot::Emissive;
     if (hash == surface.emissionMaskMap) return NativeTextureSlot::EmissiveMask;
 

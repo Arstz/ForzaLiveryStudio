@@ -71,6 +71,7 @@ enum class LegacyMetalBlendMode : int {
     Constant = 1,
     SingleMask = 2,
     SeparateMasks = 3,
+    GlossReflectance = 4,
 };
 
 struct LegacyMetalBlend {
@@ -81,6 +82,9 @@ struct LegacyMetalBlend {
     LegacyMetalBlendMode mode = LegacyMetalBlendMode::Constant;
     float outerGloss = 1.0f;
     bool opacityFromNormalAlpha = false;
+    bool usesReflectanceMask = false;
+    bool usesAmbientOcclusion = false;
+    bool usesSpecularOcclusion = false;
 };
 
 struct LegacyMaterialSurface {
@@ -92,9 +96,13 @@ struct LegacyMaterialSurface {
     quint32 opacityMap = 0;
     quint32 glossMap = 0;
     quint32 metalBlendMaskMap = 0;
+    quint32 ambientOcclusionMap = 0;
     quint32 emissionMap = 0;
     quint32 emissionMaskMap = 0;
     bool diffuseAlpha = false;
+    bool paintColorTexture = false;
+    bool opacityCutout = false;
+    bool opacityFromAlpha = false;
 };
 
 struct MaterialWeave {
