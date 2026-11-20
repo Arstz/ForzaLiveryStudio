@@ -7,9 +7,13 @@
 #include "matrix_math.h"
 #include "project_codec.h"
 #include "positional_paint.h"
+#include "shape_registry.h"
+#include "xbox360_vinyl.h"
 
 #include <QDir>
 #include <QFile>
+#include <QFileInfo>
+#include <QSaveFile>
 #include <QUuid>
 
 #include <algorithm>
@@ -34,6 +38,10 @@ constexpr int kMotorsportEntryCountOffset = 58;
 constexpr int kMotorsportEntriesOffset = 62;
 constexpr int kEarlyEntryCountOffset = 41;
 constexpr int kTaggedLiveryOverhead = 40;
+constexpr quint16 kMotorsport3LastShapeId = 2040;
+constexpr quint16 kLaterXbox360LastShapeId = 2240;
+constexpr quint16 kEnglishMtCentShapeId = 2633;
+constexpr quint16 kXbox360DecalFlag = 32768;
 constexpr int kMaskFlag = 64;
 constexpr quint32 kLastEarlyLiveryVersion = 7;
 constexpr double kNativeFramePositionRange = 25000.0;
@@ -206,8 +214,16 @@ QString exportGameCode(ExportGameVersion game) {
     case ExportGameVersion::Motorsport6: return QStringLiteral("FM6");
     case ExportGameVersion::Motorsport7: return QStringLiteral("FM7");
     case ExportGameVersion::Motorsport2023: return QStringLiteral("FM2023");
+    case ExportGameVersion::Motorsport3: return QStringLiteral("FM3");
+    case ExportGameVersion::Motorsport4: return QStringLiteral("FM4");
+    case ExportGameVersion::Horizon1: return QStringLiteral("FH1");
     default: return QStringLiteral("FH6");
     }
+}
+
+bool isXbox360ExportGame(ExportGameVersion game) {
+    return game == ExportGameVersion::Motorsport3 || game == ExportGameVersion::Motorsport4
+        || game == ExportGameVersion::Horizon1;
 }
 
 namespace {
@@ -239,6 +255,87 @@ bool containsArtwork(const scene::Layer &layer) {
     }
 
     return false;
+}
+
+bool incompatibleExportShape(const scene::Shape &shape, ExportGameVersion game) {
+    if (shape.raster) {
+        return false;
+    }
+    const quint16 id = detail::canonicalShapeId(shape.shapeId);
+    const bool known = detail::isKnownShapeId(id);
+    if (isXbox360ExportGame(game)) {
+        const quint16 last = game == ExportGameVersion::Motorsport3
+            ? kMotorsport3LastShapeId : kLaterXbox360LastShapeId;
+
+        return (id & kXbox360DecalFlag) == 0
+            && !detail::isXbox360ExclusiveShapeId(id) && (!known || id > last);
+    }
+
+    return !known || (game == ExportGameVersion::Motorsport2023 && id == kEnglishMtCentShapeId);
+}
+
+quint64 incompatibleLayerCount(const scene::Layer &layer, ExportGameVersion game) {
+    if (!layer.visible) {
+        return 0;
+    }
+    if (layer.kind() == scene::LayerKind::Shape) {
+        return incompatibleExportShape(static_cast<const scene::Shape &>(layer), game) ? 1 : 0;
+    }
+    quint64 count = 0;
+    if (layer.kind() == scene::LayerKind::Group) {
+        for (const auto &child : static_cast<const scene::Group &>(layer).children) {
+            count += incompatibleLayerCount(*child, game);
+        }
+    }
+
+    return count;
+}
+
+void collapseSingleArtworkChild(scene::Group &parent, int index, scene::Group &group) {
+    int artworkIndex = -1;
+    for (int child = 0; child < static_cast<int>(group.children.size()); ++child) {
+        if (containsArtwork(*group.children[child])) {
+            if (artworkIndex >= 0) {
+                return;
+            }
+            artworkIndex = child;
+        }
+    }
+    if (artworkIndex >= 0) {
+        auto child = group.takeAt(artworkIndex);
+        child->transform = decomposeTransform2D(detail::multiply(group.transform.matrix(), child->transform.matrix()));
+        child->opacity *= group.opacity;
+        child->visible = child->visible && group.visible;
+        parent.takeAt(index);
+        parent.insert(index, std::move(child));
+    }
+}
+
+bool discardIncompatibleLayers(scene::Group &group, ExportGameVersion game, bool collapseSingletons) {
+    bool discarded = false;
+    for (int index = static_cast<int>(group.children.size()) - 1; index >= 0; --index) {
+        auto &child = *group.children[index];
+        if (child.kind() == scene::LayerKind::Shape) {
+            if (incompatibleExportShape(static_cast<const scene::Shape &>(child), game)) {
+                group.takeAt(index);
+                discarded = true;
+            }
+        } else if (child.kind() == scene::LayerKind::Group) {
+            auto &childGroup = static_cast<scene::Group &>(child);
+            if (discardIncompatibleLayers(childGroup, game, collapseSingletons)) {
+                discarded = true;
+                if (!childGroup.isLiverySection) {
+                    if (!containsArtwork(childGroup)) {
+                        group.takeAt(index);
+                    } else if (collapseSingletons) {
+                        collapseSingleArtworkChild(group, index, childGroup);
+                    }
+                }
+            }
+        }
+    }
+
+    return discarded;
 }
 
 quint64 maskedLayerCount(const scene::Layer &layer, bool inheritedMask) {
@@ -290,6 +387,7 @@ Project nativeArtworkProject(const Project &project, const ExportProfile &profil
     if (!exportGameSupportsMasks(game)) {
         discardMaskedLayers(*artwork.root);
     }
+    discardIncompatibleExportLayers(artwork, game);
     auto &children = artwork.root->children;
     children.erase(std::remove_if(children.begin(), children.end(), [](const auto &child) {
         return child->kind() == scene::LayerKind::Group
@@ -583,6 +681,9 @@ bool exportGameSupportsMasks(ExportGameVersion game) {
     case ExportGameVersion::Motorsport5:
     case ExportGameVersion::Motorsport6:
     case ExportGameVersion::Motorsport7:
+    case ExportGameVersion::Motorsport3:
+    case ExportGameVersion::Motorsport4:
+    case ExportGameVersion::Horizon1:
         return false;
     default:
         return true;
@@ -593,9 +694,34 @@ quint64 exportMaskedLayerCount(const Project &project) {
     return project.root ? maskedLayerCount(*project.root, false) : 0;
 }
 
+quint64 exportIncompatibleLayerCount(const Project &project, ExportGameVersion game) {
+    return project.root ? incompatibleLayerCount(*project.root, game) : 0;
+}
+
+void discardIncompatibleExportLayers(Project &project, ExportGameVersion game) {
+    if (project.root) {
+        const bool collapseSingletons = !project.isLivery && !isXbox360ExportGame(game)
+            && (game == ExportGameVersion::Horizon6 || exportProfile(game).groupGeneration == GroupRecordGeneration::Current);
+        discardIncompatibleLayers(*project.root, game, collapseSingletons);
+    }
+}
+
 QByteArray encodeGameLiveryPayload(const Project &project, ExportGameVersion game) {
+    if (isXbox360ExportGame(game)) {
+        if (!project.isLivery) {
+            throw std::runtime_error("not a livery project");
+        }
+
+        Project artwork = project;
+        discardIncompatibleExportLayers(artwork, game);
+
+        return detail::encodeXbox360Vinyl(artwork, destinationCreatorTag(project, QString()));
+    }
     if (game == ExportGameVersion::Horizon6) {
-        return encodeCLiveryPayload(project);
+        Project artwork = project;
+        discardIncompatibleExportLayers(artwork, game);
+
+        return encodeCLiveryPayload(artwork);
     }
     std::array<int, 11> counts{};
 
@@ -603,8 +729,17 @@ QByteArray encodeGameLiveryPayload(const Project &project, ExportGameVersion gam
 }
 
 void exportGameLivery(const Project &project, const QString &outputFolder, ExportGameVersion game) {
+    if (isXbox360ExportGame(game)) {
+        if (!project.isLivery || outputFolder.isEmpty()) {
+            throw std::runtime_error("Xbox 360 livery export requires a livery project and destination");
+        }
+        exportXbox360Asset(project, QDir(outputFolder).filePath(QStringLiteral("Livery.liv")), game);
+        return;
+    }
     if (game == ExportGameVersion::Horizon6) {
-        exportCLivery(project, outputFolder);
+        Project artwork = project;
+        discardIncompatibleExportLayers(artwork, game);
+        exportCLivery(artwork, outputFolder);
         return;
     }
     std::array<int, 11> counts{};
@@ -629,8 +764,17 @@ void exportGameLivery(const Project &project, const QString &outputFolder, Expor
 
 void exportGameGroup(const Project &project, const QString &outputFolder,
                     ExportGameVersion game, const SpriteSizeFn &spriteSize) {
+    if (isXbox360ExportGame(game)) {
+        if (project.isLivery || outputFolder.isEmpty()) {
+            throw std::runtime_error("Xbox 360 vinyl group export requires a group project and destination");
+        }
+        exportXbox360Asset(project, QDir(outputFolder).filePath(QStringLiteral("VinylGroup.lvg")), game);
+        return;
+    }
     if (game == ExportGameVersion::Horizon6) {
-        exportNestedProjectFolder(project, outputFolder, project.name, spriteSize);
+        Project artwork = project;
+        discardIncompatibleExportLayers(artwork, game);
+        exportNestedProjectFolder(artwork, outputFolder, project.name, spriteSize);
         return;
     }
     if (project.isLivery || project.root == nullptr) {
@@ -640,6 +784,7 @@ void exportGameGroup(const Project &project, const QString &outputFolder,
     if (!exportGameSupportsMasks(game)) {
         discardMaskedLayers(*nativeProject.root);
     }
+    discardIncompatibleExportLayers(nativeProject, game);
     const quint64 count = visibleShapeCount(*nativeProject.root);
     if (count > std::numeric_limits<quint32>::max()) {
         throw std::runtime_error("too many group shapes for header metadata");
@@ -657,6 +802,25 @@ void exportGameGroup(const Project &project, const QString &outputFolder,
     writeFile(output.filePath(motorsport ? QStringLiteral("data") : QStringLiteral("C_group")), fileBytes);
     writeFile(output.filePath(QStringLiteral("header")), header);
     copyThumbnail(project, outputFolder, game);
+}
+
+void exportXbox360Asset(const Project &project, const QString &path, ExportGameVersion game,
+                        const Xbox360Credentials *credentials) {
+    const Xbox360FileKind kind = project.isLivery ? Xbox360FileKind::Livery : Xbox360FileKind::Group;
+    if (!isXbox360ExportGame(game) || xbox360FileKind(path) != kind) {
+        throw std::runtime_error("invalid Xbox 360 export game or file extension");
+    }
+    Project artwork = project;
+    discardIncompatibleExportLayers(artwork, game);
+    QByteArray plain = detail::encodeXbox360Vinyl(artwork, destinationCreatorTag(project, QString()));
+    if (credentials != nullptr) {
+        plain = encryptXbox360Asset(plain, game, kind, *credentials);
+    }
+    createOutputFolder(QFileInfo(path).absolutePath());
+    QSaveFile file(path);
+    if (!file.open(QIODevice::WriteOnly) || file.write(plain) != plain.size() || !file.commit()) {
+        throw std::runtime_error(("could not write Xbox 360 asset: " + file.errorString()).toStdString());
+    }
 }
 
 } // namespace fls

@@ -48,7 +48,7 @@ void testMaskWarning(const QString &directory, bool livery, quint64 maskCount) {
                 const bool expected = maskCount > 0 && !fls::exportGameSupportsMasks(game);
                 checked &= warning->isHidden() == !expected;
                 checked &= warning->text() == QString("Project contains %1 masked layers, will be discarded").arg(maskCount);
-                checked &= warning->palette().color(QPalette::WindowText) == QColor(Qt::yellow);
+                checked &= warning->property("uiState").toString() == "warning";
                 checked &= dialog->findChild<QDialogButtonBox *>()->button(QDialogButtonBox::Save)->isEnabled();
             }
             break;
@@ -120,6 +120,43 @@ void testSelection(const QString &directory, bool livery) {
         "FH5 selection wrote another payload format");
 }
 
+void testShapeWarning(const QString &directory) {
+    using Game = fls::ExportGameVersion;
+    fls::Project project;
+    for (const quint16 id : {2101, 2301}) {
+        auto shape = std::make_unique<fls::scene::Shape>();
+        shape->setVectorShape(id);
+        project.root->append(std::move(shape));
+    }
+    bool checked = false;
+    QTimer::singleShot(0, [&checked]() {
+        auto *dialog = qobject_cast<QDialog *>(QApplication::activeModalWidget());
+        if (!dialog) {
+            QApplication::exit(1);
+            return;
+        }
+        const auto *warning = dialog->findChild<QLabel *>("exportShapeWarning");
+        for (auto *combo : dialog->findChildren<QComboBox *>()) {
+            if (combo->findText("Forza Horizon 6") < 0 || !warning) {
+                continue;
+            }
+            checked = warning->isHidden();
+            combo->setCurrentIndex(combo->findData(static_cast<int>(Game::Motorsport3)));
+            checked &= !warning->isHidden() && warning->text().startsWith("2 layers");
+            combo->setCurrentIndex(combo->findData(static_cast<int>(Game::Motorsport4)));
+            checked &= !warning->isHidden() && warning->text().startsWith("One layer");
+            checked &= dialog->findChild<QDialogButtonBox *>()->button(QDialogButtonBox::Save)->isEnabled();
+            combo->setCurrentIndex(combo->findData(static_cast<int>(Game::Horizon6)));
+            checked &= warning->isHidden();
+            break;
+        }
+        dialog->reject();
+    });
+    gui::showExportAssetDialog(nullptr, directory, "Shape test", false, 0, 0,
+        [&project](Game game) { return fls::exportIncompatibleLayerCount(project, game); });
+    require(checked, "shape warning responds to the selected game");
+}
+
 } // namespace
 
 int main(int argc, char *argv[]) {
@@ -138,6 +175,7 @@ int main(int argc, char *argv[]) {
             testMaskWarning(output.path(), livery, 7);
             testMaskWarning(output.path(), livery, 0);
         }
+        testShapeWarning(output.path());
         qInfo() << "FH5 export target selection passed for groups and liveries";
         return 0;
     } catch (const std::exception &error) {

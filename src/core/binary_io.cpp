@@ -2,6 +2,7 @@
 
 #include <QtEndian>
 
+#include <bit>
 #include <cstring>
 #include <stdexcept>
 
@@ -52,6 +53,22 @@ void appendLeFloat(QByteArray &out, float value) {
     appendLeU32(out, raw);
 }
 
+void appendBeU16(QByteArray &out, quint16 value) {
+    char bytes[sizeof(value)];
+    qToBigEndian(value, bytes);
+    out.append(bytes, sizeof(bytes));
+}
+
+void appendBeU32(QByteArray &out, quint32 value) {
+    char bytes[sizeof(value)];
+    qToBigEndian(value, bytes);
+    out.append(bytes, sizeof(bytes));
+}
+
+void appendBeFloat(QByteArray &out, float value) {
+    appendBeU32(out, std::bit_cast<quint32>(value));
+}
+
 bool bytesAt(const QByteArray &data, int pos, std::initializer_list<quint8> bytes) {
     if (pos < 0 || pos + static_cast<int>(bytes.size()) > data.size()) {
         return false;
@@ -66,8 +83,8 @@ bool bytesAt(const QByteArray &data, int pos, std::initializer_list<quint8> byte
     return true;
 }
 
-BinaryCursor::BinaryCursor(const QByteArray &bytes, const char *truncationMessage)
-    : bytes_(bytes), truncationMessage_(truncationMessage) {}
+BinaryCursor::BinaryCursor(const QByteArray &bytes, const char *truncationMessage, ByteOrder order)
+    : bytes_(bytes), truncationMessage_(truncationMessage), order_(order) {}
 
 quint8 BinaryCursor::u8() {
     require(1);
@@ -77,7 +94,8 @@ quint8 BinaryCursor::u8() {
 
 quint16 BinaryCursor::u16() {
     require(2);
-    const quint16 value = readLeU16(bytes_, position_);
+    const quint16 value = order_ == ByteOrder::BigEndian
+        ? qFromBigEndian<quint16>(bytes_.constData() + position_) : readLeU16(bytes_, position_);
     position_ += 2;
 
     return value;
@@ -85,7 +103,8 @@ quint16 BinaryCursor::u16() {
 
 quint32 BinaryCursor::u32() {
     require(4);
-    const quint32 value = readLeU32(bytes_, position_);
+    const quint32 value = order_ == ByteOrder::BigEndian
+        ? qFromBigEndian<quint32>(bytes_.constData() + position_) : readLeU32(bytes_, position_);
     position_ += 4;
 
     return value;
@@ -96,11 +115,7 @@ qint32 BinaryCursor::i32() {
 }
 
 float BinaryCursor::f32() {
-    require(4);
-    const float value = readLeFloat(bytes_, position_);
-    position_ += 4;
-
-    return value;
+    return std::bit_cast<float>(u32());
 }
 
 void BinaryCursor::skip(int count) {

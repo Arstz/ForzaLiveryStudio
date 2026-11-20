@@ -8,6 +8,7 @@
 #include "matrix_math.h"
 #include "positional_paint.h"
 #include "vinyl_decoder.h"
+#include "xbox360_vinyl.h"
 
 #include <QDir>
 #include <QFile>
@@ -220,10 +221,27 @@ LiveryPayload parseInflatedLiveryPayloadImpl(const QByteArray &raw) {
 } // namespace
 
 LiveryPayload parseInflatedLiveryPayload(const QByteArray &raw) {
+    if (raw.startsWith(detail::kXbox360LiveryMagic)) {
+        auto decoded = detail::readXbox360Livery(raw);
+        LiveryPayload payload;
+        payload.raw = raw;
+        payload.xbox360Sections = std::move(decoded.sections);
+        payload.sectionCounts = std::move(decoded.sectionCounts);
+        payload.paint = std::move(decoded.paint);
+        payload.carId = decoded.carId;
+        payload.legacyRecords = true;
+        payload.xbox360Locked = decoded.locked;
+
+        return payload;
+    }
+
     return parseInflatedLiveryPayloadImpl(raw);
 }
 
 QVector<LiverySection> decodeLiverySections(const LiveryPayload &payload) {
+    if (!payload.xbox360Sections.isEmpty()) {
+        return payload.xbox360Sections;
+    }
     LiveryPayload resolved = payload;
     resolveLiveryRecords(resolved);
     VinylDecoderOptions options;
@@ -235,6 +253,9 @@ QVector<LiverySection> decodeLiverySections(const LiveryPayload &payload) {
 }
 
 bool isLiveryAsset(const QByteArray &fileData) {
+    if (fileData.startsWith(detail::kXbox360LiveryMagic)) {
+        return true;
+    }
     constexpr int kCompressedPayloadOffset = 8;
     constexpr int kZlibHeaderBytes = 2;
     constexpr quint8 kZlibMethod = 0x78;
@@ -267,13 +288,18 @@ bool isLiveryAssetFileName(const QString &fileName) {
         && fileName.endsWith(QStringLiteral(".C_livery"), Qt::CaseInsensitive);
 }
 
+LiveryPayload parseLiveryAsset(const QByteArray &fileData) {
+    return parseInflatedLiveryPayload(fileData.startsWith(detail::kXbox360LiveryMagic)
+        ? fileData : inflateContainerBlocks(fileData));
+}
+
 LiveryPayload readLiveryPayload(const QString &folderOrFile) {
     QFile file(resolveLiveryPath(folderOrFile));
     if (!file.open(QIODevice::ReadOnly)) {
         throw std::runtime_error(("could not open C_livery: " + file.fileName()).toStdString());
     }
 
-    return parseInflatedLiveryPayload(inflateContainerBlocks(file.readAll()));
+    return parseLiveryAsset(file.readAll());
 }
 
 namespace {
@@ -1055,7 +1081,7 @@ QByteArray patchNativeArtwork(
 }
 
 std::optional<SourceLivery> legacySourceFrames(const Project &project) {
-    if (project.liverySource.isEmpty()) {
+    if (project.liverySource.isEmpty() || project.liverySource.startsWith(detail::kXbox360LiveryMagic)) {
         return std::nullopt;
     }
     SourceLivery source;

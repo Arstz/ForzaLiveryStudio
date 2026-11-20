@@ -30,6 +30,7 @@
 #include <QMenu>
 #include <QPainter>
 #include <QPushButton>
+#include <QScopedValueRollback>
 #include <QScrollArea>
 #include <QSet>
 #include <QToolButton>
@@ -1361,13 +1362,14 @@ bool CarPreviewWidget::hasModel() const {
     return !model_.meshes.empty();
 }
 
-QImage CarPreviewWidget::renderThumbnail(const QSize &size) {
+QImage CarPreviewWidget::renderThumbnail(const QSize &size, fls::Project *artwork) {
     if (!hasModel() || !size.isValid() || size.isEmpty()) {
         return {};
     }
     const int debugMode = carRenderer_.debugMode();
     const bool wireframeVisible = carRenderer_.wireframeVisible();
     const int selectedLodIndex = selectedLodIndex_;
+    const bool temporaryArtwork = artwork != nullptr && artwork != project_;
     if (selectedLodIndex != 0) {
         selectedLodIndex_ = 0;
         modelUploadPending_ = true;
@@ -1375,8 +1377,18 @@ QImage CarPreviewWidget::renderThumbnail(const QSize &size) {
     carRenderer_.setDebugMode(0);
     carRenderer_.setWireframeVisible(false);
     transparentBackground_ = true;
-    repaint();
-    const QImage framebuffer = grabFramebuffer();
+    QImage framebuffer;
+    {
+        const QScopedValueRollback artworkScope(project_, temporaryArtwork ? artwork : project_);
+        if (temporaryArtwork) {
+            invalidateCachedLivery();
+        }
+        repaint();
+        framebuffer = grabFramebuffer();
+    }
+    if (temporaryArtwork) {
+        invalidateCachedLivery();
+    }
     transparentBackground_ = false;
     carRenderer_.setDebugMode(debugMode);
     carRenderer_.setWireframeVisible(wireframeVisible);

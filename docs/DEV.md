@@ -22,7 +22,8 @@ materials, and livery masks.
 ## Build and run
 
 Requirements are CMake 3.24 or newer, a C++20 compiler, Qt6
-Core/Gui/Widgets/OpenGL/OpenGLWidgets/Svg, and zlib. Clipper2, Potrace, and the
+Core/Gui/Widgets/OpenGL/OpenGLWidgets/Svg, and zlib. Xbox 360 encryption uses
+Windows CNG or OpenSSL Crypto on other platforms. Clipper2, Potrace, and the
 libmspack LZX decoder are vendored in `third_party/`. CUDA fill acceleration is
 optional; CPU implementations remain available.
 
@@ -49,8 +50,8 @@ Livery export validates per-section shape counts against the supported limits.
 
 ### Linux
 
-Install Qt6 development packages with SVG support, zlib, CMake, and a C++20
-compiler, then run:
+Install Qt6 development packages with SVG support, zlib, OpenSSL, CMake, and
+a C++20 compiler, then run:
 
 ```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
@@ -107,6 +108,9 @@ Game codecs decode native payloads into the shared scene representation.
 profiles supply record dialects and semantics. `vinyl_framing` handles physical
 records and boundaries separately from section mapping and editable geometry.
 Compression is resolved before scene decoding.
+
+The [Xbox 360 codecs](XBOX360.md) handle authenticated file envelopes and
+big-endian vinyl records. They feed the same vinyl tree and scene importer.
 
 `vinyl_encoding` converts scene placement into native records. Export profiles
 select framing, headers, paint layout, masks, and compression. Grouped export

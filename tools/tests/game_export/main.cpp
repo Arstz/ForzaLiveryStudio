@@ -293,6 +293,89 @@ void testGroups(const QString &root) {
     }
 }
 
+void testXbox360Assets(const QString &root) {
+    using Game = fls::ExportGameVersion;
+    using Kind = fls::Xbox360FileKind;
+    using Envelope = fls::Xbox360Envelope;
+    auto livery = makeLivery(fls::kBodyLiverySectionCount, true);
+    for (auto &child : livery.root->children) {
+        auto &section = static_cast<fls::scene::Group &>(*child);
+        static_cast<fls::scene::Group &>(*section.children.front()).takeAt(0);
+    }
+    auto group = fls::Project{};
+    group.root->append(livery.root->children.front()->clone());
+    group.root->append(makeShape(19));
+    livery.liveryPaint.setDefaultCarColorBgra({21, 43, 65, 255});
+
+    for (const auto game : {Game::Motorsport3, Game::Motorsport4, Game::Horizon1}) {
+        const QString code = fls::exportGameCode(game);
+        const QByteArray raw = fls::encodeGameLiveryPayload(livery, game);
+        const auto payload = fls::parseLiveryAsset(raw);
+        require(payload.carId == livery.carId && payload.sectionCounts == QVector<int>(6, 1), "Xbox 360 livery counters");
+        auto imported = fls::importCLiveryData(raw, {}, code);
+        compareArtwork(livery, imported, code);
+        for (const auto &section : imported.root->children) {
+            require(static_cast<const fls::scene::Group &>(*section).children.front()->kind()
+                    == fls::scene::LayerKind::Group, "Xbox 360 section retains nested group");
+        }
+        require(imported.liveryPaint.defaultCarColorBgra() == livery.liveryPaint.defaultCarColorBgra(),
+                "Xbox 360 body paint");
+        imported = fls::decodeProjectDocument(fls::encodeProjectDocument(imported));
+        const QByteArray exported = fls::encodeGameLiveryPayload(imported, game);
+        const auto reimported = fls::importCLiveryData(exported, {}, code);
+        compareArtwork(livery, reimported, code + " project round trip");
+
+        fls::Xbox360Credentials keys;
+        keys.keyData.fill('q', game == Game::Motorsport3 ? 32 : 48);
+        const QString path = QDir(root).filePath(code + ".lvg");
+        fls::exportXbox360Asset(group, path, game, &keys);
+        QByteArray encrypted = readFile(path);
+        require(fls::xbox360Envelope(encrypted) == (game == Game::Motorsport3 ? Envelope::Sha1 : Envelope::Sha256),
+                "Xbox 360 encrypted file layout");
+        const QByteArray plain = fls::decryptXbox360Asset(encrypted, game, Kind::Group, keys);
+        compareArtwork(group, fls::importCGroupNestedData(plain, {}, code), code);
+
+        encrypted[0] ^= 1;
+        bool rejected = false;
+        try {
+            fls::decryptXbox360Asset(encrypted, game, Kind::Group, keys);
+        } catch (const std::exception &) {
+            rejected = true;
+        }
+        require(rejected, "Xbox 360 authentication rejects modified files");
+    }
+}
+
+void testXbox360Samples(const QString &root, const QString &output) {
+    const QDir encryptedDirectory(QDir(root).filePath("encrypted"));
+    QDirIterator files(root, {"*.liv", "*.lvg"}, QDir::Files, QDirIterator::Subdirectories);
+    int plaintext = 0;
+    int encrypted = 0;
+    while (files.hasNext()) {
+        const QFileInfo file(files.next());
+        const auto kind = fls::xbox360FileKind(file.fileName());
+        const auto envelope = fls::xbox360Envelope(readFile(file.absoluteFilePath()));
+        if (file.absoluteDir() == encryptedDirectory) {
+            require(envelope == fls::Xbox360Envelope::Sha1 || envelope == fls::Xbox360Envelope::Sha256,
+                    file.fileName() + " encryption envelope");
+            ++encrypted;
+            continue;
+        }
+        if (envelope == fls::Xbox360Envelope::Motorsport2) {
+            continue;
+        }
+        const auto game = fls::ExportGameVersion::Motorsport4;
+        const QString destination = QDir(output).filePath(file.fileName());
+        const auto import = kind == fls::Xbox360FileKind::Livery ? fls::importCLivery : fls::importCGroupNested;
+        const auto source = import(file.absoluteFilePath());
+        fls::exportXbox360Asset(source, destination, game);
+        compareArtwork(source, import(destination), file.fileName());
+        ++plaintext;
+    }
+    require(plaintext > 0 && encrypted > 0, "Xbox 360 samples found");
+    qInfo() << plaintext << "plaintext Xbox 360 round trips and" << encrypted << "encrypted envelopes";
+}
+
 void testDiscardedMasks(const QString &root) {
     using Game = fls::ExportGameVersion;
     for (const auto game : {Game::Horizon2, Game::Horizon3, Game::Motorsport5, Game::Motorsport6,
@@ -347,6 +430,84 @@ void testDiscardedMasks(const QString &root) {
                 }
                 fls::exportGameLivery(project, folder, game);
                 require(shapeCount(*fls::importCLivery(folder).root) == 0, "mask-only livery exports empty sections");
+            }
+        }
+    }
+}
+
+void testIncompatibleShapes(const QString &root) {
+    using Game = fls::ExportGameVersion;
+    const QList<quint16> catalogProbe = {101, 1001, 1101, 1240, 2101, 2240, 2301, 2633, 3840};
+    for (const auto game : {Game::Motorsport3, Game::Motorsport4, Game::Horizon1, Game::Horizon2,
+            Game::Motorsport5, Game::Motorsport6, Game::Horizon3, Game::Motorsport7, Game::Horizon4,
+            Game::Horizon5, Game::Motorsport2023, Game::Horizon6}) {
+        const bool xbox360 = fls::isXbox360ExportGame(game);
+        QList<quint16> expected = {101, 101};
+        if (xbox360) {
+            expected += {1001, 1101, 1240};
+            if (game != Game::Motorsport3) {
+                expected += {2101, 2240};
+            }
+        } else {
+            expected += {2101, 2240, 2301, 3840};
+            if (game != Game::Motorsport2023) {
+                expected.append(2633);
+            }
+        }
+        std::sort(expected.begin(), expected.end());
+        for (const bool livery : {false, true}) {
+            fls::Project project = livery ? makeLivery(1) : fls::Project{};
+            auto &artwork = livery ? static_cast<fls::scene::Group &>(*project.root->children.front()) : *project.root;
+            artwork.children.clear();
+            auto nested = std::make_unique<fls::scene::Group>();
+            nested->x = 40.0;
+            nested->append(makeShape(0));
+            auto animal = makeShape(1);
+            animal->setVectorShape(1001);
+            nested->append(std::move(animal));
+            artwork.append(std::move(nested));
+            for (const quint16 id : catalogProbe) {
+                if (id == 1001) {
+                    continue;
+                }
+                auto shape = makeShape(id % 100);
+                shape->setVectorShape(id);
+                artwork.append(std::move(shape));
+            }
+            auto hidden = makeShape(20);
+            hidden->setVectorShape(1050);
+            hidden->visible = false;
+            artwork.append(std::move(hidden));
+            const QString code = fls::exportGameCode(game);
+            const QString path = QDir(root).filePath(QString("compatibility-%1-%2").arg(code).arg(livery));
+            require(fls::exportIncompatibleLayerCount(project, game) == quint64(catalogProbe.size() + 1 - expected.size()),
+                    code + " incompatible layer warning");
+            if (livery) {
+                fls::exportGameLivery(project, path, game);
+                const auto raw = fls::encodeGameLiveryPayload(project, game);
+                const auto payload = xbox360 ? fls::parseLiveryAsset(raw) : fls::parseInflatedLiveryPayload(raw);
+                require(payload.sectionCounts.front() == expected.size(), code + " raw livery count");
+            } else {
+                fls::exportGameGroup(project, path, game);
+            }
+            const QString asset = xbox360 ? QDir(path).filePath(livery ? "Livery.liv" : "VinylGroup.lvg") : path;
+            const auto imported = livery ? fls::importCLivery(asset) : fls::importCGroupNested(asset);
+            QVector<const fls::scene::Shape *> shapes;
+            collectShapes(*imported.root, shapes);
+            QList<quint16> ids;
+            for (const auto *shape : shapes) {
+                ids.append(shape->shapeId);
+            }
+            std::sort(ids.begin(), ids.end());
+            require(ids == expected, code + " exported shape IDs");
+            require(shapeCount(*project.root) == catalogProbe.size() + 2, code + " source artwork preserved");
+            if (!xbox360 && (livery || game != Game::Horizon6)) {
+                const auto header = fls::parseHeader(readFile(QDir(path).filePath("header")));
+                require(header.typeValue == expected.size(), code + " compatible header count");
+            }
+            if (livery) {
+                require(std::abs(shapes.front()->worldMatrix().m[0][2] - 40.0) < 0.01,
+                        code + " surviving nested layer placement");
             }
         }
     }
@@ -998,6 +1159,12 @@ void testComplexReferences(const QString &referenceRoot, const QString &outputRo
 int main(int argc, char *argv[]) {
     QCoreApplication app(argc, argv);
     try {
+        if (app.arguments().size() == 3 && app.arguments()[1] == "--xbox360-samples") {
+            QTemporaryDir output;
+            require(output.isValid(), "Xbox 360 output directory");
+            testXbox360Samples(app.arguments()[2], output.path());
+            return 0;
+        }
         if (app.arguments().size() == 3 && app.arguments()[1] == "--fm23-samples") {
             QTemporaryDir output;
             require(output.isValid(), "Motorsport output directory");
@@ -1100,8 +1267,12 @@ int main(int argc, char *argv[]) {
         testHorizonLiveryShapeToGroupMasks(temporary.path());
         qInfo() << "Testing generated groups";
         testGroups(temporary.path());
+        qInfo() << "Testing Xbox 360 assets";
+        testXbox360Assets(temporary.path());
         qInfo() << "Testing discarded masks";
         testDiscardedMasks(temporary.path());
+        qInfo() << "Testing destination shape compatibility";
+        testIncompatibleShapes(temporary.path());
         qInfo() << "Testing sparse sections, bounds, and blocks";
         testBoundsAndBlocks(temporary.path());
         if (app.arguments().size() == 3 && app.arguments()[1] == QStringLiteral("--samples")) {

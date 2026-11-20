@@ -3,7 +3,7 @@
 #include <QHash>
 #include <QString>
 
-namespace gui {
+namespace fls {
 
 class ShapeNameStore {
 public:
@@ -17,4 +17,6 @@ private:
     QHash<int, QString> names_;
 };
 
-} // namespace gui
+QString friendlyShapeLayerName(quint16 shapeId);
+
+} // namespace fls

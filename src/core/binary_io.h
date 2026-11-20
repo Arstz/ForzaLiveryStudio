@@ -14,11 +14,17 @@ float readLeFloat(const QByteArray &bytes, int offset);
 void appendLeU16(QByteArray &out, quint16 value);
 void appendLeU32(QByteArray &out, quint32 value);
 void appendLeFloat(QByteArray &out, float value);
+void appendBeU16(QByteArray &out, quint16 value);
+void appendBeU32(QByteArray &out, quint32 value);
+void appendBeFloat(QByteArray &out, float value);
 bool bytesAt(const QByteArray &data, int pos, std::initializer_list<quint8> bytes);
+
+enum class ByteOrder { LittleEndian, BigEndian };
 
 class BinaryCursor {
 public:
-    BinaryCursor(const QByteArray &bytes, const char *truncationMessage);
+    BinaryCursor(const QByteArray &bytes, const char *truncationMessage,
+                 ByteOrder order = ByteOrder::LittleEndian);
 
     quint8 u8();
     quint16 u16();
@@ -36,6 +42,7 @@ protected:
 
 private:
     std::string truncationMessage_;
+    ByteOrder order_;
 };
 
 } // namespace fls::detail

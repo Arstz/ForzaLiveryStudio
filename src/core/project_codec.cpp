@@ -9,10 +9,10 @@
 #include "matrix_math.h"
 #include "paint_database.h"
 #include "scene_codec.h"
-#include "shape_registry.h"
 #include "vinyl_decoder.h"
 #include "vinyl_flattener.h"
 #include "vinyl_scene_import.h"
+#include "xbox360_vinyl.h"
 
 #include <QtCore>
 
@@ -303,8 +303,8 @@ void enforcePrivacyPolicyForCGroup(const QByteArray &payload) {
 void enforcePrivacyPolicyForCLivery(const LiveryPayload &livery) {
 #if FLS_PRIVACY_POLICY
     const int vlrc = livery.raw.indexOf(QByteArray("vlrc", 4));
-    if (vlrc >= 0 && vlrc + 12 <= livery.raw.size()
-        && detail::readLeU32(livery.raw, vlrc + 8) == 1) {
+    if (livery.xbox360Locked || (vlrc >= 0 && vlrc + 12 <= livery.raw.size()
+        && detail::readLeU32(livery.raw, vlrc + 8) == 1)) {
         throw std::runtime_error("privacy policy blocks importing locked C_livery");
     }
 #else
@@ -348,6 +348,14 @@ void applyImportedHeaderMetadata(Project &project) {
 }
 
 Project newImportProject(const QString &folderOrFile, const QByteArray &payload) {
+    if (payload.startsWith(detail::kXbox360GroupMagic)) {
+        const QFileInfo file(folderOrFile);
+        Project project;
+        project.name = file.completeBaseName();
+        project.sourceFolder = file.absolutePath();
+
+        return project;
+    }
     Project project = detail::newVinylImportProject(folderOrFile, payload);
     applyImportedHeaderMetadata(project);
 
@@ -358,7 +366,9 @@ Project newImportProject(const QString &name, const QByteArray &payload,
                          const QByteArray &header) {
     Project project;
     project.name = name;
-    project.sourceDecPrefix = payload.left(0x1d);
+    if (!payload.startsWith(detail::kXbox360GroupMagic)) {
+        project.sourceDecPrefix = payload.left(0x1d);
+    }
     project.sourceHeader = header;
     applyImportedHeaderMetadata(project);
 
@@ -369,6 +379,12 @@ Project newLiveryImportProject(const QString &folderOrFile) {
     const QFileInfo info(folderOrFile);
     Project project = detail::newVinylImportProject(folderOrFile);
     QString headerPath = QDir(project.sourceFolder).filePath(QStringLiteral("header"));
+    if (info.isFile() && info.suffix().compare(QStringLiteral("liv"), Qt::CaseInsensitive) == 0) {
+        project.name = info.completeBaseName();
+        project.sourceHeader.clear();
+
+        return project;
+    }
     if (info.isFile() && isLiveryAssetFileName(info.fileName())) {
         QString stem = info.fileName();
         stem.chop(QStringLiteral(".C_livery").size());
@@ -518,7 +534,8 @@ Project importCGroupFlat(const QString &folderOrFile) {
     const QByteArray payload = readCGroupPayload(folderOrFile);
     enforcePrivacyPolicyForCGroup(payload);
     LayerData layerData;
-    const VinylGroup root = decodeGroup(payload, &layerData);
+    const VinylGroup root = payload.startsWith(detail::kXbox360GroupMagic)
+        ? detail::readXbox360Group(payload) : decodeGroup(payload, &layerData);
     const QVector<FlattenedLayer> flat = flattenGroup(root);
 
     Project project = newImportProject(folderOrFile, payload);
@@ -536,11 +553,8 @@ Project importCGroupFlat(const QString &folderOrFile) {
         layer.logoId = flatLayer.rasterId;
         layer.width = flatLayer.rasterWidth;
         layer.height = flatLayer.rasterHeight;
-        layer.name = QStringLiteral("%1 %2")
-            .arg(index, 4, 10, QLatin1Char('0'))
-            .arg(flatLayer.raster
-                     ? QStringLiteral("Decal %1").arg(flatLayer.rasterId)
-                     : detail::shapeName(flatLayer.shapeId));
+        layer.name = detail::importedVinylLayerName(flatLayer.shapeId,
+            flatLayer.raster ? std::optional(flatLayer.rasterId) : std::nullopt);
         layer.color = flatLayer.color;
         layer.mask = flatLayer.isMask;
         layer.visible = true;
@@ -558,8 +572,10 @@ Project importCGroupFlat(const QString &folderOrFile) {
 
 static Project importCGroupNestedDecoded(const QByteArray &payload, Project project) {
     LayerData layerData;
-    const VinylGroup root = decodeGroup(payload, &layerData);
-    detail::appendVinylGroupToScene(project, root, layerData.start);
+    const bool xbox360 = payload.startsWith(detail::kXbox360GroupMagic);
+    const VinylGroup root = xbox360 ? detail::readXbox360Group(payload) : decodeGroup(payload, &layerData);
+    detail::appendVinylGroupToScene(project, root, layerData.start, xbox360
+        ? detail::VinylSceneDialect::Xbox360 : detail::VinylSceneDialect::Horizon);
     return project;
 }
 
@@ -572,7 +588,8 @@ Project importCGroupNested(const QString &folderOrFile) {
 
 Project importCGroupNestedData(const QByteArray &wrapped, const QByteArray &header,
                                const QString &name) {
-    const QByteArray payload = wrapped.startsWith("gyvl") ? wrapped : inflateContainer(wrapped);
+    const QByteArray payload = wrapped.startsWith("gyvl") || wrapped.startsWith(detail::kXbox360GroupMagic)
+        ? wrapped : inflateContainer(wrapped);
     enforcePrivacyPolicyForCGroup(payload);
 
     return importCGroupNestedDecoded(payload, newImportProject(name, payload, header));
@@ -592,8 +609,10 @@ static Project importCLiveryDecoded(const LiveryPayload &livery, Project project
         && project.headerMetadata->formatVersion == 6) {
         project.liveryPaint.game = QStringLiteral("FH5");
     }
-    detail::appendLiverySectionsToScene(project, sections, livery.motorsport
-        ? detail::VinylSceneDialect::Motorsport2023 : detail::VinylSceneDialect::Horizon);
+    const auto dialect = livery.motorsport ? detail::VinylSceneDialect::Motorsport2023
+        : livery.xbox360Sections.isEmpty() ? detail::VinylSceneDialect::Horizon
+                                          : detail::VinylSceneDialect::Xbox360;
+    detail::appendLiverySectionsToScene(project, sections, dialect);
     return project;
 }
 
@@ -605,7 +624,7 @@ Project importCLivery(const QString &folderOrFile) {
 
 Project importCLiveryData(const QByteArray &wrapped, const QByteArray &header,
                           const QString &name) {
-    const LiveryPayload livery = parseInflatedLiveryPayload(inflateContainerBlocks(wrapped));
+    const LiveryPayload livery = parseLiveryAsset(wrapped);
     Project project;
     project.name = name;
     project.sourceHeader = header;

@@ -153,8 +153,8 @@ private:
     void saveCustomGroups() const;
 
     ShapeGeometryStore geometry_;
-    ShapeNameStore names_;
-    ShapeNameStore logoNames_;
+    fls::ShapeNameStore names_;
+    fls::ShapeNameStore logoNames_;
     bool geometryLoaded_ = false;
     bool liveryContext_ = false;
     QHash<QString, QVector<int>> categories_;

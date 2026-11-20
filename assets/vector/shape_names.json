@@ -1079,6 +1079,366 @@
   "940": {
     "name": "Earth globe"
   },
+  "1001": {
+    "name": "Spider"
+  },
+  "1002": {
+    "name": "Sea turtle"
+  },
+  "1003": {
+    "name": "Gecko"
+  },
+  "1004": {
+    "name": "Tropical fish"
+  },
+  "1005": {
+    "name": "Swallow"
+  },
+  "1006": {
+    "name": "Shark"
+  },
+  "1007": {
+    "name": "Cobra"
+  },
+  "1008": {
+    "name": "Rabbit"
+  },
+  "1009": {
+    "name": "Coyote"
+  },
+  "1010": {
+    "name": "Rat"
+  },
+  "1011": {
+    "name": "Lion head"
+  },
+  "1012": {
+    "name": "Wolf head"
+  },
+  "1013": {
+    "name": "Wolf"
+  },
+  "1014": {
+    "name": "Cow head"
+  },
+  "1015": {
+    "name": "Ladybug"
+  },
+  "1016": {
+    "name": "Crow"
+  },
+  "1017": {
+    "name": "Parrot"
+  },
+  "1018": {
+    "name": "Panda"
+  },
+  "1019": {
+    "name": "Owl"
+  },
+  "1020": {
+    "name": "Dolphin"
+  },
+  "1021": {
+    "name": "Grasshopper"
+  },
+  "1022": {
+    "name": "Whale"
+  },
+  "1023": {
+    "name": "Elephant head"
+  },
+  "1024": {
+    "name": "Penguin"
+  },
+  "1025": {
+    "name": "Rooster"
+  },
+  "1026": {
+    "name": "Octopus"
+  },
+  "1027": {
+    "name": "Manta ray"
+  },
+  "1028": {
+    "name": "Bee"
+  },
+  "1029": {
+    "name": "Dragon head"
+  },
+  "1030": {
+    "name": "Monkey face"
+  },
+  "1031": {
+    "name": "Horse head"
+  },
+  "1032": {
+    "name": "Eagle head"
+  },
+  "1033": {
+    "name": "Rhinoceros head"
+  },
+  "1034": {
+    "name": "Gorilla head"
+  },
+  "1035": {
+    "name": "Scorpion"
+  },
+  "1036": {
+    "name": "Butterfly"
+  },
+  "1037": {
+    "name": "Raptor dinosaur"
+  },
+  "1038": {
+    "name": "Bigfoot"
+  },
+  "1039": {
+    "name": "Frog"
+  },
+  "1040": {
+    "name": "Phoenix"
+  },
+  "1101": {
+    "name": "Convection uppercase A"
+  },
+  "1102": {
+    "name": "Convection uppercase B"
+  },
+  "1103": {
+    "name": "Convection uppercase C"
+  },
+  "1104": {
+    "name": "Convection uppercase D"
+  },
+  "1105": {
+    "name": "Convection uppercase E"
+  },
+  "1106": {
+    "name": "Convection uppercase F"
+  },
+  "1107": {
+    "name": "Convection uppercase G"
+  },
+  "1108": {
+    "name": "Convection uppercase H"
+  },
+  "1109": {
+    "name": "Convection uppercase I"
+  },
+  "1110": {
+    "name": "Convection uppercase J"
+  },
+  "1111": {
+    "name": "Convection uppercase K"
+  },
+  "1112": {
+    "name": "Convection uppercase L"
+  },
+  "1113": {
+    "name": "Convection uppercase M"
+  },
+  "1114": {
+    "name": "Convection uppercase N"
+  },
+  "1115": {
+    "name": "Convection uppercase O"
+  },
+  "1116": {
+    "name": "Convection uppercase P"
+  },
+  "1117": {
+    "name": "Convection uppercase Q"
+  },
+  "1118": {
+    "name": "Convection uppercase R"
+  },
+  "1119": {
+    "name": "Convection uppercase S"
+  },
+  "1120": {
+    "name": "Convection uppercase T"
+  },
+  "1121": {
+    "name": "Convection uppercase U"
+  },
+  "1122": {
+    "name": "Convection uppercase V"
+  },
+  "1123": {
+    "name": "Convection uppercase W"
+  },
+  "1124": {
+    "name": "Convection uppercase X"
+  },
+  "1125": {
+    "name": "Convection uppercase Y"
+  },
+  "1126": {
+    "name": "Convection uppercase Z"
+  },
+  "1127": {
+    "name": "Convection 1"
+  },
+  "1128": {
+    "name": "Convection 2"
+  },
+  "1129": {
+    "name": "Convection 3"
+  },
+  "1130": {
+    "name": "Convection 4"
+  },
+  "1131": {
+    "name": "Convection 5"
+  },
+  "1132": {
+    "name": "Convection 6"
+  },
+  "1133": {
+    "name": "Convection 7"
+  },
+  "1134": {
+    "name": "Convection 8"
+  },
+  "1135": {
+    "name": "Convection 9"
+  },
+  "1136": {
+    "name": "Convection 0"
+  },
+  "1137": {
+    "name": "Convection !"
+  },
+  "1138": {
+    "name": "Convection ?"
+  },
+  "1139": {
+    "name": "Convection @"
+  },
+  "1140": {
+    "name": "Convection &"
+  },
+  "1201": {
+    "name": "Convection lowercase a"
+  },
+  "1202": {
+    "name": "Convection lowercase b"
+  },
+  "1203": {
+    "name": "Convection lowercase c"
+  },
+  "1204": {
+    "name": "Convection lowercase d"
+  },
+  "1205": {
+    "name": "Convection lowercase e"
+  },
+  "1206": {
+    "name": "Convection lowercase f"
+  },
+  "1207": {
+    "name": "Convection lowercase g"
+  },
+  "1208": {
+    "name": "Convection lowercase h"
+  },
+  "1209": {
+    "name": "Convection lowercase i"
+  },
+  "1210": {
+    "name": "Convection lowercase j"
+  },
+  "1211": {
+    "name": "Convection lowercase k"
+  },
+  "1212": {
+    "name": "Convection lowercase l"
+  },
+  "1213": {
+    "name": "Convection lowercase m"
+  },
+  "1214": {
+    "name": "Convection lowercase n"
+  },
+  "1215": {
+    "name": "Convection lowercase o"
+  },
+  "1216": {
+    "name": "Convection lowercase p"
+  },
+  "1217": {
+    "name": "Convection lowercase q"
+  },
+  "1218": {
+    "name": "Convection lowercase r"
+  },
+  "1219": {
+    "name": "Convection lowercase s"
+  },
+  "1220": {
+    "name": "Convection lowercase t"
+  },
+  "1221": {
+    "name": "Convection lowercase u"
+  },
+  "1222": {
+    "name": "Convection lowercase v"
+  },
+  "1223": {
+    "name": "Convection lowercase w"
+  },
+  "1224": {
+    "name": "Convection lowercase x"
+  },
+  "1225": {
+    "name": "Convection lowercase y"
+  },
+  "1226": {
+    "name": "Convection lowercase z"
+  },
+  "1227": {
+    "name": "Convection dollar"
+  },
+  "1228": {
+    "name": "Convection pound"
+  },
+  "1229": {
+    "name": "Convection yen"
+  },
+  "1230": {
+    "name": "Convection euro"
+  },
+  "1231": {
+    "name": "Convection ("
+  },
+  "1232": {
+    "name": "Convection )"
+  },
+  "1233": {
+    "name": "Convection cent"
+  },
+  "1234": {
+    "name": "Convection asterisk"
+  },
+  "1235": {
+    "name": "Convection hash"
+  },
+  "1236": {
+    "name": "Convection plus"
+  },
+  "1237": {
+    "name": "Convection percent"
+  },
+  "1238": {
+    "name": "Convection semicolon"
+  },
+  "1239": {
+    "name": "Convection colon"
+  },
+  "1240": {
+    "name": "Convection comma"
+  },
   "1301": {
     "name": "Magneto uppercase A"
   },

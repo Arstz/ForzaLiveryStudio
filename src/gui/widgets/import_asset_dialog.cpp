@@ -8,6 +8,7 @@
 #include "livery_codec.h"
 #include "theme_manager.h"
 #include "wgs_save_reader.h"
+#include "xbox360_crypto.h"
 
 #include <QtCore>
 #include <QtGui>
@@ -223,10 +224,18 @@ AssetInfo inspectAsset(const QString &path) {
     return asset;
 }
 
-AssetInfo inspectFlatLivery(const QFileInfo &file, const FilePathIndex &files) {
+AssetInfo inspectFlatAsset(const QFileInfo &file, const FilePathIndex &files) {
     AssetInfo asset;
-    if (!file.isFile() || file.size() <= 0
-        || !fls::isLiveryAssetFileName(file.fileName())
+    if (!file.isFile() || file.size() <= 0) {
+        return asset;
+    }
+    const auto xbox360 = fls::xbox360FileKind(file.fileName());
+    if (xbox360 != fls::Xbox360FileKind::Unknown) {
+        asset.kind = xbox360 == fls::Xbox360FileKind::Livery ? AssetKind::HorizonLivery : AssetKind::HorizonGroup;
+
+        return asset;
+    }
+    if (!fls::isLiveryAssetFileName(file.fileName())
         || file.fileName().compare(QStringLiteral("C_livery"), Qt::CaseInsensitive) == 0) {
         return asset;
     }
@@ -1001,7 +1010,7 @@ private:
                 QDir::Name | QDir::IgnoreCase);
             const FilePathIndex filePaths = indexFilePaths(files);
             for (const QFileInfo &file : files) {
-                const AssetInfo asset = inspectFlatLivery(file, filePaths);
+                const AssetInfo asset = inspectFlatAsset(file, filePaths);
                 if (!asset.valid()) {
                     continue;
                 }

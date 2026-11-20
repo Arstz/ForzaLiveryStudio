@@ -51,7 +51,7 @@ public:
     void cancelCarLoad();
     bool hasModel() const;
     void clearModel();
-    QImage renderThumbnail(const QSize &size);
+    QImage renderThumbnail(const QSize &size, fls::Project *artwork = nullptr);
 
     CarUnwrapOverlay unwrapOverlay(int liverySectionSlot = -1) const;
     std::optional<QTransform> liverySectionToAtlasTransform(int liverySectionSlot) const;

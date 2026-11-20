@@ -23,6 +23,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include <tuple>
+#include <utility>
 
 namespace gui {
 namespace {
@@ -62,6 +63,18 @@ QString nameWithoutYear(const QString &name) {
     return QString(name).remove(yearPrefix);
 }
 
+QString modelDisplayName(const QString &name, const QString &manufacturer) {
+    QString model = nameWithoutYear(name);
+    if (!manufacturer.isEmpty()) {
+        const QRegularExpression makeWord(
+            QStringLiteral("(?<![\\p{L}\\p{M}\\p{N}_'-])%1(?![\\p{L}\\p{M}\\p{N}_'-])")
+                .arg(QRegularExpression::escape(manufacturer)), QRegularExpression::CaseInsensitiveOption);
+        model.remove(makeWord);
+    }
+
+    return model.simplified();
+}
+
 QString manufacturerCode(const QString &modelCode) {
     return modelCode.section(QLatin1Char('_'), 0, 0).toUpper();
 }
@@ -92,7 +105,7 @@ QHash<QString, QString> manufacturerNames(const CarRegistry &registry) {
 
     for (const auto &entry : registry.entries()) {
         const QString code = manufacturerCode(registry.modelCode(entry.id));
-        if (!knownNames.contains(code)) {
+        if (entry.manufacturer.isEmpty() && !knownNames.contains(code)) {
             ++counts[code][nameWithoutYear(entry.name).section(QLatin1Char(' '), 0, 0)];
         }
     }
@@ -211,6 +224,8 @@ bool CarRegistry::loadFromFile(const QString &path, QString *error) {
     QHash<int, QString> parsedVersions;
     QHash<int, int> parsedYears;
     QHash<int, QHash<QString, QString>> parsedGameModels;
+    QVector<Entry> parsedEntries;
+    parsedEntries.reserve(root.size());
     for (auto it = root.begin(); it != root.end(); ++it) {
         bool ok = false;
         const int id = it.key().toInt(&ok);
@@ -220,10 +235,12 @@ bool CarRegistry::loadFromFile(const QString &path, QString *error) {
         QString name;
         QString model;
         QString version = QStringLiteral("FH6");
+        QString manufacturer;
         if (it.value().isObject()) {
             const QJsonObject entry = it.value().toObject();
             model = entry.value(QStringLiteral("model")).toString().trimmed();
             name = entry.value(QStringLiteral("name")).toString().trimmed();
+            manufacturer = entry.value(QStringLiteral("manufacturer")).toString().trimmed();
             parsedYears.insert(id, entry.value(QStringLiteral("year")).toInt());
             const QJsonObject games = entry.value(QStringLiteral("games")).toObject();
             for (auto game = games.begin(); game != games.end(); ++game) {
@@ -244,6 +261,7 @@ bool CarRegistry::loadFromFile(const QString &path, QString *error) {
         if (!name.isEmpty()) {
             parsed.insert(id, name);
             parsedVersions.insert(id, version);
+            parsedEntries.push_back({id, name, version, manufacturer, {}});
         }
         if (!model.isEmpty()) {
             parsedModels.insert(id, model);
@@ -255,10 +273,13 @@ bool CarRegistry::loadFromFile(const QString &path, QString *error) {
     gameModels_ = parsedGameModels;
     versions_ = parsedVersions;
     years_ = parsedYears;
-    sorted_.clear();
-    sorted_.reserve(names_.size());
-    for (auto it = names_.constBegin(); it != names_.constEnd(); ++it) {
-        sorted_.push_back({it.key(), it.value(), versions_.value(it.key())});
+    sorted_ = std::move(parsedEntries);
+    const auto manufacturers = manufacturerNames(*this);
+    for (Entry &entry : sorted_) {
+        if (entry.manufacturer.isEmpty()) {
+            entry.manufacturer = manufacturers.value(manufacturerCode(modelCode(entry.id)));
+        }
+        entry.modelName = modelDisplayName(entry.name, entry.manufacturer);
     }
     std::sort(sorted_.begin(), sorted_.end(), [](const Entry &a, const Entry &b) {
         return a.name.compare(b.name, Qt::CaseInsensitive) < 0;
@@ -417,7 +438,6 @@ MissingCarModelChoice chooseMissingCarModel(
 bool chooseCarModel(QWidget *parent, int currentId, int *outId, bool confirmMissingModel) {
     const CarRegistry &registry = sharedCarRegistry();
     const auto availability = registry.modelAvailability(loadBehaviorSettings().gameFolders);
-    const auto manufacturers = manufacturerNames(registry);
     QSet<QString> catalogGames;
     for (const auto &entry : registry.entries()) {
         const QStringList versions = supportedGames(entry.version);
@@ -477,17 +497,11 @@ bool chooseCarModel(QWidget *parent, int currentId, int *outId, bool confirmMiss
     for (const CarRegistry::Entry &entry : registry.entries()) {
         const QStringList versions = supportedGames(entry.version);
         const QStringList available = availability.value(entry.id);
-        const QString manufacturer = manufacturers.value(manufacturerCode(registry.modelCode(entry.id)));
-        QString name = nameWithoutYear(entry.name);
-        const QString manufacturerPrefix = manufacturer + QLatin1Char(' ');
-        if (name.startsWith(manufacturerPrefix, Qt::CaseInsensitive)) {
-            name.remove(0, manufacturerPrefix.size());
-        }
         auto *item = new CarPickerItem(list);
-        item->setText(kManufacturerColumn, manufacturer);
+        item->setText(kManufacturerColumn, entry.manufacturer);
         item->setData(kManufacturerColumn, Qt::UserRole, entry.id);
         item->setData(kManufacturerColumn, kVersionsRole, versions);
-        item->setText(kModelColumn, name);
+        item->setText(kModelColumn, entry.modelName);
         item->setToolTip(kModelColumn, entry.name);
         if (registry.year(entry.id) > 0) {
             item->setData(kYearColumn, Qt::DisplayRole, registry.year(entry.id));

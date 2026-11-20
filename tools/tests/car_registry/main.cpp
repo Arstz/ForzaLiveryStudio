@@ -5,10 +5,12 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QSet>
 #include <QTemporaryDir>
 #include <QTemporaryFile>
 #include <QTextStream>
 
+#include <algorithm>
 #include <stdexcept>
 
 namespace {
@@ -118,14 +120,39 @@ void verifyModelSources() {
 void verifyDefaultCatalog() {
     gui::CarRegistry registry;
     QString error;
+    QSet<QString> fullNames;
+    QSet<QString> pickerNames;
 
     require(registry.loadDefault(&error), "Could not load default car registry");
     require(!registry.isEmpty(), "Default car registry is empty");
     for (const auto &entry : registry.entries()) {
+        const QString fullName = entry.name.normalized(QString::NormalizationForm_KC).simplified().toCaseFolded();
+        const QString pickerName = QStringLiteral("%1/%2/%3").arg(entry.manufacturer)
+            .arg(registry.year(entry.id)).arg(entry.modelName).normalized(QString::NormalizationForm_KC).toCaseFolded();
+        require(!fullNames.contains(fullName), "Car display names collide");
+        require(!pickerNames.contains(pickerName), "Car picker labels collide");
+        fullNames.insert(fullName);
+        pickerNames.insert(pickerName);
         require(!registry.modelCode(entry.id).isEmpty(), "Car has no model code");
         require(registry.isFh6Supported(entry.id) != registry.isFh6Unsupported(entry.id),
                 "Known car has ambiguous FH6 support");
     }
+    const auto entryFor = [&registry](int id) -> const gui::CarRegistry::Entry & {
+        const auto &entries = registry.entries();
+        const auto entry = std::find_if(entries.begin(), entries.end(), [id](const auto &car) { return car.id == id; });
+        require(entry != entries.end(), "Car label fixture missing");
+        return *entry;
+    };
+    const auto &raceCar = entryFor(415);
+    require(raceCar.manufacturer == QStringLiteral("Audi")
+        && raceCar.modelName == QStringLiteral("#2 Sport North America R8")
+        && raceCar.name == QStringLiteral("2006 Audi #2 Audi Sport North America R8"), "Repeated make in a model label");
+    const auto &amg = entryFor(9003);
+    require(amg.manufacturer == QStringLiteral("Mercedes-AMG")
+        && amg.modelName == QStringLiteral("ONE (9003)")
+        && registry.modelCode(amg.id) == QStringLiteral("MER_AMGOneIE_21"), "Mercedes-AMG display or model lookup");
+    require(entryFor(3650).modelName == QStringLiteral("ONE (3650)"), "Second car in duplicate pair has no ID suffix");
+    require(entryFor(568).manufacturer == QStringLiteral("Mercedes-Benz"), "Mercedes-Benz classification changed");
 }
 
 } // namespace

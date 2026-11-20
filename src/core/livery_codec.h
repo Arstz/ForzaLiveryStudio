@@ -26,14 +26,17 @@ struct LiveryPayload {
     QByteArray raw;
     QByteArray body;
     QVector<int> sectionCounts;
+    QVector<LiverySection> xbox360Sections;
     LiveryPaintState paint;
     int gyvlOffset = 0;
     int carId = 0;
     bool legacyRecords = false;
     bool motorsport = false;
+    bool xbox360Locked = false;
 };
 
 LiveryPayload readLiveryPayload(const QString &folderOrFile);
+LiveryPayload parseLiveryAsset(const QByteArray &fileData);
 LiveryPayload parseInflatedLiveryPayload(const QByteArray &raw);
 QVector<LiverySection> decodeLiverySections(const LiveryPayload &payload);
 bool isLiveryAssetFileName(const QString &fileName);

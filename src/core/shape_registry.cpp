@@ -12,9 +12,10 @@ constexpr quint16 kLowerLetters1WireAlias = 2000;
 constexpr quint16 kLowerLetters1Start = 2001;
 constexpr quint16 kImpactLowercaseAWireAlias = 3000;
 constexpr quint16 kImpactLowercaseA = 3001;
+constexpr int kShapeFamilyStride = 100;
+constexpr int kShapeFamilySize = 40;
 
-// Keep this table aligned with the keys in assets/vector/shape_names.json.
-// Each shipped shape family contains 40 consecutive IDs.
+// Native C_group and C_livery formats share these 40-shape families.
 constexpr ShapeRange kShapeRanges[] = {
     {0x0065, 0x008c, "Primitives"},
     {0x00c9, 0x00f0, "Gradient_Shapes"},
@@ -81,12 +82,33 @@ bool isKnownShapeId(quint16 shapeId) {
     return rangeForShape(shapeId) != nullptr;
 }
 
+QString xbox360ExclusiveShapeModelName(quint16 shapeId) {
+    if (!isXbox360ExclusiveShapeId(shapeId)) {
+        return {};
+    }
+    const int family = (shapeId - kFirstXbox360ExclusiveShapeId) / kShapeFamilyStride;
+    const int index = shapeId % kShapeFamilyStride;
+
+    return QStringLiteral("%1_%2").arg(QLatin1Char('J' + family)).arg(index, 2, 10, QLatin1Char('0'));
+}
+
+bool isXbox360ExclusiveShapeId(quint16 shapeId) {
+    const int index = shapeId % kShapeFamilyStride;
+
+    return shapeId >= kFirstXbox360ExclusiveShapeId && shapeId <= kLastXbox360ExclusiveShapeId
+        && index >= 1 && index <= kShapeFamilySize;
+}
+
 QString shapeName(quint16 shapeId) {
-    if (const ShapeRange *range = rangeForShape(shapeId)) {
+    const ShapeRange *range = rangeForShape(shapeId);
+    const bool isAnimal = shapeId >= kFirstXbox360ExclusiveShapeId
+        && shapeId < kFirstXbox360ExclusiveShapeId + kShapeFamilySize;
+    if (range != nullptr || isAnimal) {
         return QStringLiteral("%1_0x%2")
-            .arg(QString::fromLatin1(range->prefix))
+            .arg(QString::fromLatin1(isAnimal ? "Animals" : range->prefix))
             .arg(shapeId, 4, 16, QLatin1Char('0'));
     }
+
     return QStringLiteral("0x%1").arg(shapeId, 0, 16);
 }
 

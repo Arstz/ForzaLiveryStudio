@@ -6,6 +6,7 @@
 #include "car_model_renderer.h"
 #include "car_preview_widget.h"
 #include "livery_codec.h"
+#include "xbox360_crypto.h"
 
 #include <QApplication>
 #include <QCoreApplication>
@@ -22,7 +23,8 @@ namespace {
 bool isProjectPath(const QString &path) {
     const QFileInfo info(path);
     return info.suffix().compare(QStringLiteral("3so"), Qt::CaseInsensitive) == 0
-        || fls::isLiveryAssetFileName(info.fileName());
+        || fls::isLiveryAssetFileName(info.fileName())
+        || fls::xbox360FileKind(info.fileName()) != fls::Xbox360FileKind::Unknown;
 }
 
 void openStartupFiles(gui::MainWindow &window, const QStringList &paths) {
@@ -46,10 +48,9 @@ void openStartupFiles(gui::MainWindow &window, const QStringList &paths) {
 
     QString error;
     if (!projectPath.isEmpty()) {
-        const bool isLivery = fls::isLiveryAssetFileName(
-            QFileInfo(projectPath).fileName());
-        const bool opened = isLivery ? window.importAny(projectPath, &error)
-                                     : window.loadProjectJson(projectPath, &error);
+        const bool projectDocument = QFileInfo(projectPath).suffix().compare(QStringLiteral("3so"), Qt::CaseInsensitive) == 0;
+        const bool opened = projectDocument ? window.loadProjectJson(projectPath, &error)
+                                            : window.importAny(projectPath, &error);
         if (!opened) {
             if (!error.isEmpty()) {
                 qWarning().noquote() << QStringLiteral("Could not open startup project %1: %2")

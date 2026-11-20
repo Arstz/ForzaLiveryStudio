@@ -2,17 +2,20 @@
 
 #include <QtCore>
 
-namespace gui {
+namespace fls {
 namespace {
 
 QStringList candidateAssetPaths() {
-    const QString appDir = QCoreApplication::applicationDirPath();
     const QString cwd = QDir::currentPath();
-    return {
-        QDir(appDir).filePath(QStringLiteral("assets/vector/shape_names.json")),
-        QDir(cwd).filePath(QStringLiteral("assets/vector/shape_names.json")),
-        QDir(cwd).filePath(QStringLiteral("cpp-port/assets/vector/shape_names.json")),
-    };
+    const QString catalog = QStringLiteral("assets/vector/shape_names.json");
+    QStringList paths;
+    if (QCoreApplication::instance() != nullptr) {
+        paths.append(QDir(QCoreApplication::applicationDirPath()).filePath(catalog));
+    }
+    paths.append(QDir(cwd).filePath(catalog));
+    paths.append(QDir(cwd).filePath(QStringLiteral("cpp-port/") + catalog));
+
+    return paths;
 }
 
 } // namespace
@@ -73,4 +76,16 @@ bool ShapeNameStore::contains(int shapeId) const {
     return names_.contains(shapeId);
 }
 
-} // namespace gui
+QString friendlyShapeLayerName(quint16 shapeId) {
+    static const ShapeNameStore names = []() {
+        ShapeNameStore store;
+        store.loadDefault();
+
+        return store;
+    }();
+    const QString name = names.name(shapeId);
+
+    return name.isEmpty() ? QString() : QStringLiteral("%1 (%2)").arg(name).arg(shapeId);
+}
+
+} // namespace fls

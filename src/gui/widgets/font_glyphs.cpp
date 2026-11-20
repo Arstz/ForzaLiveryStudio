@@ -14,6 +14,7 @@ struct FontBlocks {
 
 constexpr FontBlocks kFonts[] = {
     {"Arial", 1901, 2001},
+    {"Convection", 1101, 1201},
     {"Magneto", 1301, 1401},
     {"Freestyle", 1501, 1601},
     {"Pristina", 1701, 1801},

@@ -1,6 +1,7 @@
 #include "cgroup_codec.h"
 
 #include "binary_io.h"
+#include "xbox360_vinyl.h"
 
 #include <QDir>
 #include <QFile>
@@ -70,7 +71,8 @@ QByteArray readCGroupPayload(const QString &folderOrFile) {
     }
     const QByteArray bytes = file.readAll();
 
-    return bytes.startsWith("gyvl") ? bytes : inflateContainer(bytes);
+    return bytes.startsWith("gyvl") || bytes.startsWith(detail::kXbox360GroupMagic)
+        ? bytes : inflateContainer(bytes);
 }
 
 QByteArray inflateContainerBlocks(const QByteArray &wrapped) {

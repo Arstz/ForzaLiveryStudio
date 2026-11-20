@@ -3,6 +3,7 @@
 #include "layer.h"
 #include "matrix_math.h"
 #include "scene_codec.h"
+#include "shape_name_store.h"
 #include "shape_registry.h"
 
 #include <QDir>
@@ -112,9 +113,8 @@ std::unique_ptr<scene::Shape> VinylSceneImporter::importShape(
 
     ++shapeIndex_;
     result->id = indexedId("layer", shapeIndex_);
-    result->name = QStringLiteral("%1 %2")
-        .arg(shapeIndex_, 4, 10, QLatin1Char('0'))
-        .arg(shape.isLogo ? QStringLiteral("Decal %1").arg(shape.rasterId) : shapeName(shape.shapeId));
+    result->name = importedVinylLayerName(shape.shapeId,
+        shape.isLogo ? std::optional(shape.rasterId) : std::nullopt);
     result->transform = decomposeTransform2D(effective);
     result->hasSourceTransform = true;
     result->sourceTransform = result->transform;
@@ -184,6 +184,10 @@ void VinylSceneImporter::appendItems(scene::Group &destination, const QVector<Vi
 void VinylSceneImporter::appendSectionItems(scene::Group &destination, const LiverySection &section) {
     const Matrix3 canvasMatrix = liverySectionCanvasTransform(section.slot);
     Matrix3 sectionMatrix = vinylGroupMatrix(section.subtree);
+    if (dialect_ == VinylSceneDialect::Xbox360) {
+        appendItems(destination, section.subtree.items, 0, multiply(canvasMatrix, sectionMatrix), false);
+        return;
+    }
     const VinylGroup *sectionRoot = &section.subtree;
     const VinylGroupPtr leadingRoot = !sectionRoot->items.isEmpty() && !sectionRoot->items.front().isShape()
         ? std::get<VinylGroupPtr>(sectionRoot->items.front().value) : VinylGroupPtr{};
@@ -235,6 +239,13 @@ Project newVinylImportProject(const QString &folderOrFile, const QByteArray &pay
     }
 
     return project;
+}
+
+QString importedVinylLayerName(quint16 shapeId, std::optional<quint32> decalId) {
+    const QString name = decalId
+        ? QStringLiteral("Decal %1").arg(*decalId) : friendlyShapeLayerName(shapeId);
+
+    return name.isEmpty() ? shapeName(shapeId) : name;
 }
 
 void appendVinylGroupToScene(Project &project, const VinylGroup &root, int sourceOffset,

@@ -1034,17 +1034,9 @@ void MainWindow::insertLogo(quint32 rasterId, int width, int height) {
 }
 
 QString MainWindow::defaultShapeLayerName(quint16 shapeId) {
-    static const ShapeNameStore names = []() {
-        ShapeNameStore store;
-        store.loadDefault();
+    const QString name = fls::friendlyShapeLayerName(shapeId);
 
-        return store;
-    }();
-    const QString name = names.name(shapeId);
-
-    return QStringLiteral("%1 (%2)")
-        .arg(name.isEmpty() ? QStringLiteral("Shape") : name)
-        .arg(shapeId);
+    return name.isEmpty() ? QStringLiteral("Shape (%1)").arg(shapeId) : name;
 }
 
 void MainWindow::insertShapeLayer(std::unique_ptr<fls::scene::Shape> layer) {

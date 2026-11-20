@@ -129,6 +129,8 @@ add_library(fls_core STATIC
     src/core/raster_decals.h
     src/core/scene_codec.cpp
     src/core/scene_codec.h
+    src/core/shape_name_store.cpp
+    src/core/shape_name_store.h
     src/core/shape_registry.cpp
     src/core/shape_registry.h
     src/core/swatchbin.cpp
@@ -151,6 +153,10 @@ add_library(fls_core STATIC
     src/core/zip_extract.h
     src/core/xmem_lzx.cpp
     src/core/xmem_lzx.h
+    src/core/xbox360_crypto.cpp
+    src/core/xbox360_crypto.h
+    src/core/xbox360_vinyl.cpp
+    src/core/xbox360_vinyl.h
 )
 
 target_link_libraries(fls_core
@@ -163,7 +169,10 @@ target_link_libraries(fls_core
 )
 
 if(WIN32)
-    target_link_libraries(fls_core PUBLIC d3d11 d3dcompiler)
+    target_link_libraries(fls_core PUBLIC d3d11 d3dcompiler PRIVATE bcrypt)
+else()
+    find_package(OpenSSL REQUIRED COMPONENTS Crypto)
+    target_link_libraries(fls_core PRIVATE OpenSSL::Crypto)
 endif()
 
 target_include_directories(fls_core PUBLIC src/core)
@@ -207,6 +216,11 @@ if(FLS_BUILD_HELPER_TOOLS)
         tools/pack_decals/main.cpp
     )
     target_link_libraries(fls_pack_decals PRIVATE fls_core Qt6::Core)
+
+    add_executable(fls_pack_xbox360_shapes
+        tools/pack_xbox360_shapes/main.cpp
+    )
+    target_link_libraries(fls_pack_xbox360_shapes PRIVATE fls_core Qt6::Core)
 
     # Console harness: decode livery paint-finish materials and print the resolved
     # render parameters, to trace mis-shaded finishes back to their materialbin values.
@@ -391,8 +405,6 @@ qt_add_library(fls_editor_ui STATIC
     src/gui/widgets/property_panel.h
     src/gui/widgets/shape_geometry_store.cpp
     src/gui/widgets/shape_geometry_store.h
-    src/gui/widgets/shape_name_store.cpp
-    src/gui/widgets/shape_name_store.h
     src/gui/widgets/shapes_browser_widget.cpp
     src/gui/widgets/shapes_browser_widget.h
 )
@@ -749,11 +761,8 @@ if(FLS_BUILD_TESTS)
         add_test(NAME game_project_roundtrip_affine_fixture COMMAND fls_game_roundtrip_tests
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/Forza Livery.3so")
     endif()
-    add_executable(fls_export_target_tests
-        tools/tests/export_target/main.cpp
-        src/gui/widgets/export_asset_dialog.cpp)
-    target_include_directories(fls_export_target_tests PRIVATE src/gui/widgets)
-    target_link_libraries(fls_export_target_tests PRIVATE fls_core Qt6::Widgets)
+    add_executable(fls_export_target_tests tools/tests/export_target/main.cpp)
+    target_link_libraries(fls_export_target_tests PRIVATE fls_editor_ui)
     if(WIN32)
         add_custom_command(TARGET fls_export_target_tests POST_BUILD
             COMMAND "${CMAKE_COMMAND}" -E make_directory
@@ -1020,6 +1029,7 @@ if(NOT FLS_BUILD_HELPER_TOOLS)
             "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/fls_livery_compare.exe"
             "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/fls_model_dump.exe"
             "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/fls_pack_decals.exe"
+            "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/fls_pack_xbox360_shapes${CMAKE_EXECUTABLE_SUFFIX}"
             "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/fls_finish_dump.exe"
         COMMENT "Removing disabled helper tools from release output"
     )

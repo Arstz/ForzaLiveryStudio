@@ -3,6 +3,7 @@
 #include "binary_io.h"
 #include "layer.h"
 #include "matrix_math.h"
+#include "shape_registry.h"
 
 #include <algorithm>
 #include <stdexcept>
@@ -61,6 +62,10 @@ QVector<QPointF> vinylShapeCorners(const VinylShapePlacement &shape, const QPoin
 void appendVinylShapeRecord(QByteArray &out, const VinylShapePlacement &shape,
                             double offsetX, double offsetY, quint8 shapeMarker,
                             std::optional<quint8> state) {
+    if (isXbox360ExclusiveShapeId(shape.shapeId)) {
+        throw std::runtime_error(QStringLiteral("Xbox 360 shape %1 is unavailable in this export format.")
+            .arg(xbox360ExclusiveShapeModelName(shape.shapeId)).toStdString());
+    }
     if (state) {
         out.append(static_cast<char>(*state));
     }

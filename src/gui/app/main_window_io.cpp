@@ -16,9 +16,11 @@
 #include "project_codec.h"
 #include "shape_geometry_store.h"
 #include "shapes_browser_widget.h"
+#include "xbox360_vinyl.h"
 
 #include <QtGui>
 
+#include <QInputDialog>
 #include <QLockFile>
 #include <QLocale>
 #include <QSaveFile>
@@ -141,6 +143,73 @@ QByteArray readImportFile(const QString &path, bool optional = false) {
     }
 
     return file.readAll();
+}
+
+std::optional<fls::Xbox360Credentials> chooseXbox360Credentials(
+    QWidget *parent, fls::ExportGameVersion game, fls::Xbox360FileKind kind, bool exporting) {
+    const bool executable = fls::xbox360SupportsExecutableKeys(game, kind);
+    const QString filter = executable
+        ? QStringLiteral("Decompressed game executable (*.pe);;Profile-derived keys (*.keys)")
+        : QStringLiteral("Profile-derived keys (*.keys)");
+    const QString path = QFileDialog::getOpenFileName(parent,
+        QStringLiteral("Select %1 Xbox 360 key material").arg(fls::exportGameCode(game)),
+        QString(), filter);
+    if (path.isEmpty()) {
+        return std::nullopt;
+    }
+    QFile file(path);
+    constexpr qint64 kMaximumExecutableSize = 128 * 1024 * 1024;
+    if (!file.open(QIODevice::ReadOnly) || file.size() > kMaximumExecutableSize) {
+        throw std::runtime_error("could not read Xbox 360 key material");
+    }
+    fls::Xbox360Credentials credentials;
+    credentials.keyData = file.readAll();
+    if (QFileInfo(path).suffix().compare(QStringLiteral("keys"), Qt::CaseInsensitive) == 0) {
+        return credentials;
+    }
+    bool accepted = false;
+    const QString profileId = QInputDialog::getText(parent, QStringLiteral("Xbox 360 Profile"),
+        QStringLiteral("Save profile ID (16 hexadecimal digits from the profile folder name)"),
+        QLineEdit::Normal, QString(), &accepted);
+    if (!accepted) {
+        return std::nullopt;
+    }
+    credentials.profileId = fls::xbox360ProfileId(profileId);
+    credentials.source = fls::Xbox360KeySource::Executable;
+    if (exporting && game == fls::ExportGameVersion::Horizon1) {
+        const QStringList builds{QStringLiteral("Disc executable"), QStringLiteral("Title Update 4 executable")};
+        const QString selected = QInputDialog::getItem(parent, QStringLiteral("Forza Horizon 1 Executable"),
+            QStringLiteral("Executable version"), builds, 0, false, &accepted);
+        if (!accepted) {
+            return std::nullopt;
+        }
+        if (selected == builds.back()) {
+            credentials.source = fls::Xbox360KeySource::HorizonTitleUpdate;
+        }
+    }
+
+    return credentials;
+}
+
+std::optional<fls::ExportGameVersion> xbox360ImportGame(QWidget *parent, fls::Xbox360Envelope envelope) {
+    if (envelope == fls::Xbox360Envelope::Motorsport2) {
+        throw std::runtime_error("Forza Motorsport 2 uses a different livery format");
+    }
+    if (envelope == fls::Xbox360Envelope::Sha1) {
+        return fls::ExportGameVersion::Motorsport3;
+    }
+    if (envelope != fls::Xbox360Envelope::Sha256) {
+        throw std::runtime_error("unrecognized Xbox 360 vinyl file");
+    }
+    bool accepted = false;
+    const QStringList games{QStringLiteral("Forza Motorsport 4"), QStringLiteral("Forza Horizon 1")};
+    const QString selected = QInputDialog::getItem(parent, QStringLiteral("Xbox 360 Import"),
+        QStringLiteral("Source game"), games, 0, false, &accepted);
+    if (!accepted) {
+        return std::nullopt;
+    }
+
+    return selected == games.front() ? fls::ExportGameVersion::Motorsport4 : fls::ExportGameVersion::Horizon1;
 }
 
 fls::Project createNewProject(bool livery, const QString &creatorName, int carId) {
@@ -407,7 +476,8 @@ MainWindow::ExternalDropKind MainWindow::classifyExternalDropPath(const QString 
         return ExternalDropKind::ProjectJson;
     }
     if (info.fileName().compare(QStringLiteral("C_group"), Qt::CaseInsensitive) == 0
-        || fls::isLiveryAssetFileName(info.fileName())) {
+        || fls::isLiveryAssetFileName(info.fileName())
+        || fls::xbox360FileKind(info.fileName()) != fls::Xbox360FileKind::Unknown) {
         return ExternalDropKind::CGroup;
     }
 
@@ -653,12 +723,16 @@ bool MainWindow::exportFolderImpl(const QString &folder, fls::ExportGameVersion 
         };
         if (exportProject.isLivery) {
             QImage thumb;
+            const bool incompatibleArtwork = fls::exportIncompatibleLayerCount(exportProject, game) > 0;
+            if (incompatibleArtwork) {
+                fls::discardIncompatibleExportLayers(exportProject, game);
+            }
             if (carPreview_ != nullptr && carPreview_->hasModel()) {
                 if (webp && !QImageWriter::supportedImageFormats().contains("webp")) {
                     throw std::runtime_error(
                         "Qt WEBP image writer is not available; ensure qwebp.dll is deployed in the imageformats plugin folder");
                 }
-                thumb = carPreview_->renderThumbnail(QSize(670, 376));
+                thumb = carPreview_->renderThumbnail(QSize(670, 376), incompatibleArtwork ? &exportProject : nullptr);
                 if (thumb.isNull()) {
                     throw std::runtime_error("could not render the livery thumbnail from the car preview");
                 }
@@ -702,6 +776,7 @@ bool MainWindow::exportFolderImpl(const QString &folder, fls::ExportGameVersion 
             return geometry.shapeSize(static_cast<int>(id));
         };
         fls::exportGameGroup(exportProject, targetFolder, game, spriteSize);
+        fls::discardIncompatibleExportLayers(exportProject, game);
         const QImage thumb = renderProjectPreviewImage(exportProject, QSize(256, 256));
         if (webp && !QImageWriter::supportedImageFormats().contains("webp")) {
             throw std::runtime_error("Qt WEBP image writer is not available; ensure qwebp.dll is deployed in the imageformats plugin folder");
@@ -784,6 +859,48 @@ bool MainWindow::loadProjectJson(const QString &path, QString *error) {
 
 bool MainWindow::importAny(const QString &path, QString *error) {
     const QFileInfo info(path);
+    const auto xbox360Kind = fls::xbox360FileKind(info.fileName());
+    if (info.isFile() && xbox360Kind != fls::Xbox360FileKind::Unknown) {
+        if (error != nullptr) {
+            error->clear();
+        }
+        try {
+            QByteArray bytes = readImportFile(info.absoluteFilePath());
+            QString gameCode;
+            const bool livery = xbox360Kind == fls::Xbox360FileKind::Livery;
+            const char *magic = livery ? fls::detail::kXbox360LiveryMagic : fls::detail::kXbox360GroupMagic;
+            if (!bytes.startsWith(magic)) {
+                const auto game = xbox360ImportGame(this, fls::xbox360Envelope(bytes));
+                if (!game) {
+                    return false;
+                }
+                const auto credentials = chooseXbox360Credentials(this, *game, xbox360Kind, false);
+                if (!credentials) {
+                    return false;
+                }
+                bytes = fls::decryptXbox360Asset(bytes, *game, xbox360Kind, *credentials);
+                gameCode = fls::exportGameCode(*game);
+            }
+            rememberImportDirectory(info.absoluteFilePath(), QStringLiteral("source"));
+
+            return loadImportedProject([&]() {
+                fls::Project project = livery
+                    ? fls::importCLiveryData(bytes, {}, info.completeBaseName())
+                    : fls::importCGroupNestedData(bytes, {}, info.completeBaseName());
+                project.sourceFolder = info.absolutePath();
+                if (livery) {
+                    project.liveryPaint.game = gameCode;
+                }
+
+                return project;
+            }, QStringLiteral("Imported %1").arg(path), error);
+        } catch (const std::exception &ex) {
+            if (error != nullptr) {
+                *error = QString::fromUtf8(ex.what());
+            }
+            return false;
+        }
+    }
     bool isLivery = false;
     if (info.isDir()) {
         isLivery = QFileInfo(QDir(path).filePath(QStringLiteral("C_livery"))).isFile();
@@ -1148,7 +1265,8 @@ void MainWindow::exportDialog() {
         state_->project_.name,
         state_->project_.isLivery,
         state_->project_.carId,
-        fls::exportMaskedLayerCount(state_->project_));
+        fls::exportMaskedLayerCount(state_->project_),
+        [this](fls::ExportGameVersion game) { return fls::exportIncompatibleLayerCount(state_->project_, game); });
     if (!selection) {
         return;
     }
@@ -1159,6 +1277,38 @@ void MainWindow::exportDialog() {
         QMessageBox::critical(this, QStringLiteral("Export failed"), car.isEmpty()
             ? QStringLiteral("Choose a target car before exporting this livery to %1.").arg(game)
             : QStringLiteral("%1 is not listed as supported in %2.").arg(car, game));
+        return;
+    }
+    if (fls::isXbox360ExportGame(selection->gameVersion)) {
+        const bool livery = state_->project_.isLivery;
+        const QString extension = livery ? QStringLiteral(".liv") : QStringLiteral(".lvg");
+        const QString proposed = safeGroupName(state_->project_.name) + extension;
+        const QString filter = livery ? QStringLiteral("Xbox 360 livery (*.liv)")
+                                      : QStringLiteral("Xbox 360 vinyl group (*.lvg)");
+        QFileDialog destination(this, QStringLiteral("Export Xbox 360 Asset"), selection->directory, filter);
+        destination.setAcceptMode(QFileDialog::AcceptSave);
+        destination.setDefaultSuffix(extension.mid(1));
+        destination.selectFile(proposed);
+        if (destination.exec() != QDialog::Accepted) {
+            return;
+        }
+        const QString path = destination.selectedFiles().front();
+        try {
+            std::optional<fls::Xbox360Credentials> credentials;
+            if (selection->containerFormat == ExportContainerFormat::Xbox360SignedFile) {
+                const auto kind = livery ? fls::Xbox360FileKind::Livery : fls::Xbox360FileKind::Group;
+                credentials = chooseXbox360Credentials(this, selection->gameVersion, kind, true);
+                if (!credentials) {
+                    return;
+                }
+            }
+            fls::exportXbox360Asset(state_->project_, path, selection->gameVersion,
+                                    credentials ? &*credentials : nullptr);
+            rememberImportDirectory(path, QStringLiteral("exportFolder"));
+            canvasStatusBar_->showMessage(QStringLiteral("Exported %1").arg(path), 5000);
+        } catch (const std::exception &ex) {
+            QMessageBox::critical(this, QStringLiteral("Export failed"), QString::fromUtf8(ex.what()));
+        }
         return;
     }
     if (selection->containerFormat == ExportContainerFormat::WgsContainer) {

@@ -16,6 +16,8 @@ public:
         int id = 0;
         QString name;
         QString version;
+        QString manufacturer;
+        QString modelName;
     };
 
     struct ModelSource {
