@@ -132,11 +132,14 @@ QString findThumbnail(const QDir &directory) {
     return {};
 }
 
-QString liveryCarName(AssetKind kind, const QString &path) {
+QString liveryDetails(const QString &path) {
     try {
-        if (kind == AssetKind::HorizonLivery || kind == AssetKind::MotorsportLivery) {
-            return sharedCarRegistry().displayName(fls::readLiveryPayload(path).carId);
+        const auto livery = fls::readLiveryPayload(path);
+        if (!livery.creatorName.isEmpty()) {
+            return livery.creatorName;
         }
+
+        return sharedCarRegistry().displayName(livery.carId);
     } catch (const std::exception &) {
     }
     return {};
@@ -1109,17 +1112,16 @@ private:
         }
         if (isLiveryKind(request.kind)) {
             QThreadPool::globalInstance()->start([dialog, request, generation]() {
-                const QString car = liveryCarName(
-                    request.kind,
+                const QString details = liveryDetails(
                     request.payloadPath.isEmpty() ? request.assetPath : request.payloadPath);
-                if (car.isEmpty()) {
+                if (details.isEmpty()) {
                     return;
                 }
                 QMetaObject::invokeMethod(
                     QCoreApplication::instance(),
-                    [dialog, assetPath = request.assetPath, generation, car]() {
+                    [dialog, assetPath = request.assetPath, generation, details]() {
                         if (dialog != nullptr) {
-                            dialog->applyAssetDetails(assetPath, generation, {}, car);
+                            dialog->applyAssetDetails(assetPath, generation, {}, details);
                         }
                     },
                     Qt::QueuedConnection);
@@ -1128,7 +1130,7 @@ private:
     }
 
     void applyAssetDetails(const QString &assetPath, quint64 generation,
-                           const QImage &image, const QString &car) {
+                           const QImage &image, const QString &details) {
         if (generation != thumbnailGeneration_) {
             return;
         }
@@ -1141,13 +1143,13 @@ private:
                         item->setIcon(QIcon(QPixmap::fromImage(image)));
                     }
                 }
-                if (!car.isEmpty()) {
+                if (!details.isEmpty()) {
                     QStringList lines = item->data(kBaseTextRole)
                                             .toString().split(QLatin1Char('\n'));
                     if (lines.size() < 2) {
-                        lines.push_back(car);
+                        lines.push_back(details);
                     } else {
-                        lines[1] += QStringLiteral("  |  %1").arg(car);
+                        lines[1] += QStringLiteral("  |  %1").arg(details);
                     }
                     item->setText(lines.join(QLatin1Char('\n')));
                 }

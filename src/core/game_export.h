@@ -19,10 +19,12 @@ enum class ExportGameVersion {
     Motorsport3,
     Motorsport4,
     Horizon1,
+    Motorsport2,
 };
 
 QString exportGameCode(ExportGameVersion game);
 bool isXbox360ExportGame(ExportGameVersion game);
+QString xbox360ExportExtension(ExportGameVersion game, Xbox360FileKind kind);
 QString exportThumbnailName(ExportGameVersion game, bool livery);
 bool exportGameSupportsMasks(ExportGameVersion game);
 quint64 exportMaskedLayerCount(const Project &project);

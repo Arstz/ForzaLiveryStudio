@@ -222,7 +222,7 @@ QByteArray gzipDecompress(const QByteArray &data) {
     return out;
 }
 
-QJsonObject headerMetadataToJson(const HeaderMetadata &meta) {
+QJsonObject headerMetadataToJson(const HeaderMetadata &meta, bool includeCreatorTag, bool includeCreatorName) {
     QJsonObject object;
     object.insert(QStringLiteral("format_version"), static_cast<qint64>(meta.formatVersion));
     object.insert(QStringLiteral("name"), meta.name);
@@ -232,8 +232,12 @@ QJsonObject headerMetadataToJson(const HeaderMetadata &meta) {
     object.insert(QStringLiteral("month"), meta.month);
     object.insert(QStringLiteral("day"), meta.day);
     object.insert(QStringLiteral("field_block"), toBase64(meta.fieldBlock));
-    object.insert(QStringLiteral("creator_tag"), toBase64(meta.creatorTag));
-    object.insert(QStringLiteral("creator_name"), meta.creatorName);
+    if (includeCreatorTag) {
+        object.insert(QStringLiteral("creator_tag"), toBase64(meta.creatorTag));
+    }
+    if (includeCreatorName) {
+        object.insert(QStringLiteral("creator_name"), meta.creatorName);
+    }
     object.insert(QStringLiteral("section_prefix"), toBase64(meta.sectionPrefix));
     object.insert(QStringLiteral("section_padding"), toBase64(meta.sectionPadding));
     object.insert(QStringLiteral("section_marker"), toBase64(meta.sectionMarker));
@@ -347,19 +351,13 @@ void applyImportedHeaderMetadata(Project &project) {
     }
 }
 
-Project newImportProject(const QString &folderOrFile, const QByteArray &payload) {
-    if (payload.startsWith(detail::kXbox360GroupMagic)) {
-        const QFileInfo file(folderOrFile);
-        Project project;
-        project.name = file.completeBaseName();
-        project.sourceFolder = file.absolutePath();
-
-        return project;
+void applyMotorsport2Metadata(Project &project, const QString &creatorName = {}) {
+    if (!project.headerMetadata) {
+        project.headerMetadata = defaultDraftHeader(project.name, {}, static_cast<quint32>(project.carId));
     }
-    Project project = detail::newVinylImportProject(folderOrFile, payload);
-    applyImportedHeaderMetadata(project);
-
-    return project;
+    if (!creatorName.isEmpty()) {
+        project.headerMetadata->creatorName = creatorName;
+    }
 }
 
 Project newImportProject(const QString &name, const QByteArray &payload,
@@ -370,6 +368,23 @@ Project newImportProject(const QString &name, const QByteArray &payload,
         project.sourceDecPrefix = payload.left(0x1d);
     }
     project.sourceHeader = header;
+    applyImportedHeaderMetadata(project);
+    if (detail::isMotorsport2Group(payload)) {
+        applyMotorsport2Metadata(project);
+    }
+
+    return project;
+}
+
+Project newImportProject(const QString &folderOrFile, const QByteArray &payload) {
+    if (payload.startsWith(detail::kXbox360GroupMagic)) {
+        const QFileInfo file(folderOrFile);
+        Project project = newImportProject(file.completeBaseName(), payload, {});
+        project.sourceFolder = file.absolutePath();
+
+        return project;
+    }
+    Project project = detail::newVinylImportProject(folderOrFile, payload);
     applyImportedHeaderMetadata(project);
 
     return project;
@@ -605,6 +620,9 @@ static Project importCLiveryDecoded(const LiveryPayload &livery, Project project
     project.liverySource = livery.raw;
     project.liveryPaint = livery.paint;
     applyImportedHeaderMetadata(project);
+    if (detail::isMotorsport2Livery(livery.raw)) {
+        applyMotorsport2Metadata(project, livery.creatorName);
+    }
     if (project.liveryPaint.game == QStringLiteral("FH4") && project.headerMetadata
         && project.headerMetadata->formatVersion == 6) {
         project.liveryPaint.game = QStringLiteral("FH5");
@@ -724,19 +742,25 @@ Project projectFromJson(const QJsonObject &object) {
     if (!header.isEmpty()) {
         project.sourceHeader = QByteArray::fromBase64(header.toLatin1());
     }
+    const QJsonValue headerMetadata = object.value(QStringLiteral("header_metadata"));
+    if (headerMetadata.isObject()) {
+        project.headerMetadata = headerMetadataFromJson(headerMetadata.toObject());
+    }
     const QString liverySource = object.value(QStringLiteral("livery_source")).toString();
     if (!liverySource.isEmpty()) {
         project.liverySource = QByteArray::fromBase64(liverySource.toLatin1());
         try {
-            project.liveryPaint = parseInflatedLiveryPayload(project.liverySource).paint;
+            auto payload = parseInflatedLiveryPayload(project.liverySource);
+            project.liveryPaint = std::move(payload.paint);
+            if (detail::isMotorsport2Livery(payload.raw)) {
+                const bool hasCreatorName = headerMetadata.toObject().contains(QStringLiteral("creator_name"));
+                applyMotorsport2Metadata(project, hasCreatorName ? QString() : payload.creatorName);
+            }
         } catch (const std::exception &) {
         }
     }
     if (object.contains(QStringLiteral("livery_paint"))) {
         project.liveryPaint = liveryPaintStateFromJson(object.value(QStringLiteral("livery_paint")));
-    }
-    if (object.value(QStringLiteral("header_metadata")).isObject()) {
-        project.headerMetadata = headerMetadataFromJson(object.value(QStringLiteral("header_metadata")).toObject());
     }
 
     if (!object.value(QStringLiteral("root")).isObject()) {
@@ -795,7 +819,11 @@ QJsonObject projectToJson(const Project &project) {
         object.insert(QStringLiteral("livery_paint"), liveryPaintStateToJson(project.liveryPaint));
     }
     if (project.headerMetadata) {
-        object.insert(QStringLiteral("header_metadata"), headerMetadataToJson(*project.headerMetadata));
+        const bool motorsport2 = detail::isMotorsport2Livery(project.liverySource);
+        const bool includeCreatorName = !motorsport2
+            || project.headerMetadata->creatorName != detail::motorsport2CreatorName(project.liverySource);
+        object.insert(QStringLiteral("header_metadata"),
+                      headerMetadataToJson(*project.headerMetadata, !motorsport2, includeCreatorName));
     }
 
     if (project.root) {

@@ -32,8 +32,6 @@ constexpr int kAesKeySize = 16;
 constexpr int kProfileIdSize = 8;
 constexpr int kSeedSize = 4 + kAesBlockSize;
 constexpr int kMaximumAssetSize = 16 * 1024 * 1024;
-constexpr int kFM2HeaderSize = 23;
-constexpr quint32 kFM2Version = 7;
 
 struct Envelope {
     QCryptographicHash::Algorithm algorithm;
@@ -266,7 +264,8 @@ Xbox360FileKind xbox360FileKind(const QString &fileName) {
     if (fileName.endsWith(QStringLiteral(".liv"), Qt::CaseInsensitive)) {
         return Xbox360FileKind::Livery;
     }
-    if (fileName.endsWith(QStringLiteral(".lvg"), Qt::CaseInsensitive)) {
+    if (fileName.endsWith(QStringLiteral(".lvg"), Qt::CaseInsensitive)
+        || fileName.endsWith(QStringLiteral(".livgroup"), Qt::CaseInsensitive)) {
         return Xbox360FileKind::Group;
     }
 
@@ -274,15 +273,14 @@ Xbox360FileKind xbox360FileKind(const QString &fileName) {
 }
 
 Xbox360Envelope xbox360Envelope(const QByteArray &bytes) {
+    if (detail::isMotorsport2LiveryContainer(bytes) || detail::isMotorsport2Livery(bytes)) {
+        return Xbox360Envelope::Motorsport2;
+    }
     if (envelopeLength(bytes, kSha256)) {
         return Xbox360Envelope::Sha256;
     }
     if (envelopeLength(bytes, kSha1)) {
         return Xbox360Envelope::Sha1;
-    }
-    if (bytes.size() > kFM2HeaderSize && beWord(bytes, 0) == kFM2Version
-        && beWord(bytes, 15) == bytes.size() - kFM2HeaderSize) {
-        return Xbox360Envelope::Motorsport2;
     }
 
     return Xbox360Envelope::Unknown;

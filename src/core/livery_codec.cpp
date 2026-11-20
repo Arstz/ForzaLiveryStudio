@@ -221,13 +221,14 @@ LiveryPayload parseInflatedLiveryPayloadImpl(const QByteArray &raw) {
 } // namespace
 
 LiveryPayload parseInflatedLiveryPayload(const QByteArray &raw) {
-    if (raw.startsWith(detail::kXbox360LiveryMagic)) {
+    if (detail::isXbox360LiveryPayload(raw)) {
         auto decoded = detail::readXbox360Livery(raw);
         LiveryPayload payload;
         payload.raw = raw;
         payload.xbox360Sections = std::move(decoded.sections);
         payload.sectionCounts = std::move(decoded.sectionCounts);
         payload.paint = std::move(decoded.paint);
+        payload.creatorName = std::move(decoded.creatorName);
         payload.carId = decoded.carId;
         payload.legacyRecords = true;
         payload.xbox360Locked = decoded.locked;
@@ -253,8 +254,16 @@ QVector<LiverySection> decodeLiverySections(const LiveryPayload &payload) {
 }
 
 bool isLiveryAsset(const QByteArray &fileData) {
-    if (fileData.startsWith(detail::kXbox360LiveryMagic)) {
+    if (detail::isXbox360LiveryPayload(fileData)) {
         return true;
+    }
+    if (detail::isMotorsport2LiveryContainer(fileData)) {
+        try {
+            detail::inflateMotorsport2Livery(fileData);
+            return true;
+        } catch (const std::exception &) {
+            return false;
+        }
     }
     constexpr int kCompressedPayloadOffset = 8;
     constexpr int kZlibHeaderBytes = 2;
@@ -289,7 +298,11 @@ bool isLiveryAssetFileName(const QString &fileName) {
 }
 
 LiveryPayload parseLiveryAsset(const QByteArray &fileData) {
-    return parseInflatedLiveryPayload(fileData.startsWith(detail::kXbox360LiveryMagic)
+    if (detail::isMotorsport2LiveryContainer(fileData)) {
+        return parseInflatedLiveryPayload(detail::inflateMotorsport2Livery(fileData));
+    }
+
+    return parseInflatedLiveryPayload(detail::isXbox360LiveryPayload(fileData)
         ? fileData : inflateContainerBlocks(fileData));
 }
 
@@ -1081,7 +1094,7 @@ QByteArray patchNativeArtwork(
 }
 
 std::optional<SourceLivery> legacySourceFrames(const Project &project) {
-    if (project.liverySource.isEmpty() || project.liverySource.startsWith(detail::kXbox360LiveryMagic)) {
+    if (project.liverySource.isEmpty() || detail::isXbox360LiveryPayload(project.liverySource)) {
         return std::nullopt;
     }
     SourceLivery source;

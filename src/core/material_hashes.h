@@ -282,6 +282,7 @@ inline constexpr quint32 kTireMapTiling = 0x25F1CD0C;
 inline constexpr quint32 kTireBaseColor = 0xE795999C;
 inline constexpr quint32 kSurfaceTexture = 0x8D9C56EF;
 inline constexpr quint32 kWeaveMask = 3131701925;
+inline constexpr quint32 kWeaveNormalTexture = 3960733475;
 inline constexpr quint32 kWeaveColorTintA = 2956167777;
 inline constexpr quint32 kWeaveColorTintB = 701623392;
 inline constexpr quint32 kWeaveMetalness = 3750855534;
@@ -294,7 +295,7 @@ inline constexpr quint32 kUserCarColor = 2221386404;
 inline constexpr quint32 kUvOrientation = 2339586987;
 
 inline constexpr std::array<quint32, 4> kDetailNormalTexture = {
-    0xEC13FF23, 0x87078E77, 0xB59BE3AB, 0xB61760D8,
+    kWeaveNormalTexture, 0x87078E77, 0xB59BE3AB, 0xB61760D8,
 };
 
 inline constexpr std::array<quint32, 5> kEmissiveTexture = {

@@ -597,10 +597,13 @@ enum class NativeTextureSlot {
     TireNormalHeight,
     TireHeight,
     Surface,
+    Gloss,
+    MetalBlendMask,
     TireSurface,
     Emissive,
     EmissiveMask,
     GlassTint,
+    WeaveMask,
     Unknown,
 };
 
@@ -627,6 +630,32 @@ NativeTextureSlot authoredTextureSlot(quint32 hash) {
     if (hash == kColorTexture) return NativeTextureSlot::Diffuse;
     if (hash == kLegacyEmissionTexture || contains(kEmissiveTexture, hash)) return NativeTextureSlot::Emissive;
     if (contains(kAlphaTexture, hash)) return NativeTextureSlot::Alpha;
+
+    return NativeTextureSlot::Unknown;
+}
+
+NativeTextureSlot legacyTextureSlot(const fls::LegacyMaterialSurface &surface, quint32 hash) {
+    if (hash == 0) return NativeTextureSlot::Unknown;
+    if (hash == surface.diffuseMap) return NativeTextureSlot::Diffuse;
+    if (hash == surface.normalMap) return NativeTextureSlot::Normal;
+    if (hash == surface.opacityMap) return NativeTextureSlot::Alpha;
+    if (hash == surface.glossMap) return NativeTextureSlot::Gloss;
+    if (hash == surface.metalBlendMaskMap) return NativeTextureSlot::MetalBlendMask;
+    if (hash == surface.emissionMap) return NativeTextureSlot::Emissive;
+    if (hash == surface.emissionMaskMap) return NativeTextureSlot::EmissiveMask;
+
+    return NativeTextureSlot::Unknown;
+}
+
+NativeTextureSlot weaveTextureSlot(const fls::ModelMaterial &material, quint32 hash) {
+    using namespace fls::material_hashes::parameter;
+    if (hash == kWeaveMask) return NativeTextureSlot::WeaveMask;
+    if (hash == kWeaveNormalTexture) return NativeTextureSlot::Normal;
+    if (material.useDiffuseTexture.value_or(false)) {
+        if (hash == kColorTexture) return NativeTextureSlot::Diffuse;
+        if (hash == kSurfaceTexture) return NativeTextureSlot::Surface;
+        if (hash == kAlphaTexture.front() && material.weave->maskedLivery) return NativeTextureSlot::Alpha;
+    }
 
     return NativeTextureSlot::Unknown;
 }
@@ -710,6 +739,12 @@ void assignNativeTexture(fls::ModelMaterial &material,
     case NativeTextureSlot::TireSurface:
         material.surfaceTexture = texture;
         break;
+    case NativeTextureSlot::Gloss:
+        material.glossTexture = texture;
+        break;
+    case NativeTextureSlot::MetalBlendMask:
+        material.metalBlendMaskTexture = texture;
+        break;
     case NativeTextureSlot::Emissive:
         material.emissiveTexture = texture;
         break;
@@ -718,6 +753,9 @@ void assignNativeTexture(fls::ModelMaterial &material,
         break;
     case NativeTextureSlot::GlassTint:
         material.glassTintTexture = texture;
+        break;
+    case NativeTextureSlot::WeaveMask:
+        material.weaveMaskTexture = texture;
         break;
     case NativeTextureSlot::Unknown:
         break;
@@ -981,8 +1019,9 @@ void resolveModelMaterials(
     QSet<const fls::ModelMaterial *> visited;
     for (std::vector<fls::CarMesh> *meshes : meshSets) {
         for (fls::CarMesh &mesh : *meshes) {
-            if (!mesh.material || visited.contains(mesh.material.get()) ||
-                mesh.materialName.startsWith(QStringLiteral("carPaint"), Qt::CaseInsensitive)) {
+            if (!mesh.material || visited.contains(mesh.material.get())
+                || (!mesh.material->useDiffuseTexture.has_value()
+                    && mesh.materialName.startsWith(QStringLiteral("carPaint"), Qt::CaseInsensitive))) {
                 continue;
             }
             visited.insert(mesh.material.get());
@@ -991,31 +1030,43 @@ void resolveModelMaterials(
                 [](const auto &parameter) {
                     return tireTextureSlot(parameter.nameHash) != NativeTextureSlot::Unknown;
                 });
-            bool hasNormal = false;
+            const auto &legacySurface = mesh.material->legacySurface;
+            const bool weave = mesh.material->weave.has_value();
+            const auto textureSlot = [&](quint32 hash) {
+                if (weave) return weaveTextureSlot(*mesh.material, hash);
+                if (tire) return tireTextureSlot(hash);
+                if (legacySurface) return legacyTextureSlot(*legacySurface, hash);
+
+                return authoredTextureSlot(hash);
+            };
             QSet<NativeTextureSlot> authored;
             for (const auto &parameter : parameters) {
                 if (parameter.type == fls::ModelMaterialParameterType::Texture2D) {
                     if (const auto shaderParameter = fls::shaderTextureParameter(*mesh.material, parameter)) {
-                        authored.insert(authoredTextureSlot(*shaderParameter));
+                        authored.insert(textureSlot(*shaderParameter));
                     }
                 }
             }
-            for (const auto &parameter : parameters) {
+            QSet<NativeTextureSlot> assigned;
+            for (auto it = parameters.crbegin(); it != parameters.crend(); ++it) {
+                const auto &parameter = *it;
                 if (parameter.type != fls::ModelMaterialParameterType::Texture2D || parameter.texturePath.isEmpty()) {
                     continue;
                 }
                 const auto shaderParameter = fls::shaderTextureParameter(*mesh.material, parameter);
                 if (!shaderParameter) continue;
-                NativeTextureSlot slot = tire ? tireTextureSlot(*shaderParameter) : authoredTextureSlot(*shaderParameter);
-                if (slot == NativeTextureSlot::Unknown && !tire && !mesh.material->glass
+                NativeTextureSlot slot = textureSlot(*shaderParameter);
+                if (slot == NativeTextureSlot::Unknown && !tire && !legacySurface && !weave && !mesh.material->glass
                     && !parameter.shaderDefault) {
                     const NativeTextureSlot fallback = fallbackTextureSlot(parameter);
                     if (!authored.contains(fallback)) slot = fallback;
                 }
-                if (slot == NativeTextureSlot::Unknown) {
+                if (slot == NativeTextureSlot::Unknown || assigned.contains(slot)) {
                     continue;
                 }
-                if ((slot == NativeTextureSlot::Alpha && !mesh.material->glassOpacity.useAlphaTexture.value_or(true))
+                if ((slot == NativeTextureSlot::Diffuse && !mesh.material->useDiffuseTexture.value_or(true))
+                    || (slot == NativeTextureSlot::Alpha && !weave
+                        && !mesh.material->glassOpacity.useAlphaTexture.value_or(true))
                     || ((slot == NativeTextureSlot::Emissive || slot == NativeTextureSlot::EmissiveMask)
                         && !mesh.material->emissionEnabled.value_or(true))
                     || (slot == NativeTextureSlot::EmissiveMask && !mesh.material->emissionMaskEnabled.value_or(true))
@@ -1028,26 +1079,8 @@ void resolveModelMaterials(
                         .contains(QStringLiteral("globaltexture/swatches/flat_texture"))) {
                     continue;
                 }
-                if (slot == NativeTextureSlot::Normal) {
-                    hasNormal = true;
-                }
+                assigned.insert(slot);
                 appendPending(mesh.material, slot, parameter.texturePath);
-            }
-            // The car_carbonfiber shader bakes its weave into the shader, so the plain carbonfiber
-            // materialbin names no maps at all (only 32x tiling): a mesh using it arrives with no
-            // normal and renders as flat gloss. Supply the shader's canonical twin-twill weave
-            // normal/rmao — the very swatches the carbonfiber_livery variant lists explicitly — so
-            // structural carbon reads as carbon. The material's own 32x tiling turns it into a weave.
-            if (!hasNormal && normalizedTexturePath(mesh.material->resourcePath)
-                                  .contains(QStringLiteral("/carbonfiber/carbonfiber"))) {
-                appendPending(mesh.material, NativeTextureSlot::Normal,
-                              QStringLiteral("Game:\\Media\\cars\\_library\\textures\\_fmnext\\carbonfiber"
-                                             "\\twin_twill_weave\\swatches\\twin_twill_weave_normal_5eewzs7"
-                                             ".swatchbin"));
-                appendPending(mesh.material, NativeTextureSlot::Surface,
-                              QStringLiteral("Game:\\Media\\cars\\_library\\textures\\_fmnext\\carbonfiber"
-                                             "\\twin_twill_weave\\swatches\\twin_twill_weave_rmao_x9t8d8u"
-                                             ".swatchbin"));
             }
         }
     }

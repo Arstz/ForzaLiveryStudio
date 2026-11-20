@@ -25,6 +25,8 @@ constexpr quint32 MaterialLinks = 0x4D41544C;
 constexpr quint32 MaterialParameters = 0x4D545052;
 constexpr quint32 DefaultMaterialParameters = 0x44465052;
 constexpr quint32 TextureParameterMapping = 0x54584D50;
+constexpr quint32 ShaderVersion = 0x56455253;
+constexpr quint32 ShaderVariants = 0x56415253;
 constexpr quint32 ManufacturerColors = 0x4D4E434C;
 
 constexpr quint32 MetaName = 0x4E616D65;       // "Name"

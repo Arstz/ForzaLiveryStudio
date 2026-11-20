@@ -307,6 +307,38 @@ void testXbox360Assets(const QString &root) {
     group.root->append(makeShape(19));
     livery.liveryPaint.setDefaultCarColorBgra({21, 43, 65, 255});
 
+    const QString fm2Livery = QDir(root).filePath("FM2.liv");
+    auto fm2Source = livery;
+    const QByteArray creatorTag = QByteArray::fromHex("0807060504030201");
+    fm2Source.headerMetadata->creatorTag = creatorTag;
+    fls::exportXbox360Asset(fm2Source, fm2Livery, Game::Motorsport2);
+    const auto fm2Payload = fls::readLiveryPayload(fm2Livery);
+    const auto fm2Project = fls::importCLivery(fm2Livery);
+    require(fm2Payload.sectionCounts == QVector<int>(6, 1) && fm2Project.carId == 0, "FM2 livery sections");
+    require(fm2Payload.raw.right(8) == QByteArray::fromHex("0102030405060708"), "FM2 creator ID byte order");
+    require(fm2Project.headerMetadata && fm2Project.headerMetadata->name == "FM2"
+        && fm2Project.headerMetadata->creatorName == "0102030405060708", "FM2 livery metadata");
+    auto storedProject = fls::projectToJson(fm2Project);
+    const auto storedMetadata = storedProject.value("header_metadata").toObject();
+    require(!storedMetadata.contains("creator_tag") && !storedMetadata.contains("creator_name"),
+            "FM2 creator ID is not duplicated");
+    const auto reopened = fls::projectFromJson(storedProject);
+    require(reopened.headerMetadata && reopened.headerMetadata->creatorName == fm2Payload.creatorName,
+            "FM2 project creator recovery");
+    storedProject.remove("header_metadata");
+    const auto recovered = fls::projectFromJson(storedProject);
+    require(recovered.headerMetadata && recovered.headerMetadata->creatorName == fm2Payload.creatorName,
+            "FM2 older project creator recovery");
+    require(fm2Project.liveryPaint.defaultCarColorBgra() == livery.liveryPaint.defaultCarColorBgra(),
+            "FM2 body paint");
+    compareArtwork(livery, fm2Project, "FM2 livery");
+    fls::exportGameGroup(group, root, Game::Motorsport2);
+    const auto fm2Group = fls::importCGroupNested(QDir(root).filePath("VinylGroup.livgroup"));
+    require(fm2Group.headerMetadata && fm2Group.headerMetadata->name == "VinylGroup"
+        && fm2Group.headerMetadata->creatorName.isEmpty(), "FM2 group metadata");
+    require(fm2Group.root->children.size() == 2, "FM2 flattens nested groups");
+    compareArtwork(group, fm2Group, "FM2 group");
+
     for (const auto game : {Game::Motorsport3, Game::Motorsport4, Game::Horizon1}) {
         const QString code = fls::exportGameCode(game);
         const QByteArray raw = fls::encodeGameLiveryPayload(livery, game);
@@ -347,29 +379,48 @@ void testXbox360Assets(const QString &root) {
 }
 
 void testXbox360Samples(const QString &root, const QString &output) {
+    using Game = fls::ExportGameVersion;
+    using Kind = fls::Xbox360FileKind;
+    using Envelope = fls::Xbox360Envelope;
     const QDir encryptedDirectory(QDir(root).filePath("encrypted"));
-    QDirIterator files(root, {"*.liv", "*.lvg"}, QDir::Files, QDirIterator::Subdirectories);
+    QDirIterator files(root, {"*.liv", "*.lvg", "*.livgroup"}, QDir::Files, QDirIterator::Subdirectories);
     int plaintext = 0;
     int encrypted = 0;
     while (files.hasNext()) {
         const QFileInfo file(files.next());
+        const QByteArray bytes = readFile(file.absoluteFilePath());
         const auto kind = fls::xbox360FileKind(file.fileName());
-        const auto envelope = fls::xbox360Envelope(readFile(file.absoluteFilePath()));
+        const auto envelope = fls::xbox360Envelope(bytes);
         if (file.absoluteDir() == encryptedDirectory) {
-            require(envelope == fls::Xbox360Envelope::Sha1 || envelope == fls::Xbox360Envelope::Sha256,
+            require(envelope == Envelope::Sha1 || envelope == Envelope::Sha256,
                     file.fileName() + " encryption envelope");
             ++encrypted;
             continue;
         }
-        if (envelope == fls::Xbox360Envelope::Motorsport2) {
-            continue;
-        }
-        const auto game = fls::ExportGameVersion::Motorsport4;
+        const bool motorsport2 = envelope == Envelope::Motorsport2 || file.suffix() == "livgroup";
+        const auto game = motorsport2 ? Game::Motorsport2 : Game::Motorsport4;
         const QString destination = QDir(output).filePath(file.fileName());
-        const auto import = kind == fls::Xbox360FileKind::Livery ? fls::importCLivery : fls::importCGroupNested;
+        const auto import = kind == Kind::Livery ? fls::importCLivery : fls::importCGroupNested;
         const auto source = import(file.absoluteFilePath());
         fls::exportXbox360Asset(source, destination, game);
-        compareArtwork(source, import(destination), file.fileName());
+        const auto roundTrip = import(destination);
+        compareArtwork(source, roundTrip, file.fileName());
+        if (motorsport2 && kind == Kind::Livery) {
+            require(fls::isLiveryAsset(bytes) && source.liveryPaint.game == "FM2" && source.carId == 0,
+                    file.fileName() + " FM2 livery identification");
+            const auto payload = fls::parseLiveryAsset(bytes);
+            const auto expected = file.fileName().contains("161938") ? QVector<int>{500, 500, 1000, 1000, 1000, 100}
+                : QVector<int>(6, 1);
+            require(payload.sectionCounts == expected, file.fileName() + " FM2 section counts");
+            require(source.liverySource == roundTrip.liverySource, file.fileName() + " FM2 livery payload round trip");
+            const auto storedProject = fls::decodeProjectDocument(fls::encodeProjectDocument(source));
+            require(storedProject.headerMetadata && storedProject.headerMetadata->name == file.completeBaseName()
+                && !payload.creatorName.isEmpty() && storedProject.headerMetadata->creatorName == payload.creatorName
+                && storedProject.carId == 0, file.fileName() + " FM2 project metadata round trip");
+        } else if (motorsport2) {
+            require(shapeCount(*source.root) == 2 && readFile(destination).left(76) == bytes.left(76),
+                    file.fileName() + " FM2 group payload round trip");
+        }
         ++plaintext;
     }
     require(plaintext > 0 && encrypted > 0, "Xbox 360 samples found");

@@ -437,7 +437,8 @@ fls::CarModel buildWheelPreviewGeometry(WheelPreviewState &state, bool front, in
         mesh.carPartType = front ? kFrontRimSelector : kRearRimSelector;
         mesh.partOptionIds = {rimId};
         mesh.stockPart = true;
-        if (rim) mesh.sourceModelPath = QStringLiteral("_library/scene/wheels/") + rimOption->archive;
+        if (!rim) continue;
+        mesh.sourceModelPath = QStringLiteral("_library/scene/wheels/") + rimOption->archive;
         for (const auto &source : state.stockRims) {
             if (source.materialName.compare(mesh.materialName, Qt::CaseInsensitive) == 0 && source.material) {
                 mesh.material = source.material;

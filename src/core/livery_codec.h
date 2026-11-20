@@ -25,6 +25,7 @@ inline constexpr int liverySectionShapeLimit(int slot) noexcept {
 struct LiveryPayload {
     QByteArray raw;
     QByteArray body;
+    QString creatorName;
     QVector<int> sectionCounts;
     QVector<LiverySection> xbox360Sections;
     LiveryPaintState paint;

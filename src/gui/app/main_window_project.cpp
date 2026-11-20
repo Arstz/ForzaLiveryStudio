@@ -301,10 +301,8 @@ void MainWindow::updateStatus() {
         return;
     }
 
-    QString creator = state_->project_.headerMetadata ? state_->project_.headerMetadata->creatorName : QString();
-    if (creator.isEmpty()) {
-        creator = creatorName_;
-    }
+    const auto &metadata = state_->project_.headerMetadata;
+    const QString creator = metadata ? metadata->creatorName : creatorName_;
     int shapeCount = 0;
     int guideCount = 0;
     int groupCount = 0;

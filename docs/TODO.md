@@ -3,6 +3,7 @@ Small changes:
     -Improve PAINT menu design
     -Prebake rim models
     -Deny liv for xb1 titles and pgs/wgs for xb360
+    -Adjust part handles
 
 Medium changes:
     -Filter parts by game version (Single/Multiple), hide/paint

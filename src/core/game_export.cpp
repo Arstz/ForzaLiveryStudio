@@ -38,7 +38,7 @@ constexpr int kMotorsportEntryCountOffset = 58;
 constexpr int kMotorsportEntriesOffset = 62;
 constexpr int kEarlyEntryCountOffset = 41;
 constexpr int kTaggedLiveryOverhead = 40;
-constexpr quint16 kMotorsport3LastShapeId = 2040;
+constexpr quint16 kEarlyXbox360LastShapeId = 2040;
 constexpr quint16 kLaterXbox360LastShapeId = 2240;
 constexpr quint16 kEnglishMtCentShapeId = 2633;
 constexpr quint16 kXbox360DecalFlag = 32768;
@@ -214,6 +214,7 @@ QString exportGameCode(ExportGameVersion game) {
     case ExportGameVersion::Motorsport6: return QStringLiteral("FM6");
     case ExportGameVersion::Motorsport7: return QStringLiteral("FM7");
     case ExportGameVersion::Motorsport2023: return QStringLiteral("FM2023");
+    case ExportGameVersion::Motorsport2: return QStringLiteral("FM2");
     case ExportGameVersion::Motorsport3: return QStringLiteral("FM3");
     case ExportGameVersion::Motorsport4: return QStringLiteral("FM4");
     case ExportGameVersion::Horizon1: return QStringLiteral("FH1");
@@ -222,8 +223,16 @@ QString exportGameCode(ExportGameVersion game) {
 }
 
 bool isXbox360ExportGame(ExportGameVersion game) {
-    return game == ExportGameVersion::Motorsport3 || game == ExportGameVersion::Motorsport4
-        || game == ExportGameVersion::Horizon1;
+    return game == ExportGameVersion::Motorsport2 || game == ExportGameVersion::Motorsport3
+        || game == ExportGameVersion::Motorsport4 || game == ExportGameVersion::Horizon1;
+}
+
+QString xbox360ExportExtension(ExportGameVersion game, Xbox360FileKind kind) {
+    if (kind == Xbox360FileKind::Livery) {
+        return QStringLiteral(".liv");
+    }
+
+    return game == ExportGameVersion::Motorsport2 ? QStringLiteral(".livgroup") : QStringLiteral(".lvg");
 }
 
 namespace {
@@ -264,8 +273,8 @@ bool incompatibleExportShape(const scene::Shape &shape, ExportGameVersion game) 
     const quint16 id = detail::canonicalShapeId(shape.shapeId);
     const bool known = detail::isKnownShapeId(id);
     if (isXbox360ExportGame(game)) {
-        const quint16 last = game == ExportGameVersion::Motorsport3
-            ? kMotorsport3LastShapeId : kLaterXbox360LastShapeId;
+        const bool early = game == ExportGameVersion::Motorsport2 || game == ExportGameVersion::Motorsport3;
+        const quint16 last = early ? kEarlyXbox360LastShapeId : kLaterXbox360LastShapeId;
 
         return (id & kXbox360DecalFlag) == 0
             && !detail::isXbox360ExclusiveShapeId(id) && (!known || id > last);
@@ -681,6 +690,7 @@ bool exportGameSupportsMasks(ExportGameVersion game) {
     case ExportGameVersion::Motorsport5:
     case ExportGameVersion::Motorsport6:
     case ExportGameVersion::Motorsport7:
+    case ExportGameVersion::Motorsport2:
     case ExportGameVersion::Motorsport3:
     case ExportGameVersion::Motorsport4:
     case ExportGameVersion::Horizon1:
@@ -715,7 +725,7 @@ QByteArray encodeGameLiveryPayload(const Project &project, ExportGameVersion gam
         Project artwork = project;
         discardIncompatibleExportLayers(artwork, game);
 
-        return detail::encodeXbox360Vinyl(artwork, destinationCreatorTag(project, QString()));
+        return detail::encodeXbox360Vinyl(artwork, game, destinationCreatorTag(project, QString()));
     }
     if (game == ExportGameVersion::Horizon6) {
         Project artwork = project;
@@ -768,7 +778,8 @@ void exportGameGroup(const Project &project, const QString &outputFolder,
         if (project.isLivery || outputFolder.isEmpty()) {
             throw std::runtime_error("Xbox 360 vinyl group export requires a group project and destination");
         }
-        exportXbox360Asset(project, QDir(outputFolder).filePath(QStringLiteral("VinylGroup.lvg")), game);
+        const QString name = QStringLiteral("VinylGroup") + xbox360ExportExtension(game, Xbox360FileKind::Group);
+        exportXbox360Asset(project, QDir(outputFolder).filePath(name), game);
         return;
     }
     if (game == ExportGameVersion::Horizon6) {
@@ -807,14 +818,16 @@ void exportGameGroup(const Project &project, const QString &outputFolder,
 void exportXbox360Asset(const Project &project, const QString &path, ExportGameVersion game,
                         const Xbox360Credentials *credentials) {
     const Xbox360FileKind kind = project.isLivery ? Xbox360FileKind::Livery : Xbox360FileKind::Group;
-    if (!isXbox360ExportGame(game) || xbox360FileKind(path) != kind) {
+    if (!isXbox360ExportGame(game) || !path.endsWith(xbox360ExportExtension(game, kind), Qt::CaseInsensitive)) {
         throw std::runtime_error("invalid Xbox 360 export game or file extension");
     }
     Project artwork = project;
     discardIncompatibleExportLayers(artwork, game);
-    QByteArray plain = detail::encodeXbox360Vinyl(artwork, destinationCreatorTag(project, QString()));
+    QByteArray plain = detail::encodeXbox360Vinyl(artwork, game, destinationCreatorTag(project, QString()));
     if (credentials != nullptr) {
         plain = encryptXbox360Asset(plain, game, kind, *credentials);
+    } else if (game == ExportGameVersion::Motorsport2 && kind == Xbox360FileKind::Livery) {
+        plain = detail::deflateMotorsport2Livery(plain);
     }
     createOutputFolder(QFileInfo(path).absolutePath());
     QSaveFile file(path);

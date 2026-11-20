@@ -170,9 +170,6 @@ std::optional<fls::Xbox360Credentials> chooseXbox360KeyFile(QWidget *parent, fls
 }
 
 std::optional<fls::ExportGameVersion> xbox360ImportGame(QWidget *parent, fls::Xbox360Envelope envelope) {
-    if (envelope == fls::Xbox360Envelope::Motorsport2) {
-        throw std::runtime_error("FM2 is not supported");
-    }
     if (envelope == fls::Xbox360Envelope::Sha1) {
         return fls::ExportGameVersion::Motorsport3;
     }
@@ -616,7 +613,7 @@ bool MainWindow::loadImportedProject(const std::function<fls::Project()> &load,
         const CarRegistry &registry = sharedCarRegistry();
         const auto gameFolders = loadBehaviorSettings().gameFolders;
         CarRegistry::ModelSource alternativeSource;
-        const bool missingModel = project.isLivery
+        const bool missingModel = project.isLivery && project.carId > 0
             && registry.findModel(project.carId, gameFolders, project.liveryPaint.game).path.isEmpty();
 
         if (missingModel) {
@@ -846,8 +843,9 @@ bool MainWindow::importAny(const QString &path, QString *error) {
             QByteArray bytes = readImportFile(info.absoluteFilePath());
             QString gameCode;
             const bool livery = xbox360Kind == fls::Xbox360FileKind::Livery;
-            const char *magic = livery ? fls::detail::kXbox360LiveryMagic : fls::detail::kXbox360GroupMagic;
-            if (!bytes.startsWith(magic)) {
+            const bool plain = livery ? fls::detail::isXbox360LiveryPayload(bytes)
+                || fls::detail::isMotorsport2LiveryContainer(bytes) : bytes.startsWith(fls::detail::kXbox360GroupMagic);
+            if (!plain) {
                 const auto game = xbox360ImportGame(this, fls::xbox360Envelope(bytes));
                 if (!game) {
                     return false;
@@ -866,7 +864,7 @@ bool MainWindow::importAny(const QString &path, QString *error) {
                     ? fls::importCLiveryData(bytes, {}, info.completeBaseName())
                     : fls::importCGroupNestedData(bytes, {}, info.completeBaseName());
                 project.sourceFolder = info.absolutePath();
-                if (livery) {
+                if (livery && !gameCode.isEmpty()) {
                     project.liveryPaint.game = gameCode;
                 }
 
@@ -1250,7 +1248,8 @@ void MainWindow::exportDialog() {
     }
     const QString game = fls::exportGameCode(selection->gameVersion);
     const CarRegistry &registry = sharedCarRegistry();
-    if (state_->project_.isLivery && !registry.isSupported(state_->project_.carId, game)) {
+    if (state_->project_.isLivery && selection->gameVersion != fls::ExportGameVersion::Motorsport2
+        && !registry.isSupported(state_->project_.carId, game)) {
         const QString car = registry.displayName(state_->project_.carId);
         QMessageBox::critical(this, QStringLiteral("Export failed"), car.isEmpty()
             ? QStringLiteral("Choose a target car before exporting this livery to %1.").arg(game)
@@ -1259,10 +1258,11 @@ void MainWindow::exportDialog() {
     }
     if (fls::isXbox360ExportGame(selection->gameVersion)) {
         const bool livery = state_->project_.isLivery;
-        const QString extension = livery ? QStringLiteral(".liv") : QStringLiteral(".lvg");
+        const auto kind = livery ? fls::Xbox360FileKind::Livery : fls::Xbox360FileKind::Group;
+        const QString extension = fls::xbox360ExportExtension(selection->gameVersion, kind);
         const QString proposed = safeGroupName(state_->project_.name) + extension;
-        const QString filter = livery ? QStringLiteral("Xbox 360 livery (*.liv)")
-                                      : QStringLiteral("Xbox 360 vinyl group (*.lvg)");
+        const QString filter = (livery ? QStringLiteral("Xbox 360 livery (*%1)")
+                                       : QStringLiteral("Xbox 360 vinyl group (*%1)")).arg(extension);
         QFileDialog destination(this, QStringLiteral("Export Xbox 360 Asset"), selection->directory, filter);
         destination.setAcceptMode(QFileDialog::AcceptSave);
         destination.setDefaultSuffix(extension.mid(1));
@@ -1539,8 +1539,13 @@ void MainWindow::applyHeaderMetadata() {
     }
 
     state_->project_.name = meta.name;
-    creatorName_ = meta.creatorName;
-    QSettings().setValue(QStringLiteral("header/creatorName"), creatorName_);
+    if (meta.creatorName != current.creatorName) {
+        const QString sourceCreator = fls::detail::motorsport2CreatorName(state_->project_.liverySource);
+        if (sourceCreator.isEmpty() || meta.creatorName != sourceCreator) {
+            creatorName_ = meta.creatorName;
+            QSettings().setValue(QStringLiteral("header/creatorName"), creatorName_);
+        }
+    }
 
     state_->project_.sourceHeader.clear();
     state_->project_.headerMetadata = meta;

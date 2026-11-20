@@ -88,6 +88,8 @@ public:
                               static_cast<int>(ExportGameVersion::Motorsport7));
         gameVersion_->addItem(QStringLiteral("Forza Horizon 4"),
                               static_cast<int>(ExportGameVersion::Horizon4));
+        gameVersion_->addItem(QStringLiteral("Forza Motorsport 2"),
+                              static_cast<int>(ExportGameVersion::Motorsport2));
         gameVersion_->addItem(QStringLiteral("Forza Motorsport 3"),
                               static_cast<int>(ExportGameVersion::Motorsport3));
         gameVersion_->addItem(QStringLiteral("Forza Motorsport 4"),
@@ -227,7 +229,7 @@ private:
         model->item(wgsIndex)->setEnabled(supported);
         model->item(wgsIndex)->setToolTip(QStringLiteral("FH5 existing-slot replacement"));
         model->item(plainIndex)->setEnabled(xbox360);
-        model->item(signedIndex)->setEnabled(xbox360);
+        model->item(signedIndex)->setEnabled(xbox360 && game != ExportGameVersion::Motorsport2);
         if (!model->item(containerFormat_->currentIndex())->isEnabled()) {
             const QSignalBlocker blocker(containerFormat_);
             containerFormat_->setCurrentIndex(xbox360 ? plainIndex : folderIndex);
@@ -281,7 +283,8 @@ private:
 
     void updateDestination() {
         const auto game = static_cast<ExportGameVersion>(gameVersion_->currentData().toInt());
-        const bool unsupported = livery_ && !sharedCarRegistry().isSupported(carId_, fls::exportGameCode(game));
+        const bool unsupported = livery_ && game != ExportGameVersion::Motorsport2
+            && !sharedCarRegistry().isSupported(carId_, fls::exportGameCode(game));
 
         wgsTarget_.reset();
         setUiState(hint_, unsupported ? QStringLiteral("error") : QString());

@@ -105,9 +105,9 @@ Encoder/decoder should be pretty robust now, PGS, WGS and LIV can be read withou
 | Horizon 1   | Import         | Import        |
 | Motosport 4 | Import         | Import        |
 | Motosport 3 | Import         | Import        |
-| Motosport 2 |                |               |
+| Motosport 2 | Import         | Import        |
 
-*360 titles have export support but is not stable
+*360 titles have export support but it is not stable
 
 ## Documentation
 

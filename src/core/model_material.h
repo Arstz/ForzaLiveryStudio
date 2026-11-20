@@ -67,6 +67,42 @@ struct MaterialOpacity {
     float maskMax = 1.0f;
 };
 
+enum class LegacyMetalBlendMode : int {
+    Constant = 1,
+    SingleMask = 2,
+    SeparateMasks = 3,
+};
+
+struct LegacyMetalBlend {
+    MaterialUvMapping maskUv;
+    std::array<float, 3> unmaskedReflectance{};
+    std::array<float, 3> maskedReflectance{};
+    std::array<float, 3> outerReflectance{};
+    LegacyMetalBlendMode mode = LegacyMetalBlendMode::Constant;
+    float outerGloss = 1.0f;
+    bool opacityFromNormalAlpha = false;
+};
+
+struct LegacyMaterialSurface {
+    std::optional<LegacyMetalBlend> metalBlend;
+    MaterialUvMapping glossUv;
+    std::array<float, 2> glossRange = {0.0f, 1.0f};
+    quint32 diffuseMap = 0;
+    quint32 normalMap = 0;
+    quint32 opacityMap = 0;
+    quint32 glossMap = 0;
+    quint32 metalBlendMaskMap = 0;
+    quint32 emissionMap = 0;
+    quint32 emissionMaskMap = 0;
+    bool diffuseAlpha = false;
+};
+
+struct MaterialWeave {
+    std::array<float, 3> tintA{};
+    std::array<float, 3> tintB{};
+    bool maskedLivery = false;
+};
+
 struct ShaderTextureBinding {
     QUuid parameterId;
     quint32 nameHash = 0;
@@ -84,12 +120,18 @@ struct ModelMaterial {
     QStringList linkedPaths;
     std::vector<ModelMaterialParameter> parameters;
     std::vector<ShaderTextureBinding> shaderTextures;
+    std::optional<bool> legacyShaderBindings;
     MaterialOpacity glassOpacity;
+    std::optional<LegacyMaterialSurface> legacySurface;
+    std::optional<MaterialWeave> weave;
+    std::optional<MaterialUvMapping> diffuseUv;
     std::optional<MaterialUvMapping> normalUv;
+    std::optional<MaterialUvMapping> surfaceUv;
     std::optional<MaterialUvMapping> alphaUv;
     std::optional<MaterialUvMapping> emissiveUv;
     std::optional<MaterialUvMapping> emissiveMaskUv;
     std::optional<MaterialUvMapping> glassTintUv;
+    std::optional<bool> useDiffuseTexture;
     std::optional<bool> emissionEnabled;
     std::optional<bool> emissionMaskEnabled;
     bool glass = false;
@@ -112,6 +154,7 @@ struct ModelMaterial {
     float metallic = 0.0f;
     float flakeAmount = 0.0f;
     float normalIntensity = 1.0f;
+    float roughnessShift = 0.0f;
     float glassTintMultiplier = 1.0f;
     int materialUvChannel = -1;
     QString patternTexture;      // BaseColorAlpha colour/pattern swatch
@@ -122,9 +165,12 @@ struct ModelMaterial {
     std::shared_ptr<const ModelMaterialTexture> normalTexture;
     std::shared_ptr<const ModelMaterialTexture> tireHeightTexture;
     std::shared_ptr<const ModelMaterialTexture> surfaceTexture;
+    std::shared_ptr<const ModelMaterialTexture> glossTexture;
+    std::shared_ptr<const ModelMaterialTexture> metalBlendMaskTexture;
     std::shared_ptr<const ModelMaterialTexture> emissiveTexture;
     std::shared_ptr<const ModelMaterialTexture> emissiveMaskTexture;
     std::shared_ptr<const ModelMaterialTexture> glassTintTexture;
+    std::shared_ptr<const ModelMaterialTexture> weaveMaskTexture;
 };
 
 std::shared_ptr<ModelMaterial> decodeModelMaterial(const BundleBlobRecord &blob);
