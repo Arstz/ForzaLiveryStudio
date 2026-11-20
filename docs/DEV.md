@@ -144,6 +144,14 @@ and decode `.swatchbin` textures and livery masks from game archives. Model
 preparation, material resolution, and optional texture decoding run outside the
 UI thread. Resource caches and shared preparation avoid repeated decoding.
 
+Model imports index the car package once and resolve references by path without
+regard to case. If directories have moved, the longest unique matching path
+suffix identifies the resource. Ambiguous references remain unresolved.
+Material parameters resolve from shader defaults through the material resource,
+model instance and scene override. The preview maps material textures through
+their authored coordinate channels and transforms. The headless car-load
+profile reports resource resolution and livery mask coverage.
+
 The scene renderer rasterizes livery sections into paint regions. The car shader
 maps model UVs through the livery mask atlas into those regions, with planar
 projection providing fallback coverage. Part selection drives preview geometry,

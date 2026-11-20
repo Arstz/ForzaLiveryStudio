@@ -521,9 +521,9 @@ int main(int argc, char *argv[]) {
                 continue;
             }
             seen.insert(key);
-            std::printf("material '%s' resource='%s' fromLibrary=%d params=%lld uTiling=%.4f vTiling=%.4f gloss=%.3f\n",
+            std::printf("material '%s' resource='%s' resolved=%d params=%lld uTiling=%.4f vTiling=%.4f gloss=%.3f\n",
                         qPrintable(mesh.materialName), qPrintable(mesh.material->resourcePath),
-                        mesh.material->resolvedFromLibrary ? 1 : 0,
+                        mesh.material->resolvedFromResource ? 1 : 0,
                         static_cast<long long>(mesh.material->parameters.size()),
                         mesh.material->uTiling, mesh.material->vTiling, mesh.material->gloss);
             std::printf("  patternTex='%s'\n  detailNormalTex='%s'\n  roughMetalAoTex='%s'\n",

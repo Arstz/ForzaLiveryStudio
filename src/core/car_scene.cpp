@@ -1,11 +1,12 @@
 #include "car_scene.h"
 
 #include "binary_io.h"
+#include "game_paths.h"
 #include "material_hashes.h"
 #include "model_bundle.h"
 #include "model_material.h"
 
-#include <QDir>
+#include <QCryptographicHash>
 #include <QFile>
 #include <QFileInfo>
 #include <QRegularExpression>
@@ -84,6 +85,16 @@ struct Cursor {
     float f32() { require(4); const float v = readLeFloat(bytes, pos); pos += 4; return v; }
     void skip(int n) { require(n); pos += n; }
 
+    QByteArray materialData(quint32 length) {
+        if (length > static_cast<quint32>(bytes.size() - pos)) {
+            throw std::runtime_error("carbin: truncated material override");
+        }
+        const QByteArray material = bytes.mid(pos, length);
+        pos += static_cast<int>(length);
+
+        return material;
+    }
+
     QString str() {
         const qint32 n = i32();
         if (n < 0 || n > (1 << 20)) {
@@ -122,6 +133,10 @@ struct PartInstance {
         QString name;
         quint64 hash = 0;
     };
+    struct MaterialOverride {
+        QString name;
+        QByteArray data;
+    };
 
     QString path;
     ModelMat4 transform;
@@ -132,11 +147,11 @@ struct PartInstance {
     bool stock = true;
     std::vector<int> optionIds;
     std::vector<MaterialBinding> materialBindings;
+    std::vector<MaterialOverride> materialOverrides;
 };
 
 struct SceneParts {
-    std::vector<PartInstance> stock;
-    std::vector<PartInstance> projection;
+    std::vector<PartInstance> instances;
     std::vector<CarPartOption> options;
 };
 
@@ -169,9 +184,8 @@ PartInstance readRenderModel(Cursor &c, quint16 sceneVersion) {
     if (version >= 2) {
         const quint32 overrideCount = c.u32();
         for (quint32 i = 0; i < overrideCount; ++i) {
-            c.str();
-            const quint32 len = c.u32();
-            c.skip(static_cast<int>(len));
+            const QString name = c.str();
+            part.materialOverrides.push_back({name, c.materialData(c.u32())});
         }
     }
     if (version >= 3) {
@@ -275,8 +289,7 @@ void readPart(Cursor &c, quint16 sceneVersion, SceneParts &out) {
     for (quint32 i = 0; i < modelCount; ++i) {
         PartInstance part = readRenderModel(c, sceneVersion);
         part.partType = partType;
-        out.stock.push_back(part);
-        out.projection.push_back(std::move(part));
+        out.instances.push_back(std::move(part));
     }
     if (version >= 2) {
         c.skip(32); // AABB (2x Vector4)
@@ -345,10 +358,7 @@ SceneParts readScene(const QByteArray &bytes, QString &mediaName, QString &skele
                     inst.stock = isStock;
                     inst.optionIds.push_back(id);
                     parts.options[optionIndexes.back()].modelPaths.push_back(inst.path);
-                    parts.projection.push_back(inst);
-                    if (isStock) {
-                        parts.stock.push_back(std::move(inst));
-                    }
+                    parts.instances.push_back(std::move(inst));
                 }
             }
             if (upgradeVersion >= 2) {
@@ -380,10 +390,7 @@ SceneParts readScene(const QByteArray &bytes, QString &mediaName, QString &skele
                         option.modelPaths.push_back(inst.path);
                     }
                 }
-                parts.projection.push_back(inst);
-                if (stock) {
-                    parts.stock.push_back(std::move(inst));
-                }
+                parts.instances.push_back(std::move(inst));
             }
         }
     }
@@ -392,9 +399,12 @@ SceneParts readScene(const QByteArray &bytes, QString &mediaName, QString &skele
 }
 
 QString partKey(const PartInstance &part) {
-    QString key = part.path.toLower() + QLatin1Char('|') + part.boneName.toLower()
+    QString path = part.path.toLower();
+    path.replace(QLatin1Char('\\'), QLatin1Char('/'));
+    QString key = path + QLatin1Char('|') + part.boneName.toLower()
         + QLatin1Char('|') + QString::number(part.boneId)
-        + QLatin1Char('|') + QString::number(part.partType);
+        + QLatin1Char('|') + QString::number(part.partType)
+        + QLatin1Char('|') + QString::number(part.drawGroups);
     for (float value : part.transform.m) {
         key += QLatin1Char('|') + QString::number(value, 'g', 9);
     }
@@ -402,7 +412,66 @@ QString partKey(const PartInstance &part) {
         key += QLatin1Char('|') + binding.name.toLower()
             + QLatin1Char('=') + QString::number(binding.hash, 16);
     }
+    for (const PartInstance::MaterialOverride &override : part.materialOverrides) {
+        key += QLatin1Char('|') + override.name.toLower() + QLatin1Char('=')
+            + QString::fromLatin1(QCryptographicHash::hash(override.data, QCryptographicHash::Sha256).toHex());
+    }
     return key;
+}
+
+std::vector<PartInstance> mergePartInstances(std::vector<PartInstance> instances) {
+    QHash<QString, size_t> indexes;
+    std::vector<PartInstance> merged;
+    merged.reserve(instances.size());
+    for (PartInstance &part : instances) {
+        const QString key = partKey(part);
+        const auto existing = indexes.constFind(key);
+        if (existing == indexes.cend()) {
+            indexes.insert(key, merged.size());
+            merged.push_back(std::move(part));
+            continue;
+        }
+        PartInstance &target = merged[*existing];
+        target.stock |= part.stock;
+        if (part.optionIds.empty()) {
+            target.optionIds.clear();
+        } else if (!target.optionIds.empty()) {
+            for (int id : part.optionIds) {
+                if (std::find(target.optionIds.cbegin(), target.optionIds.cend(), id) == target.optionIds.cend()) {
+                    target.optionIds.push_back(id);
+                }
+            }
+        }
+    }
+
+    return merged;
+}
+
+QHash<QString, std::shared_ptr<ModelMaterial>> decodePartMaterialOverrides(const PartInstance &part) {
+    QHash<QString, std::shared_ptr<ModelMaterial>> overrides;
+    for (const auto &entry : part.materialOverrides) {
+        try {
+            if (auto material = decodeMaterialBundle(entry.data)) {
+                material->name = entry.name;
+                material->overriddenByScene = true;
+                overrides.insert(entry.name.toLower(), std::move(material));
+            }
+        } catch (const std::exception &) {
+        }
+    }
+
+    return overrides;
+}
+
+void applyPartMaterialOverride(CarMesh &mesh, const QHash<QString, std::shared_ptr<ModelMaterial>> &overrides) {
+    const auto material = overrides.value(mesh.materialName.toLower());
+    if (!material) return;
+    if (mesh.material && (material->resourcePath.isEmpty()
+        || mesh.material->resourcePath.compare(material->resourcePath, Qt::CaseInsensitive) == 0)) {
+        mesh.material = mergeModelMaterialDefaults(*mesh.material, *material);
+    } else {
+        mesh.material = material;
+    }
 }
 
 QString materialToken(QString value) {
@@ -600,8 +669,9 @@ quint64 wheelPaintHash(bool front, const CarMesh &mesh) {
     return 0;
 }
 
-std::vector<CarLocator> loadCarLocators(const QString &carbinDir) {
-    QFile file(QDir(carbinDir).filePath(QStringLiteral("Locators.xml")));
+std::vector<CarLocator> loadCarLocators(const QString &path) {
+    if (path.isEmpty()) return {};
+    QFile file(path);
     if (!file.open(QIODevice::ReadOnly)) {
         return {};
     }
@@ -652,16 +722,6 @@ std::vector<CarLocator> loadCarLocators(const QString &carbinDir) {
     return locators;
 }
 
-QString resolvePath(const QString &gamePath, const QString &carbinDir, const QString &mediaName) {
-    QString normalized = gamePath;
-    normalized.replace('\\', '/');
-    const QString needle = QStringLiteral("/") + mediaName.toLower() + QStringLiteral("/");
-    const int idx = normalized.toLower().indexOf(needle);
-    const QString tail = idx >= 0 ? normalized.mid(idx + needle.size())
-                                  : QFileInfo(normalized).fileName();
-    return QDir(carbinDir).filePath(tail);
-}
-
 // A part whose transform carries no translation is placed entirely by the bone it names, which
 // belongs to the car skeleton rather than the part's own bundle.
 bool placedByBoneAlone(const PartInstance &part) {
@@ -673,9 +733,8 @@ bool placedByBoneAlone(const PartInstance &part) {
         && std::abs(t.m[14]) < 0.000001f;
 }
 
-std::vector<SkeletonBone> loadCarSkeleton(
-    const QString &skeletonPath, const QString &carbinDir, const QString &mediaName) {
-    QFile file(resolvePath(skeletonPath, carbinDir, mediaName));
+std::vector<SkeletonBone> loadCarSkeleton(const QString &skeletonPath) {
+    QFile file(skeletonPath);
     if (!file.open(QIODevice::ReadOnly)) {
         return {};
     }
@@ -709,6 +768,12 @@ const SkeletonBone *findBone(const std::vector<SkeletonBone> &bones, const QStri
 } // namespace
 
 CarModel loadCarBin(const QString &path, QString *error, const WheelSizing &wheels) {
+    const CarAssetIndex assets(QFileInfo(path).absolutePath());
+    return loadCarBin(path, assets, error, wheels);
+}
+
+CarModel loadCarBin(const QString &path, const CarAssetIndex &assets, QString *error,
+                    const WheelSizing &wheels) {
     QFile file(path);
     if (!file.open(QIODevice::ReadOnly)) {
         if (error) {
@@ -733,20 +798,16 @@ CarModel loadCarBin(const QString &path, QString *error, const WheelSizing &whee
 
     const QString carbinDir = QFileInfo(path).absolutePath();
     const std::vector<SkeletonBone> carSkeleton =
-        loadCarSkeleton(skeletonPath, carbinDir, mediaName);
+        loadCarSkeleton(assets.resolve(skeletonPath, carbinDir));
+    const std::vector<PartInstance> instances = mergePartInstances(std::move(parts.instances));
 
     CarModel car;
     car.sourcePath = path;
     car.mediaName = mediaName;
     car.partOptions = parts.options;
-    car.locators = loadCarLocators(carbinDir);
+    car.locators = loadCarLocators(assets.resolve(QStringLiteral("Locators.xml"), carbinDir));
     ModelBounds bounds;
     int loaded = 0;
-    QSet<QString> stockParts;
-    for (const PartInstance &part : parts.stock) {
-        stockParts.insert(partKey(part));
-    }
-    QSet<QString> loadedParts;
     int modelInstanceId = 0;
 
     // Every part of a corner moves with its wheel, so the whole assembly stays together.
@@ -757,7 +818,7 @@ CarModel loadCarBin(const QString &path, QString *error, const WheelSizing &whee
         bool known = false;
     };
     std::array<CornerPlacement, kCornerCount> cornerPlacements;
-    for (const PartInstance &part : parts.projection) {
+    for (const PartInstance &part : instances) {
         const int corner = cornerFromBoneName(part.boneName);
         if (corner < 0 || cornerPlacements[corner].known || !isWheelModelPath(part.path)) {
             continue;
@@ -779,13 +840,13 @@ CarModel loadCarBin(const QString &path, QString *error, const WheelSizing &whee
     std::array<float, kCornerCount> hubShiftX{};
     std::array<float, kCornerCount> hubFaceX{};
     std::array<bool, kCornerCount> hubFaceKnown{};
-    for (const PartInstance &part : parts.projection) {
+    for (const PartInstance &part : instances) {
         const int corner = cornerFromBoneName(part.boneName);
         if (corner < 0 || hubFaceKnown[corner] || !isBrakeRotorPath(part.path)
             || !cornerPlacements[corner].known) {
             continue;
         }
-        QFile rotorFile(resolvePath(part.path, carbinDir, mediaName));
+        QFile rotorFile(assets.resolve(part.path, carbinDir));
         if (!rotorFile.open(QIODevice::ReadOnly)) {
             continue;
         }
@@ -806,23 +867,25 @@ CarModel loadCarBin(const QString &path, QString *error, const WheelSizing &whee
         }
     }
 
-    for (const PartInstance &part : parts.projection) {
+    QSet<QString> unresolvedPaths;
+    for (const PartInstance &part : instances) {
         const int currentInstanceId = modelInstanceId++;
-        const QString key = partKey(part);
-        if (loadedParts.contains(key)) {
+        const bool stock = part.stock;
+        const QString modelPath = assets.resolve(part.path, carbinDir);
+        if (modelPath.isEmpty()) {
+            if (!part.path.isEmpty()) unresolvedPaths.insert(part.path);
             continue;
         }
-        loadedParts.insert(key);
-        const bool stock = stockParts.contains(key);
-        const QString modelPath = resolvePath(part.path, carbinDir, mediaName);
         QFile modelFile(modelPath);
         if (!modelFile.open(QIODevice::ReadOnly)) {
+            unresolvedPaths.insert(part.path);
             continue;
         }
         ModelBundle bundle;
         try {
             bundle = parseModelBundle(modelFile.readAll());
         } catch (const std::exception &) {
+            unresolvedPaths.insert(part.path);
             continue;
         }
         CarModel model = decodeModel(bundle);
@@ -878,6 +941,8 @@ CarModel loadCarBin(const QString &path, QString *error, const WheelSizing &whee
             car.wheelMounts.push_back({instance, currentInstanceId, isFrontCorner(corner), isLeftCorner(corner)});
         }
 
+        const auto materialOverrides = decodePartMaterialOverrides(part);
+        QHash<qint16, std::shared_ptr<ModelMaterial>> overriddenMaterials;
         const auto prepareMesh = [&](CarMesh &mesh) {
             if (isWheelModelPath(part.path) && isWheelStandInSlot(mesh.materialName)) {
                 return false;
@@ -890,6 +955,15 @@ CarModel loadCarBin(const QString &path, QString *error, const WheelSizing &whee
             mesh.stockPart = stock;
             mesh.partOptionIds = part.optionIds;
             mesh.paintMaterialHash = materialBindingHash(part, mesh);
+            if (!materialOverrides.isEmpty()) {
+                const auto cached = overriddenMaterials.constFind(mesh.materialId);
+                if (cached != overriddenMaterials.cend()) {
+                    mesh.material = *cached;
+                } else {
+                    applyPartMaterialOverride(mesh, materialOverrides);
+                    overriddenMaterials.insert(mesh.materialId, mesh.material);
+                }
+            }
             if (isWheelModelPath(part.path)) {
                 const bool front = corner >= 0 ? isFrontCorner(corner) : frontWheel(part, mesh);
                 bakeWheelTransform(mesh, front ? wheels.front : wheels.rear);
@@ -955,6 +1029,8 @@ CarModel loadCarBin(const QString &path, QString *error, const WheelSizing &whee
     }
     car.boundsMin = bounds.minimum;
     car.boundsMax = bounds.maximum;
+    car.unresolvedModelPaths = unresolvedPaths.values();
+    car.unresolvedModelPaths.sort(Qt::CaseInsensitive);
     return car;
 }
 

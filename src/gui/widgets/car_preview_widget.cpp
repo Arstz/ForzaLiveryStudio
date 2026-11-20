@@ -4,6 +4,7 @@
 #include "car_part_selection.h"
 #include "car_preview_wheels.h"
 #include "editor_state.h"
+#include "game_paths.h"
 #include "gui_assets.h"
 #include "material_hashes.h"
 #include "matrix_math.h"
@@ -271,14 +272,6 @@ std::optional<ProjectedLiverySection> buildProjectedLiverySection(const fls::Pro
     return projected;
 }
 
-QString findCarbin(const QString &root) {
-    QDirIterator it(root, QStringList{QStringLiteral("*.carbin")}, QDir::Files, QDirIterator::Subdirectories);
-    while (it.hasNext()) {
-        return it.next();
-    }
-    return {};
-}
-
 QString findSharedCarAsset(const QString &sourcePath, const QString &relativePath) {
     QDir dir = QFileInfo(sourcePath).absoluteDir();
     for (int depth = 0; depth < 6; ++depth) {
@@ -291,6 +284,40 @@ QString findSharedCarAsset(const QString &sourcePath, const QString &relativePat
         }
     }
     return {};
+}
+
+QString findCarResourceArchive(const fls::CarAssetIndex &assets, const QString &sourcePath,
+                               const QString &relativePath) {
+    const QString packagedPath = assets.resolve(relativePath);
+
+    return packagedPath.isEmpty() ? findSharedCarAsset(sourcePath, relativePath) : packagedPath;
+}
+
+QString findMediaResource(const QString &sourcePath, const QString &relativePath) {
+    QDir directory = QFileInfo(sourcePath).absoluteDir();
+    do {
+        if (directory.dirName().compare(QStringLiteral("media"), Qt::CaseInsensitive) == 0
+            || directory.exists(QStringLiteral("Cars"))
+            || directory.exists(QStringLiteral("pcfamily/Cars"))) {
+            const QString path = directory.filePath(relativePath);
+            return QFileInfo(path).isFile() ? path : QString();
+        }
+    } while (directory.cdUp());
+
+    return {};
+}
+
+QString gameResourceSource(const QString &sourcePath, const QString &gameFolder) {
+    const QStringList directories = fls::gameCarsDirs(gameFolder);
+    const QString absoluteSource = QFileInfo(sourcePath).absoluteFilePath();
+    if (directories.isEmpty() || std::any_of(directories.cbegin(), directories.cend(),
+        [&](const QString &directory) {
+            return absoluteSource.startsWith(QDir(directory).absolutePath() + QLatin1Char('/'), Qt::CaseInsensitive);
+        })) {
+        return sourcePath;
+    }
+
+    return QDir(directories.front()).filePath(QFileInfo(sourcePath).fileName());
 }
 
 fls::WheelSizing wheelSizingForModelCode(const QString &modelCode, const QString &game) {
@@ -447,6 +474,7 @@ std::array<quint8, 4> opaqueBgra(const QColor &color) {
 
 QString materialArchiveEntry(QString resourcePath) {
     resourcePath.replace(QLatin1Char('\\'), QLatin1Char('/'));
+    resourcePath.prepend(QLatin1Char('/'));
     const int materials = resourcePath.indexOf(
         QStringLiteral("/materials/"), 0, Qt::CaseInsensitive);
     return materials < 0 ? QString() : resourcePath.mid(materials + 11);
@@ -562,13 +590,6 @@ NativeTextureCache &nativeTextureCache() {
     return cache;
 }
 
-bool isLibraryMaterialPath(QString path) {
-    path.replace(QLatin1Char('\\'), QLatin1Char('/'));
-    return path.contains(QStringLiteral("/exterior/"), Qt::CaseInsensitive)
-        || path.contains(QStringLiteral("/wheels/"), Qt::CaseInsensitive)
-        || path.contains(QStringLiteral("/tires/"), Qt::CaseInsensitive);
-}
-
 enum class NativeTextureSlot {
     Diffuse,
     Alpha,
@@ -578,6 +599,8 @@ enum class NativeTextureSlot {
     Surface,
     TireSurface,
     Emissive,
+    EmissiveMask,
+    GlassTint,
     Unknown,
 };
 
@@ -591,35 +614,45 @@ NativeTextureSlot tireTextureSlot(quint32 hash) {
     return NativeTextureSlot::Unknown;
 }
 
-NativeTextureSlot nativeTextureSlot(const fls::ModelMaterialParameter &parameter) {
+NativeTextureSlot authoredTextureSlot(quint32 hash) {
+    using namespace fls::material_hashes;
+    using namespace fls::material_hashes::parameter;
+    if (hash == kEmissiveMaskTexture || hash == kLegacyEmissionMaskTexture) return NativeTextureSlot::EmissiveMask;
+    if (hash == kGlassTintMaskTexture) return NativeTextureSlot::GlassTint;
+    if (hash == kNormalTexture || hash == kGlassBackNormal || hash == kLegacyGlassNormal
+        || hash == kFirstGenerationGlassNormal || hash == kSecondUvGlassNormal) {
+        return NativeTextureSlot::Normal;
+    }
+    if (hash == kSurfaceTexture) return NativeTextureSlot::Surface;
+    if (hash == kColorTexture) return NativeTextureSlot::Diffuse;
+    if (hash == kLegacyEmissionTexture || contains(kEmissiveTexture, hash)) return NativeTextureSlot::Emissive;
+    if (contains(kAlphaTexture, hash)) return NativeTextureSlot::Alpha;
+
+    return NativeTextureSlot::Unknown;
+}
+
+NativeTextureSlot fallbackTextureSlot(const fls::ModelMaterialParameter &parameter) {
     QString path = parameter.texturePath.toLower();
     path.replace(QLatin1Char('\\'), QLatin1Char('/'));
-    if (parameter.nameHash == fls::material_hashes::parameter::kNormalTexture
-        || path.contains(QStringLiteral("normal"))
+    if (path.contains(QStringLiteral("normal"))
         || path.contains(QStringLiteral("nrml"))) {
         return NativeTextureSlot::Normal;
     }
-    if (parameter.nameHash == fls::material_hashes::parameter::kSurfaceTexture
-        || path.contains(QStringLiteral("rmao"))
+    if (path.contains(QStringLiteral("rmao"))
         || path.contains(QStringLiteral("roughmetal"))
         || path.contains(QStringLiteral("metalrough"))) {
         return NativeTextureSlot::Surface;
     }
-    if (fls::material_hashes::contains(
-            fls::material_hashes::parameter::kEmissiveTexture, parameter.nameHash)
-        || path.contains(QStringLiteral("emissive"))
+    if (path.contains(QStringLiteral("emissive"))
         || path.contains(QStringLiteral("emission"))) {
         return NativeTextureSlot::Emissive;
     }
-    if (parameter.nameHash == fls::material_hashes::parameter::kColorTexture
-        || path.contains(QStringLiteral("basecolor"))
+    if (path.contains(QStringLiteral("basecolor"))
         || path.contains(QStringLiteral("diffuse"))
         || path.contains(QStringLiteral("albedo"))) {
         return NativeTextureSlot::Diffuse;
     }
-    if (fls::material_hashes::contains(
-            fls::material_hashes::parameter::kAlphaTexture, parameter.nameHash)
-        || path.contains(QStringLiteral("opacity"))
+    if (path.contains(QStringLiteral("opacity"))
         || path.contains(QStringLiteral("opac"))
         || path.contains(QStringLiteral("alpha"))) {
         return NativeTextureSlot::Alpha;
@@ -633,27 +666,25 @@ QString normalizedTexturePath(QString path) {
 }
 
 QString sharedTextureEntry(const QString &path) {
-    const QString normalized = normalizedTexturePath(path);
+    const QString normalized = QLatin1Char('/') + normalizedTexturePath(path);
     const QString marker = QStringLiteral("/_library/textures/");
     const int offset = normalized.indexOf(marker);
     return offset < 0 ? QString() : normalized.mid(offset + marker.size());
 }
 
-QString localTexturePath(const QString &path, const QString &carRoot) {
-    QString normalized = path;
-    normalized.replace(QLatin1Char('\\'), QLatin1Char('/'));
-    const int cars = normalized.indexOf(QStringLiteral("/cars/"), 0, Qt::CaseInsensitive);
-    if (cars >= 0) {
-        const QString carRelative = normalized.mid(cars + 6);
-        const int separator = carRelative.indexOf(QLatin1Char('/'));
-        if (separator >= 0) {
-            return QDir(carRoot).filePath(carRelative.mid(separator + 1));
-        }
+QByteArray readLocalAsset(const QString &path) {
+    if (path.isEmpty()) return {};
+    QFile file(path);
+
+    return file.open(QIODevice::ReadOnly) ? file.readAll() : QByteArray{};
+}
+
+std::shared_ptr<fls::ModelMaterial> loadLocalMaterial(const QString &path) {
+    try {
+        return fls::decodeMaterialBundle(readLocalAsset(path));
+    } catch (const std::exception &) {
+        return {};
     }
-    if (normalized.startsWith(QStringLiteral("textures/"), Qt::CaseInsensitive)) {
-        return QDir(carRoot).filePath(normalized);
-    }
-    return {};
 }
 
 void assignNativeTexture(fls::ModelMaterial &material,
@@ -681,6 +712,12 @@ void assignNativeTexture(fls::ModelMaterial &material,
         break;
     case NativeTextureSlot::Emissive:
         material.emissiveTexture = texture;
+        break;
+    case NativeTextureSlot::EmissiveMask:
+        material.emissiveMaskTexture = texture;
+        break;
+    case NativeTextureSlot::GlassTint:
+        material.glassTintTexture = texture;
         break;
     case NativeTextureSlot::Unknown:
         break;
@@ -745,48 +782,164 @@ QMutex &materialCacheMutex() {
     return mutex;
 }
 
-void resolveExteriorMaterials(
-    fls::CarModel &model, const QString &sourcePath, const QString &carRoot,
-    bool includeTextures) {
-    QMutexLocker lock(&materialCacheMutex());
-    const QString archivePath = findSharedCarAsset(
-        sourcePath, QStringLiteral("_library/Materials.zip"));
-    if (archivePath.isEmpty()) {
-        return;
+QString materialShaderPath(const fls::ModelMaterial &material) {
+    for (auto it = material.linkedPaths.crbegin(); it != material.linkedPaths.crend(); ++it) {
+        if (it->endsWith(QStringLiteral(".shaderbin"), Qt::CaseInsensitive)) {
+            return normalizedTexturePath(*it);
+        }
     }
-    const QString materialArchiveKey = assetFileIdentity(archivePath);
+
+    return {};
+}
+
+QHash<QString, std::shared_ptr<fls::ModelMaterial>> loadShaderDefaults(
+    const QSet<QString> &paths, const fls::CarAssetIndex &assets, const QString &sourcePath) {
+    struct ArchiveEntry {
+        QString archiveKey;
+        QString entry;
+    };
+    QHash<QString, ArchiveEntry> archiveEntries;
+    QHash<QString, QStringList> requests;
+    QHash<QString, QString> archiveKeys;
+    QHash<QString, std::shared_ptr<fls::ModelMaterial>> shaders;
+    auto &defaults = materialDefaultsCache();
+    const QString mediaArchive = findMediaResource(sourcePath, QStringLiteral("_library/Shaders.zip"));
+    const QString marker = QStringLiteral("/_library/shaders/");
+    for (const QString &path : paths) {
+        const QString localPath = assets.resolve(path);
+        if (auto shader = loadLocalMaterial(localPath)) {
+            shaders.insert(path, std::move(shader));
+            continue;
+        }
+        const qsizetype start = path.indexOf(marker);
+        if (start < 0) continue;
+        QString entry = path.mid(start + marker.size());
+        QString archive = mediaArchive;
+        if (path.contains(QStringLiteral("/cars/_library/shaders/"))) {
+            const qsizetype separator = entry.lastIndexOf(QLatin1Char('/'));
+            if (separator < 0) continue;
+            const QString relativeArchive = QStringLiteral("_library/shaders/")
+                + entry.left(separator) + QStringLiteral(".zip");
+            archive = findCarResourceArchive(assets, sourcePath, relativeArchive);
+            if (!archive.isEmpty()) entry = entry.mid(separator + 1);
+            else archive = mediaArchive;
+        }
+        if (archive.isEmpty()) continue;
+        if (!archiveKeys.contains(archive)) archiveKeys.insert(archive, assetFileIdentity(archive));
+        const QString archiveKey = archiveKeys.value(archive);
+        if (!defaults.contains(archiveKey + QLatin1Char('|') + entry)
+            && !requests[archive].contains(entry)) {
+            requests[archive].push_back(entry);
+        }
+        archiveEntries.insert(path, {archiveKey, entry});
+    }
+    for (auto it = requests.cbegin(); it != requests.cend(); ++it) {
+        if (!it.value().isEmpty()) cacheMaterialDefaults(it.key(), archiveKeys.value(it.key()), it.value());
+    }
+    for (auto it = archiveEntries.cbegin(); it != archiveEntries.cend(); ++it) {
+        if (auto shader = defaults.value(it->archiveKey + QLatin1Char('|') + it->entry)) {
+            shaders.insert(it.key(), std::move(shader));
+        }
+    }
+
+    return shaders;
+}
+
+void resolveModelMaterials(
+    fls::CarModel &model, const QString &sourcePath, const QString &carRoot,
+    const fls::CarAssetIndex &assets, const QString &resourceSource, bool includeTextures) {
+    QMutexLocker lock(&materialCacheMutex());
+    const QString archivePath = findCarResourceArchive(
+        assets, resourceSource, QStringLiteral("_library/Materials.zip"));
+    const QString mediaArchivePath = findMediaResource(resourceSource, QStringLiteral("_library/Materials.zip"));
+    const QString materialArchiveKey = archivePath.isEmpty() ? QString() : assetFileIdentity(archivePath);
+    const QString mediaMaterialKey = mediaArchivePath.isEmpty() ? QString() : assetFileIdentity(mediaArchivePath);
+    const auto usesMediaMaterials = [](const QString &path) {
+        return normalizedTexturePath(path).startsWith(QStringLiteral("game:/media/_library/materials/"));
+    };
     QHash<QString, std::shared_ptr<fls::ModelMaterial>> &defaults = materialDefaultsCache();
+    QHash<const fls::ModelMaterial *, QString> localPaths;
+    QHash<const fls::ModelMaterial *, QString> modelDirectories;
+    QHash<QString, std::shared_ptr<fls::ModelMaterial>> localDefaults;
     QStringList missingMaterialEntries;
+    QStringList missingMediaEntries;
     QSet<QString> requestedMaterials;
-    for (std::vector<fls::CarMesh> *meshes : renderMeshSets(model)) {
+    const auto meshSets = renderMeshSets(model);
+    for (std::vector<fls::CarMesh> *meshes : meshSets) {
         for (fls::CarMesh &mesh : *meshes) {
-            if (!mesh.material || !isLibraryMaterialPath(mesh.sourceModelPath)) {
+            if (!mesh.material || modelDirectories.contains(mesh.material.get())) {
                 continue;
+            }
+            const QString meshPath = assets.resolve(mesh.sourceModelPath, carRoot);
+            const QString origin = meshPath.isEmpty() ? carRoot : QFileInfo(meshPath).absolutePath();
+            modelDirectories.insert(mesh.material.get(), origin);
+            const QString localPath = assets.resolve(mesh.material->resourcePath, origin);
+            if (!localPath.isEmpty()) {
+                localPaths.insert(mesh.material.get(), localPath);
+                if (!localDefaults.contains(localPath)) {
+                    localDefaults.insert(localPath, loadLocalMaterial(localPath));
+                }
+                if (localDefaults.value(localPath)) continue;
             }
             const QString entry = materialArchiveEntry(mesh.material->resourcePath);
-            if (entry.isEmpty()) {
-                continue;
-            }
-            const QString key = materialArchiveKey + QLatin1Char('|') + entry.toLower();
-            if (!defaults.contains(key) && !requestedMaterials.contains(entry.toLower())) {
-                requestedMaterials.insert(entry.toLower());
-                missingMaterialEntries.push_back(entry);
+            const bool media = usesMediaMaterials(mesh.material->resourcePath);
+            const QString &archiveKey = media ? mediaMaterialKey : materialArchiveKey;
+            if (entry.isEmpty() || archiveKey.isEmpty()) continue;
+            const QString key = archiveKey + QLatin1Char('|') + entry.toLower();
+            if (!defaults.contains(key) && !requestedMaterials.contains(key)) {
+                requestedMaterials.insert(key);
+                (media ? missingMediaEntries : missingMaterialEntries).push_back(entry);
             }
         }
     }
-    cacheMaterialDefaults(archivePath, materialArchiveKey, missingMaterialEntries);
-    for (std::vector<fls::CarMesh> *meshes : renderMeshSets(model)) {
+    if (!missingMaterialEntries.isEmpty()) {
+        cacheMaterialDefaults(archivePath, materialArchiveKey, missingMaterialEntries);
+    }
+    if (!missingMediaEntries.isEmpty()) {
+        cacheMaterialDefaults(mediaArchivePath, mediaMaterialKey, missingMediaEntries);
+    }
+    QHash<const fls::ModelMaterial *, std::shared_ptr<fls::ModelMaterial>> templates;
+    QSet<QString> shaderPaths;
+    for (auto it = modelDirectories.cbegin(); it != modelDirectories.cend(); ++it) {
+        const auto *instance = it.key();
+        auto materialDefaults = localDefaults.value(localPaths.value(instance));
+        const QString entry = materialArchiveEntry(instance->resourcePath);
+        const QString &archiveKey = usesMediaMaterials(instance->resourcePath) ? mediaMaterialKey : materialArchiveKey;
+        if (!materialDefaults && !archiveKey.isEmpty() && !entry.isEmpty()) {
+            materialDefaults = defaults.value(archiveKey + QLatin1Char('|') + entry.toLower());
+        }
+        templates.insert(instance, materialDefaults);
+        const QString instanceShader = materialShaderPath(*instance);
+        const QString shaderPath = instanceShader.isEmpty() && materialDefaults
+            ? materialShaderPath(*materialDefaults) : instanceShader;
+        if (!shaderPath.isEmpty()) shaderPaths.insert(shaderPath);
+    }
+    const auto shaderDefaults = loadShaderDefaults(shaderPaths, assets, resourceSource);
+    QHash<const fls::ModelMaterial *, std::shared_ptr<fls::ModelMaterial>> resolved;
+    for (std::vector<fls::CarMesh> *meshes : meshSets) {
         for (fls::CarMesh &mesh : *meshes) {
-            if (!mesh.material || !isLibraryMaterialPath(mesh.sourceModelPath)) {
+            if (!mesh.material) continue;
+            const auto instance = mesh.material;
+            const auto existing = resolved.constFind(instance.get());
+            if (existing != resolved.cend()) {
+                mesh.material = *existing;
                 continue;
             }
-            const QString entry = materialArchiveEntry(mesh.material->resourcePath);
-            const std::shared_ptr<fls::ModelMaterial> materialDefaults =
-                defaults.value(materialArchiveKey + QLatin1Char('|') + entry.toLower());
+            const QString localPath = localPaths.value(instance.get());
+            const auto materialDefaults = templates.value(instance.get());
             if (materialDefaults) {
-                mesh.material = fls::mergeModelMaterialDefaults(*materialDefaults, *mesh.material);
-                mesh.material->resolvedFromLibrary = true;
+                mesh.material = fls::mergeModelMaterialDefaults(*materialDefaults, *instance);
+                mesh.material->resolvedFromResource = true;
             }
+            if (const auto shader = shaderDefaults.value(materialShaderPath(*mesh.material))) {
+                mesh.material = fls::mergeModelMaterialDefaults(*shader, *mesh.material);
+                mesh.material->resolvedFromShader = true;
+            }
+            if (mesh.material != instance) {
+                modelDirectories.insert(mesh.material.get(), modelDirectories.value(instance.get()));
+                if (!localPath.isEmpty()) localPaths.insert(mesh.material.get(), localPath);
+            }
+            resolved.insert(instance.get(), mesh.material);
         }
     }
 
@@ -799,9 +952,13 @@ void resolveExteriorMaterials(
         NativeTextureSlot slot = NativeTextureSlot::Unknown;
         QString path;
         QString sharedEntry;
+        QString sharedArchive;
         QString localPath;
         QString cacheKey;
     };
+    const QString textureArchive = findCarResourceArchive(
+        assets, resourceSource, QStringLiteral("_library/Textures.zip"));
+    const QString mediaTextures = findMediaResource(resourceSource, QStringLiteral("_library/Textures.zip"));
     QVector<PendingTexture> pending;
     const auto appendPending = [&](const std::shared_ptr<fls::ModelMaterial> &material,
                                    NativeTextureSlot slot, const QString &path) {
@@ -809,34 +966,61 @@ void resolveExteriorMaterials(
         item.material = material;
         item.slot = slot;
         item.path = path;
-        item.sharedEntry = sharedTextureEntry(item.path);
-        if (item.sharedEntry.isEmpty()) {
-            item.localPath = localTexturePath(item.path, carRoot);
+        const QString materialPath = localPaths.value(material.get());
+        if (!materialPath.isEmpty()) {
+            item.localPath = assets.resolve(path, QFileInfo(materialPath).absolutePath());
+        }
+        if (item.localPath.isEmpty()) item.localPath = assets.resolve(path, modelDirectories.value(material.get()));
+        if (item.localPath.isEmpty()) {
+            item.sharedEntry = sharedTextureEntry(item.path);
+            item.sharedArchive = normalizedTexturePath(path).contains(QStringLiteral("/cars/_library/textures/"))
+                ? textureArchive : mediaTextures;
         }
         pending.push_back(std::move(item));
     };
     QSet<const fls::ModelMaterial *> visited;
-    for (std::vector<fls::CarMesh> *meshes : renderMeshSets(model)) {
+    for (std::vector<fls::CarMesh> *meshes : meshSets) {
         for (fls::CarMesh &mesh : *meshes) {
             if (!mesh.material || visited.contains(mesh.material.get()) ||
-                !isLibraryMaterialPath(mesh.sourceModelPath) ||
                 mesh.materialName.startsWith(QStringLiteral("carPaint"), Qt::CaseInsensitive)) {
                 continue;
             }
             visited.insert(mesh.material.get());
-            const bool tire = std::any_of(mesh.material->parameters.cbegin(), mesh.material->parameters.cend(),
+            const auto &parameters = mesh.material->parameters;
+            const bool tire = std::any_of(parameters.cbegin(), parameters.cend(),
                 [](const auto &parameter) {
                     return tireTextureSlot(parameter.nameHash) != NativeTextureSlot::Unknown;
                 });
             bool hasNormal = false;
-            for (const fls::ModelMaterialParameter &parameter : mesh.material->parameters) {
+            QSet<NativeTextureSlot> authored;
+            for (const auto &parameter : parameters) {
+                if (parameter.type == fls::ModelMaterialParameterType::Texture2D) {
+                    if (const auto shaderParameter = fls::shaderTextureParameter(*mesh.material, parameter)) {
+                        authored.insert(authoredTextureSlot(*shaderParameter));
+                    }
+                }
+            }
+            for (const auto &parameter : parameters) {
                 if (parameter.type != fls::ModelMaterialParameterType::Texture2D || parameter.texturePath.isEmpty()) {
                     continue;
                 }
-                const NativeTextureSlot slot = tire ? tireTextureSlot(parameter.nameHash) : nativeTextureSlot(parameter);
+                const auto shaderParameter = fls::shaderTextureParameter(*mesh.material, parameter);
+                if (!shaderParameter) continue;
+                NativeTextureSlot slot = tire ? tireTextureSlot(*shaderParameter) : authoredTextureSlot(*shaderParameter);
+                if (slot == NativeTextureSlot::Unknown && !tire && !mesh.material->glass
+                    && !parameter.shaderDefault) {
+                    const NativeTextureSlot fallback = fallbackTextureSlot(parameter);
+                    if (!authored.contains(fallback)) slot = fallback;
+                }
                 if (slot == NativeTextureSlot::Unknown) {
                     continue;
                 }
+                if ((slot == NativeTextureSlot::Alpha && !mesh.material->glassOpacity.useAlphaTexture.value_or(true))
+                    || ((slot == NativeTextureSlot::Emissive || slot == NativeTextureSlot::EmissiveMask)
+                        && !mesh.material->emissionEnabled.value_or(true))
+                    || (slot == NativeTextureSlot::EmissiveMask && !mesh.material->emissionMaskEnabled.value_or(true))
+                    || (slot == NativeTextureSlot::GlassTint && !mesh.material->useGlassTintMask
+                        && !mesh.material->useGlassTintForOpacity)) continue;
                 // Flat placeholder swatches (e.g. the wheel paint's green base) are solid colours the
                 // game replaces with the chosen paint; loaded as real maps they tint painted parts
                 // (green rims) and skew their shading, so drop them and let the paint colour stand.
@@ -868,24 +1052,25 @@ void resolveExteriorMaterials(
         }
     }
 
-    const QString textureArchive = findSharedCarAsset(
-        sourcePath, QStringLiteral("_library/Textures.zip"));
-    const QString textureArchiveKey = textureArchive.isEmpty()
-        ? QString()
-        : assetFileIdentity(textureArchive);
     const bool sourceIsArchive = sourcePath.endsWith(
         QStringLiteral(".zip"), Qt::CaseInsensitive);
     const QString sourceArchiveKey = sourceIsArchive
         ? assetFileIdentity(sourcePath)
         : QString();
     NativeTextureCache &textureCache = nativeTextureCache();
-    QStringList missingSharedEntries;
-    QSet<QString> requestedSharedEntries;
+    QHash<QString, QString> archiveKeys;
+    QHash<QString, QSet<QString>> missingSharedEntries;
     for (PendingTexture &item : pending) {
+        if (!archiveKeys.contains(item.sharedArchive)) {
+            archiveKeys.insert(item.sharedArchive, item.sharedArchive.isEmpty()
+                ? QString() : assetFileIdentity(item.sharedArchive));
+        }
         item.cacheKey = !item.sharedEntry.isEmpty()
-            ? textureArchiveKey + QLatin1Char('|') + item.sharedEntry.toLower()
+            ? archiveKeys.value(item.sharedArchive) + QLatin1Char('|') + item.sharedEntry.toLower()
             : (sourceIsArchive
-                ? sourceArchiveKey + QLatin1Char('|') + normalizedTexturePath(item.path)
+                ? sourceArchiveKey + QLatin1Char('|') + (item.localPath.isEmpty()
+                    ? normalizedTexturePath(item.path)
+                    : QDir(carRoot).relativeFilePath(item.localPath))
                 : !item.localPath.isEmpty()
                 ? assetFileIdentity(item.localPath)
                 : QDir::cleanPath(carRoot).toLower() + QLatin1Char('|')
@@ -896,15 +1081,14 @@ void resolveExteriorMaterials(
         if (known) {
             assignNativeTextureOrFallback(*item.material, item.slot, texture);
             item.cacheKey.clear();
-        } else if (!item.sharedEntry.isEmpty()
-                   && !requestedSharedEntries.contains(item.sharedEntry.toLower())) {
-            requestedSharedEntries.insert(item.sharedEntry.toLower());
-            missingSharedEntries.push_back(item.sharedEntry);
+        } else if (!item.sharedEntry.isEmpty() && !item.sharedArchive.isEmpty()) {
+            missingSharedEntries[item.sharedArchive].insert(item.sharedEntry.toLower());
         }
     }
-    const QHash<QString, QByteArray> sharedData = textureArchive.isEmpty()
-        ? QHash<QString, QByteArray>{}
-        : fls::readZipEntries(textureArchive, missingSharedEntries);
+    QHash<QString, QHash<QString, QByteArray>> sharedData;
+    for (auto it = missingSharedEntries.cbegin(); it != missingSharedEntries.cend(); ++it) {
+        sharedData.insert(it.key(), fls::readZipEntries(it.key(), it.value().values()));
+    }
     for (const PendingTexture &item : pending) {
         if (item.cacheKey.isEmpty()) {
             continue;
@@ -915,12 +1099,10 @@ void resolveExteriorMaterials(
         if (!known) {
             QByteArray bytes;
             if (!item.sharedEntry.isEmpty()) {
-                bytes = sharedData.value(item.sharedEntry.toLower());
+                const auto entries = sharedData.constFind(item.sharedArchive);
+                if (entries != sharedData.cend()) bytes = entries->value(item.sharedEntry.toLower());
             } else if (!item.localPath.isEmpty()) {
-                QFile file(item.localPath);
-                if (file.open(QIODevice::ReadOnly)) {
-                    bytes = file.readAll();
-                }
+                bytes = readLocalAsset(item.localPath);
             }
             if (!bytes.isEmpty()) {
                 fls::SwatchImage image = fls::decodeSwatchImage(bytes);
@@ -948,22 +1130,24 @@ void resolveExteriorMaterials(
 }
 
 fls::ManufacturerColorPalette loadManufacturerColors(
-    const QString &carRoot, const QString &sourcePath) {
+    const QString &carRoot, const QString &sourcePath, const fls::CarAssetIndex &assets) {
     QMutexLocker lock(&materialCacheMutex());
-    QFile file(QDir(carRoot).filePath(QStringLiteral("ManufacturerColors.bin")));
-    if (!file.open(QIODevice::ReadOnly)) {
-        return {};
-    }
+    const QString palettePath = assets.resolve(QStringLiteral("ManufacturerColors.bin"), carRoot);
+    if (palettePath.isEmpty()) return {};
 
     fls::ManufacturerColorPalette palette;
     try {
-        palette = fls::decodeManufacturerColors(file.readAll());
+        palette = fls::decodeManufacturerColors(readLocalAsset(palettePath));
     } catch (const std::exception &) {
         return {};
     }
 
-    const QString archivePath = findSharedCarAsset(
-        sourcePath, QStringLiteral("_library/Materials.zip"));
+    const QString paletteDirectory = QFileInfo(palettePath).absolutePath();
+    for (fls::ManufacturerColor &color : palette.colors) {
+        color.material = loadLocalMaterial(assets.resolve(color.materialPath, paletteDirectory));
+    }
+    const QString archivePath = findCarResourceArchive(
+        assets, sourcePath, QStringLiteral("_library/Materials.zip"));
     if (archivePath.isEmpty()) {
         return palette;
     }
@@ -973,6 +1157,7 @@ fls::ManufacturerColorPalette loadManufacturerColors(
     QStringList missingEntries;
     QSet<QString> requestedEntries;
     for (const fls::ManufacturerColor &color : std::as_const(palette.colors)) {
+        if (color.material) continue;
         const QString entry = materialArchiveEntry(color.materialPath);
         const QString lowerEntry = entry.toLower();
         const QString key = archiveKey + QLatin1Char('|') + lowerEntry;
@@ -985,6 +1170,7 @@ fls::ManufacturerColorPalette loadManufacturerColors(
 
     cacheMaterialDefaults(archivePath, archiveKey, missingEntries);
     for (fls::ManufacturerColor &color : palette.colors) {
+        if (color.material) continue;
         const QString entry = materialArchiveEntry(color.materialPath);
         color.material = defaults.value(
             archiveKey + QLatin1Char('|') + entry.toLower());
@@ -1006,7 +1192,7 @@ struct PreparedCar {
 
 std::shared_ptr<PreparedCar> prepareCar(
     const QString &path, bool loadCarTextures, QString *error, QJsonObject *timings = nullptr,
-    const std::function<bool()> &cancelled = {}, const QString &game = {}) {
+    const std::function<bool()> &cancelled = {}, const QString &game = {}, const QString &gameFolder = {}) {
     static QMutex loadMutex;
     QElapsedTimer timer;
     qint64 previousTime = 0;
@@ -1023,7 +1209,6 @@ std::shared_ptr<PreparedCar> prepareCar(
     if (cancelled && cancelled()) {
         return {};
     }
-    QString loadPath = path;
     std::shared_ptr<QTemporaryDir> extracted;
     bool extractionReused = false;
     if (path.endsWith(QStringLiteral(".zip"), Qt::CaseInsensitive)) {
@@ -1031,13 +1216,15 @@ std::shared_ptr<PreparedCar> prepareCar(
         if (!extracted) {
             return {};
         }
-        loadPath = findCarbin(extracted->path());
-        if (loadPath.isEmpty()) {
-            if (error != nullptr) {
-                *error = QStringLiteral("zip: no .carbin found in %1").arg(QFileInfo(path).fileName());
-            }
-            return {};
+    }
+    const fls::CarAssetIndex assets(extracted ? extracted->path() : QFileInfo(path).absolutePath());
+    const QString loadPath = extracted ? assets.scene(QFileInfo(path).completeBaseName()) : path;
+    const QString resourceSource = gameResourceSource(path, gameFolder);
+    if (loadPath.isEmpty()) {
+        if (error != nullptr) {
+            *error = QStringLiteral("zip: no unique car scene found in %1").arg(QFileInfo(path).fileName());
         }
+        return {};
     }
     checkpoint(QStringLiteral("extract_ms"));
     if (timings != nullptr) {
@@ -1047,17 +1234,17 @@ std::shared_ptr<PreparedCar> prepareCar(
     const fls::WheelSizing wheelSizing =
         wheelSizingForModelCode(QFileInfo(loadPath).completeBaseName(), game);
     fls::CarModel model = loadPath.endsWith(QStringLiteral(".carbin"), Qt::CaseInsensitive)
-        ? fls::loadCarBin(loadPath, error, wheelSizing)
+        ? fls::loadCarBin(loadPath, assets, error, wheelSizing)
         : fls::loadModelBin(loadPath, error);
     if (model.meshes.empty()) {
         return {};
     }
     checkpoint(QStringLiteral("geometry_ms"));
-    appendSharedTireB(model, path, wheelSizing);
+    appendSharedTireB(model, resourceSource, wheelSizing);
     checkpoint(QStringLiteral("tires_ms"));
     assignSharedSlotMaterials(model);
-    resolveExteriorMaterials(model, path, QFileInfo(loadPath).absolutePath(), loadCarTextures);
-    auto wheelPreview = prepareWheelPreview(model, path, game, wheelSizing);
+    resolveModelMaterials(model, path, QFileInfo(loadPath).absolutePath(), assets, resourceSource, loadCarTextures);
+    auto wheelPreview = prepareWheelPreview(model, resourceSource, game, wheelSizing);
     if (wheelPreview) {
         wheelPreview->loadCarTextures = loadCarTextures;
         auto front = buildWheelPreviewGeometry(*wheelPreview, true, wheelPreview->axles[0].rimId,
@@ -1076,7 +1263,7 @@ std::shared_ptr<PreparedCar> prepareCar(
     auto prepared = std::make_shared<PreparedCar>();
     prepared->model = std::move(model);
     prepared->wheels = std::move(wheelPreview);
-    prepared->manufacturerColors = loadManufacturerColors(carDir.absolutePath(), path);
+    prepared->manufacturerColors = loadManufacturerColors(carDir.absolutePath(), resourceSource, assets);
     checkpoint(QStringLiteral("manufacturer_ms"));
     prepared->extractedCarDir = std::move(extracted);
     prepared->loadedCarPath = path;
@@ -1085,11 +1272,11 @@ std::shared_ptr<PreparedCar> prepareCar(
         return {};
     }
 
-    const QString masksDir = carDir.filePath(QStringLiteral("LiveryMasks"));
-    if (QFileInfo::exists(masksDir)) {
-        prepared->liveryMasks = fls::loadLiveryMasks(masksDir);
+    const QString masksPath = assets.resolve(QStringLiteral("LiveryMasks/Masks.xml"), carDir.absolutePath());
+    if (!masksPath.isEmpty()) {
+        prepared->liveryMasks = fls::loadLiveryMasks(masksPath, assets);
         checkpoint(QStringLiteral("masks_ms"));
-        prepared->liveryMasksDir = masksDir;
+        prepared->liveryMasksDir = QFileInfo(masksPath).absolutePath();
         QSet<int> selectablePartTypes;
         for (int partType : fls::kSelectableCarPartTypes) {
             selectablePartTypes.insert(partType);
@@ -1116,16 +1303,19 @@ std::shared_ptr<PreparedCar> prepareCar(
 } // namespace
 
 void resolveTireTemplateMaterials(fls::CarModel &model, const QString &archivePath, bool loadTextures) {
-    resolveExteriorMaterials(model, archivePath, QFileInfo(archivePath).absolutePath(), loadTextures);
+    const QString root = QFileInfo(archivePath).absolutePath();
+    const fls::CarAssetIndex assets(root);
+    resolveModelMaterials(model, archivePath, root, assets, archivePath, loadTextures);
 }
 
-QJsonObject profileCarLoading(const QString &path, bool loadTextures, int repetitions, bool verifyUnwrap) {
+QJsonObject profileCarLoading(const QString &path, bool loadTextures, int repetitions, bool verifyUnwrap,
+                              const QString &gameFolder) {
     QJsonArray runs;
     std::shared_ptr<QTemporaryDir> extraction;
     for (int repetition = 0; repetition < repetitions; ++repetition) {
         QJsonObject timings;
         QString error;
-        std::shared_ptr<PreparedCar> prepared = prepareCar(path, loadTextures, &error, &timings);
+        std::shared_ptr<PreparedCar> prepared = prepareCar(path, loadTextures, &error, &timings, {}, {}, gameFolder);
         if (!prepared) {
             return {{QStringLiteral("error"), error}, {QStringLiteral("runs"), runs}};
         }
@@ -1133,6 +1323,38 @@ QJsonObject profileCarLoading(const QString &path, bool loadTextures, int repeti
         timings.insert(QStringLiteral("meshes"), static_cast<qint64>(prepared->model.meshes.size()));
         timings.insert(QStringLiteral("variant_meshes"), static_cast<qint64>(prepared->model.variantMeshes.size()));
         timings.insert(QStringLiteral("lods"), prepared->model.lodCount());
+        timings.insert(QStringLiteral("livery_masks"), prepared->liveryMasks.loadedMasks);
+        timings.insert(QStringLiteral("unresolved_model_paths"),
+            QJsonArray::fromStringList(prepared->model.unresolvedModelPaths));
+        QSet<const fls::ModelMaterialTexture *> emissiveMasks;
+        QSet<const fls::ModelMaterial *> seenMaterials;
+        int sceneOverrides = 0;
+        int shaderMaterials = 0;
+        int authoredGlass = 0;
+        int texturedGlass = 0;
+        int glassTintMasks = 0;
+        int secondaryUvGlass = 0;
+        for (const fls::CarMesh &mesh : prepared->model.meshes) {
+            if (!mesh.material || seenMaterials.contains(mesh.material.get())) continue;
+            seenMaterials.insert(mesh.material.get());
+            if (mesh.material->emissiveMaskTexture) {
+                emissiveMasks.insert(mesh.material->emissiveMaskTexture.get());
+            }
+            sceneOverrides += mesh.material->overriddenByScene;
+            shaderMaterials += mesh.material->resolvedFromShader;
+            authoredGlass += mesh.material->glass && mesh.material->glassOpacity.primary.has_value();
+            texturedGlass += mesh.material->glass && (mesh.material->normalTexture || mesh.material->alphaTexture);
+            glassTintMasks += mesh.material->glassTintTexture != nullptr;
+            secondaryUvGlass += mesh.material->glass && (mesh.material->materialUvChannel == 1
+                || (mesh.material->normalUv && mesh.material->normalUv->channel == 1));
+        }
+        timings.insert(QStringLiteral("emissive_masks"), emissiveMasks.size());
+        timings.insert(QStringLiteral("scene_material_overrides"), sceneOverrides);
+        timings.insert(QStringLiteral("shader_default_materials"), shaderMaterials);
+        timings.insert(QStringLiteral("authored_glass_materials"), authoredGlass);
+        timings.insert(QStringLiteral("textured_glass_materials"), texturedGlass);
+        timings.insert(QStringLiteral("glass_tint_masks"), glassTintMasks);
+        timings.insert(QStringLiteral("secondary_uv_glass_materials"), secondaryUvGlass);
         timings.insert(QStringLiteral("manufacturer_colors"), prepared->manufacturerColors.colors.size());
         if (verifyUnwrap && prepared->liveryMasks.valid()) {
             QSet<int> partTypes;
@@ -1249,8 +1471,9 @@ CarPreviewWidget::~CarPreviewWidget() {
 
 void CarPreviewWidget::loadCarAsync(const QString &path, CarLoadCallback callback, const QString &game) {
     const bool loadCarTextures = loadCarTextures_;
+    const QString gameFolder = game.isEmpty() ? QString() : loadBehaviorSettings().gameFolders.value(game);
     const QString key = assetFileIdentity(path) + QLatin1Char('|') + QString::number(loadCarTextures)
-        + QLatin1Char('|') + game;
+        + QLatin1Char('|') + game + QLatin1Char('|') + gameFolder;
     if (modelLoadPending_ && pendingCarKey_ == key) {
         if (callback) {
             carLoadCallbacks_.push_back(std::move(callback));
@@ -1278,13 +1501,13 @@ void CarPreviewWidget::loadCarAsync(const QString &path, CarLoadCallback callbac
     updateModelStatus();
     QPointer<CarPreviewWidget> guard(this);
     QThreadPool::globalInstance()->start(
-        [guard, path, key, game, loadCarTextures, generation, cancellation, started = carLoadTimer_]() mutable {
+        [guard, path, key, game, gameFolder, loadCarTextures, generation, cancellation, started = carLoadTimer_]() mutable {
             QString error;
             QJsonObject timings;
             const auto cancelled = [cancellation]() { return cancellation->load(std::memory_order_relaxed); };
             timings.insert(QStringLiteral("worker_start_ms"), started.nsecsElapsed() / 1000000.0);
             std::shared_ptr<PreparedCar> prepared =
-                prepareCar(path, loadCarTextures, &error, &timings, cancelled, game);
+                prepareCar(path, loadCarTextures, &error, &timings, cancelled, game, gameFolder);
             timings.insert(QStringLiteral("cpu_ready_ms"), started.nsecsElapsed() / 1000000.0);
             if (!guard || cancelled()) {
                 return;

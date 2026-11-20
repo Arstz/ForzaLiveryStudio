@@ -91,6 +91,27 @@ void checkBc4Image() {
     require(!fls::decodeSwatchImage(bytes.left(bytes.size() - 1)).valid(), "truncated BC4 color data accepted");
 }
 
+void checkSignedBlockChannels() {
+    QByteArray block(8, '\0');
+    block[0] = '\x7f';
+    block[1] = static_cast<char>(0x81);
+    block[2] = static_cast<char>(0x88);
+    block[3] = '\x06';
+    const QByteArray bytes = swatch(4, 4, block, 4);
+    const auto mask = fls::decodeSwatchMask(bytes);
+    const auto image = fls::decodeSwatchImage(bytes);
+    require(mask.valid() && image.valid(), "signed BC4 surface did not decode");
+    require(mask.at(0, 0) == 255 && mask.at(1, 0) == 0 && mask.at(2, 0) == 182,
+            "signed BC4 endpoint or interpolation changed");
+    require(image.rgba[0] == 255 && image.rgba[4] == 0 && image.rgba[8] == 182,
+            "signed BC4 color and coverage differ");
+
+    const auto normal = fls::decodeSwatchImage(swatch(4, 4, block + QByteArray(8, '\0'), 6));
+    require(normal.valid() && normal.rgba[0] == 255 && normal.rgba[4] == 0
+            && normal.rgba[1] == 128 && normal.rgba[5] == 128,
+            "signed BC5 directions were not remapped for normal sampling");
+}
+
 void checkDurangoBc4Mask(int tileMode, int payloadSize) {
     constexpr int width = 301;
     constexpr int height = 141;
@@ -191,6 +212,7 @@ int main(int argc, char **argv) {
         checkImage(4, 4, true);
         checkImage(8, 4, false);
         checkBc4Image();
+        checkSignedBlockChannels();
         checkDurangoBc4Mask(13, 25600);
         checkDurangoBc4Mask(14, 65536);
         checkAuthoredMips();

@@ -1,7 +1,9 @@
 #include "livery_masks.h"
 
-#include <QDir>
+#include "game_paths.h"
+
 #include <QFile>
+#include <QFileInfo>
 #include <QXmlStreamReader>
 
 #include <algorithm>
@@ -88,14 +90,19 @@ void normalizeMaskCanvas(LiverySide &side) {
 } // namespace
 
 LiveryMaskSet loadLiveryMasks(const QString &dir, QString *error) {
+    const CarAssetIndex assets(dir);
+    return loadLiveryMasks(assets.resolve(QStringLiteral("Masks.xml")), assets, error);
+}
+
+LiveryMaskSet loadLiveryMasks(const QString &xmlPath, const CarAssetIndex &assets, QString *error) {
     LiveryMaskSet set;
     for (int i = 0; i < kLiverySideCount; ++i) {
         set.sides[i].slot = i;
         set.sides[i].maskName = QString::fromLatin1(kSideDefs[i].maskTag);
     }
 
-    const QDir folder(dir);
-    QFile xml(folder.filePath(QStringLiteral("Masks.xml")));
+    const QString directory = QFileInfo(xmlPath).absolutePath();
+    QFile xml(xmlPath);
     if (!xml.open(QIODevice::ReadOnly)) {
         if (error != nullptr) {
             *error = QStringLiteral("cannot open %1").arg(xml.fileName());
@@ -124,19 +131,17 @@ LiveryMaskSet loadLiveryMasks(const QString &dir, QString *error) {
     }
     set.loaded = true;
 
-    const QStringList files = folder.entryList(QDir::Files);
     for (int i = 0; i < kLiverySideCount; ++i) {
         if (kSideDefs[i].swatchStem == nullptr) {
             continue;
         }
         const QString name = QStringLiteral("%1.swatchbin").arg(QString::fromLatin1(kSideDefs[i].swatchStem));
-        const auto filename = std::find_if(files.cbegin(), files.cend(), [&name](const QString &file) {
-            return file.compare(name, Qt::CaseInsensitive) == 0;
-        });
-        if (filename == files.cend()) {
+        QString path = assets.resolve(name, directory);
+        if (path.isEmpty()) path = assets.resolve(QStringLiteral("LiveryMasks/") + name, directory);
+        if (path.isEmpty()) {
             continue;
         }
-        SwatchMask mask = loadSwatchMask(folder.filePath(*filename));
+        SwatchMask mask = loadSwatchMask(path);
         if (mask.valid()) {
             set.sides[i].mask = std::move(mask);
             normalizeMaskCanvas(set.sides[i]);

@@ -7,6 +7,8 @@
 
 namespace fls {
 
+class CarAssetIndex;
+
 // Stock wheel geometry for one axle, in the units the game states it in. The shared wheel and
 // tyre models are normalised and the carbin's wheel placement is an authoring pose, so this is
 // what gives the corner both its real size and its real position (see docs/GAMEDATA.md).
@@ -25,6 +27,8 @@ struct WheelSizing {
 
 CarModel loadCarBin(const QString &path, QString *error = nullptr,
                     const WheelSizing &wheels = {});
+CarModel loadCarBin(const QString &path, const CarAssetIndex &assets, QString *error,
+                    const WheelSizing &wheels);
 
 void appendCarRim(CarModel &car, const CarModel &rim, const CarWheelMount &mount,
                   const AxleSizing &sizing);

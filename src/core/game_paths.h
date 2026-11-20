@@ -1,10 +1,23 @@
 #pragma once
 
+#include <QHash>
 #include <QString>
 #include <QStringList>
 #include <QSet>
 
 namespace fls {
+
+class CarAssetIndex {
+public:
+    explicit CarAssetIndex(const QString &root);
+
+    QString resolve(const QString &reference, const QString &originDirectory = {}) const;
+    QString scene(const QString &modelCode) const;
+
+private:
+    QString root_;
+    QHash<QString, QStringList> pathsByName_;
+};
 
 QStringList carModelGames(const QString &preferredGame = {});
 QString gameMediaDir(const QString &gameFolder);

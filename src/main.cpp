@@ -84,6 +84,7 @@ int main(int argc, char *argv[]) {
         QCommandLineParser parser;
         parser.addOption({QStringLiteral("profile-car-load"), QStringLiteral("Profile car preparation"), QStringLiteral("path")});
         parser.addOption({QStringLiteral("textures"), QStringLiteral("Decode native textures")});
+        parser.addOption({QStringLiteral("game-folder"), QStringLiteral("Game folder for shared resources"), QStringLiteral("path")});
         parser.addOption({QStringLiteral("verify-unwrap"), QStringLiteral("Compare unwraps with serial calculation")});
         parser.addOption({QStringLiteral("repeat"), QStringLiteral("Number of loads"), QStringLiteral("count"), QStringLiteral("2")});
         parser.addOption({QStringLiteral("output"), QStringLiteral("JSON report destination"), QStringLiteral("path")});
@@ -95,7 +96,7 @@ int main(int argc, char *argv[]) {
         }
         const QJsonObject report = gui::profileCarLoading(
             parser.value(QStringLiteral("profile-car-load")), parser.isSet(QStringLiteral("textures")),
-            repetitions, parser.isSet(QStringLiteral("verify-unwrap")));
+            repetitions, parser.isSet(QStringLiteral("verify-unwrap")), parser.value(QStringLiteral("game-folder")));
         QFile output;
         if (parser.isSet(QStringLiteral("output"))) {
             output.setFileName(parser.value(QStringLiteral("output")));

@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstring>
 #include <limits>
 #include <memory>
@@ -56,12 +57,20 @@ void setError(QString *error, const QString &message) {
     }
 }
 
-// Decodes one BC4 (single-channel) 8-byte block into a 4x4 tile of bytes.
-// Layout: red0, red1, then 16 x 3-bit palette indices packed little-endian.
-void decodeBc4Block(const uint8_t *block, uint8_t out[16]) {
-    const int r0 = block[0];
-    const int r1 = block[1];
-    int red[8];
+enum class ChannelRange { Unsigned, SignedIntensity, SignedDirection };
+
+void decodeBc4Block(const uint8_t *block, uint8_t out[16], ChannelRange range = ChannelRange::Unsigned) {
+    constexpr float kSignedMax = 127.0f;
+    constexpr float kByteMax = 255.0f;
+    const bool signedEndpoints = range != ChannelRange::Unsigned;
+    const auto endpoint = [signedEndpoints](uint8_t value) -> float {
+        if (!signedEndpoints || value < 128) return value;
+
+        return (std::max)(-static_cast<int>(kSignedMax), static_cast<int>(value) - 256);
+    };
+    const float r0 = endpoint(block[0]);
+    const float r1 = endpoint(block[1]);
+    std::array<float, 8> red;
     red[0] = r0;
     red[1] = r1;
     if (r0 > r1) {
@@ -72,8 +81,8 @@ void decodeBc4Block(const uint8_t *block, uint8_t out[16]) {
         for (int i = 1; i < 5; ++i) {
             red[i + 1] = ((5 - i) * r0 + i * r1) / 5;
         }
-        red[6] = 0;
-        red[7] = 255;
+        red[6] = signedEndpoints ? -kSignedMax : 0.0f;
+        red[7] = signedEndpoints ? kSignedMax : kByteMax;
     }
 
     // 48 bits of indices in block[2..7], 3 bits per texel.
@@ -83,7 +92,14 @@ void decodeBc4Block(const uint8_t *block, uint8_t out[16]) {
     }
     for (int i = 0; i < 16; ++i) {
         const int idx = static_cast<int>((bits >> (3 * i)) & 0x7);
-        out[i] = static_cast<uint8_t>(red[idx]);
+        const float value = red[idx];
+        if (range == ChannelRange::SignedDirection) {
+            out[i] = static_cast<uint8_t>(std::lround((value / kSignedMax * 0.5f + 0.5f) * kByteMax));
+        } else if (range == ChannelRange::SignedIntensity) {
+            out[i] = static_cast<uint8_t>(std::lround((std::max)(0.0f, value) * kByteMax / kSignedMax));
+        } else {
+            out[i] = static_cast<uint8_t>(value);
+        }
     }
 }
 
@@ -116,7 +132,7 @@ void decodeBcTiles(const QByteArray &data, int width, int height, int blockBytes
     }
 }
 
-SwatchMask decodeBc4Surface(const QByteArray &data, int width, int height, QString *error) {
+SwatchMask decodeBc4Surface(const QByteArray &data, int width, int height, ChannelRange range, QString *error) {
     const int blocksWide = (width + 3) / 4;
     const int blocksHigh = (height + 3) / 4;
     const qint64 needed = static_cast<qint64>(blocksWide) * blocksHigh * 8;
@@ -130,7 +146,8 @@ SwatchMask decodeBc4Surface(const QByteArray &data, int width, int height, QStri
     mask.height = height;
     mask.coverage.assign(static_cast<size_t>(width) * height, 0);
 
-    decodeBcTiles<1>(data, width, height, 8, mask.coverage, decodeBc4Block);
+    decodeBcTiles<1>(data, width, height, 8, mask.coverage,
+        [range](const uint8_t *source, uint8_t *tile) { decodeBc4Block(source, tile, range); });
 
     return mask;
 }
@@ -240,7 +257,7 @@ SwatchImage decodeBcSurface(const QByteArray &data, int width, int height, Encod
     return image;
 }
 
-SwatchImage decodeBc5Surface(const QByteArray &data, int width, int height, QString *error) {
+SwatchImage decodeBc5Surface(const QByteArray &data, int width, int height, ChannelRange range, QString *error) {
     const int blocksWide = (width + 3) / 4;
     const int blocksHigh = (height + 3) / 4;
     const qint64 needed = static_cast<qint64>(blocksWide) * blocksHigh * 16;
@@ -253,11 +270,11 @@ SwatchImage decodeBc5Surface(const QByteArray &data, int width, int height, QStr
     image.height = height;
     image.rgba.assign(static_cast<size_t>(width) * height * 4, 255);
     decodeBcTiles<kRgbaChannels>(data, width, height, 16, image.rgba,
-        [](const uint8_t *source, uint8_t *tile) {
+        [range](const uint8_t *source, uint8_t *tile) {
             uint8_t red[16];
             uint8_t green[16];
-            decodeBc4Block(source, red);
-            decodeBc4Block(source + 8, green);
+            decodeBc4Block(source, red, range);
+            decodeBc4Block(source + 8, green, range);
             for (int pixel = 0; pixel < 16; ++pixel) {
                 tile[pixel * kRgbaChannels] = red[pixel];
                 tile[pixel * kRgbaChannels + 1] = green[pixel];
@@ -788,8 +805,11 @@ SwatchImage decodeSurfaceImage(const TextureSurface *surface, QString *error) {
     case Encoding::Bc3:
         return decodeBcSurface(surface->pixels, surface->width, surface->height,
                                static_cast<Encoding>(surface->formatEncoded), error);
-    case Encoding::UnsignedBc4: {
-        const SwatchMask mask = decodeBc4Surface(surface->pixels, surface->width, surface->height, error);
+    case Encoding::UnsignedBc4:
+    case Encoding::SignedBc4: {
+        const ChannelRange range = surface->formatEncoded == static_cast<int>(Encoding::SignedBc4)
+            ? ChannelRange::SignedIntensity : ChannelRange::Unsigned;
+        const SwatchMask mask = decodeBc4Surface(surface->pixels, surface->width, surface->height, range, error);
         if (!mask.valid()) return {};
         SwatchImage image;
         image.width = mask.width;
@@ -803,8 +823,9 @@ SwatchImage decodeSurfaceImage(const TextureSurface *surface, QString *error) {
         return image;
     }
     case Encoding::UnsignedBc5:
+        return decodeBc5Surface(surface->pixels, surface->width, surface->height, ChannelRange::Unsigned, error);
     case Encoding::SignedBc5:
-        return decodeBc5Surface(surface->pixels, surface->width, surface->height, error);
+        return decodeBc5Surface(surface->pixels, surface->width, surface->height, ChannelRange::SignedDirection, error);
     case Encoding::Bc7:
     case Encoding::Bc7HighQuality:
         return decodeBc7Surface(surface->pixels, surface->width, surface->height, error);
@@ -829,8 +850,9 @@ SwatchMask decodeSwatchMask(const QByteArray &bytes, QString *error) {
     if (!surface) return {};
     switch (static_cast<Encoding>(surface->formatEncoded)) {
     case Encoding::UnsignedBc4:
+        return decodeBc4Surface(surface->pixels, surface->width, surface->height, ChannelRange::Unsigned, error);
     case Encoding::SignedBc4:
-        return decodeBc4Surface(surface->pixels, surface->width, surface->height, error);
+        return decodeBc4Surface(surface->pixels, surface->width, surface->height, ChannelRange::SignedIntensity, error);
     case Encoding::R8:
     case Encoding::A8:
         return decodeR8Surface(surface->pixels, surface->width, surface->height, error);

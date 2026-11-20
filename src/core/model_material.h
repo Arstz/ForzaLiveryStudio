@@ -5,10 +5,12 @@
 
 #include <QString>
 #include <QStringList>
+#include <QUuid>
 #include <QVector>
 
 #include <array>
 #include <memory>
+#include <optional>
 #include <vector>
 
 namespace fls {
@@ -25,9 +27,12 @@ enum class ModelMaterialParameterType : quint8 {
     ColorGradient = 8,
     FunctionRange = 9,
     Vector2 = 11,
+    PackedVector = 12,
 };
 
 struct ModelMaterialParameter {
+    QUuid parameterId;
+    std::optional<quint32> aliasHash;
     quint8 versionMajor = 0;
     quint8 versionMinor = 0;
     quint32 nameHash = 0;
@@ -36,12 +41,36 @@ struct ModelMaterialParameter {
     float scalar = 0.0f;
     qint32 integer = 0;
     bool boolean = false;
+    bool shaderDefault = false;
     QString texturePath;
     quint32 texturePathHash = 0;
     qint32 samplerAddressU = 0;
     qint32 samplerAddressV = 0;
     qint32 samplerFilter = 1;
     QVector<std::array<float, 4>> gradient;
+};
+
+struct MaterialUvMapping {
+    std::array<float, 2> tiling = {1.0f, 1.0f};
+    int channel = 0;
+    float rotationDegrees = 0.0f;
+    bool tileBeforeRotation = false;
+};
+
+struct MaterialOpacity {
+    std::optional<float> primary;
+    std::optional<float> secondary;
+    std::optional<bool> useAlphaTexture;
+    bool dualOpacity = false;
+    bool interpolateAlphaTexture = false;
+    float maskMin = 0.0f;
+    float maskMax = 1.0f;
+};
+
+struct ShaderTextureBinding {
+    QUuid parameterId;
+    quint32 nameHash = 0;
+    quint16 shaderRegister = 0;
 };
 
 struct ModelMaterialTexture {
@@ -54,6 +83,19 @@ struct ModelMaterial {
     QString resourcePath;
     QStringList linkedPaths;
     std::vector<ModelMaterialParameter> parameters;
+    std::vector<ShaderTextureBinding> shaderTextures;
+    MaterialOpacity glassOpacity;
+    std::optional<MaterialUvMapping> normalUv;
+    std::optional<MaterialUvMapping> alphaUv;
+    std::optional<MaterialUvMapping> emissiveUv;
+    std::optional<MaterialUvMapping> emissiveMaskUv;
+    std::optional<MaterialUvMapping> glassTintUv;
+    std::optional<bool> emissionEnabled;
+    std::optional<bool> emissionMaskEnabled;
+    bool glass = false;
+    bool usesTintedEmission = false;
+    bool useGlassTintMask = false;
+    bool useGlassTintForOpacity = false;
     bool hasBaseColor = false;
     std::array<float, 3> baseColor = {0.55f, 0.55f, 0.55f};
     std::array<float, 3> emissiveColor = {0.0f, 0.0f, 0.0f};
@@ -63,10 +105,15 @@ struct ModelMaterial {
     float uTiling = 1.0f;
     float vTiling = 1.0f;
     float uvOrientationDegrees = 0.0f;
-    bool resolvedFromLibrary = false; // params merged from the shared _library material
+    bool resolvedFromResource = false;
+    bool resolvedFromShader = false;
+    bool overriddenByScene = false;
     bool hasMetallic = false;
     float metallic = 0.0f;
     float flakeAmount = 0.0f;
+    float normalIntensity = 1.0f;
+    float glassTintMultiplier = 1.0f;
+    int materialUvChannel = -1;
     QString patternTexture;      // BaseColorAlpha colour/pattern swatch
     QString detailNormalTexture; // weave / brushed / flake normal swatch
     QString roughMetalAoTexture; // packed roughness/metal/AO swatch
@@ -76,6 +123,8 @@ struct ModelMaterial {
     std::shared_ptr<const ModelMaterialTexture> tireHeightTexture;
     std::shared_ptr<const ModelMaterialTexture> surfaceTexture;
     std::shared_ptr<const ModelMaterialTexture> emissiveTexture;
+    std::shared_ptr<const ModelMaterialTexture> emissiveMaskTexture;
+    std::shared_ptr<const ModelMaterialTexture> glassTintTexture;
 };
 
 std::shared_ptr<ModelMaterial> decodeModelMaterial(const BundleBlobRecord &blob);
@@ -84,5 +133,10 @@ std::shared_ptr<ModelMaterial> decodeMaterialBundle(const QByteArray &bytes);
 
 std::shared_ptr<ModelMaterial> mergeModelMaterialDefaults(
     const ModelMaterial &defaults, const ModelMaterial &instance);
+
+std::optional<quint32> shaderTextureParameter(
+    const ModelMaterial &material, const ModelMaterialParameter &parameter);
+
+float lampGlassPreviewOpacity(const ModelMaterial *material, bool colored);
 
 } // namespace fls

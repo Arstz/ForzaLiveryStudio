@@ -37,7 +37,8 @@ class EditorState;
 class PartRadialSelector;
 struct WheelPreviewState;
 
-QJsonObject profileCarLoading(const QString &path, bool loadTextures, int repetitions, bool verifyUnwrap);
+QJsonObject profileCarLoading(const QString &path, bool loadTextures, int repetitions, bool verifyUnwrap,
+                              const QString &gameFolder = {});
 
 class CarPreviewWidget final : public QOpenGLWidget {
     Q_OBJECT

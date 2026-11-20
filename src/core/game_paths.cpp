@@ -9,7 +9,89 @@ namespace {
 
 const QStringList kCarModelExtensions = {QStringLiteral("carbin"), QStringLiteral("zip"), QStringLiteral("modelbin")};
 
+QStringList assetPathComponents(QString path) {
+    path.replace(QLatin1Char('\\'), QLatin1Char('/'));
+
+    return QDir::cleanPath(path).toLower().split(QLatin1Char('/'), Qt::SkipEmptyParts);
+}
+
 } // namespace
+
+CarAssetIndex::CarAssetIndex(const QString &root)
+    : root_(QDir(root).absolutePath()) {
+    const QDir directory(root_);
+    QDirIterator files(root_, QDir::Files | QDir::NoSymLinks, QDirIterator::Subdirectories);
+    while (files.hasNext()) {
+        files.next();
+        const QFileInfo info = files.fileInfo();
+        pathsByName_[info.fileName().toLower()].push_back(directory.relativeFilePath(info.filePath()));
+    }
+}
+
+QString CarAssetIndex::resolve(const QString &reference, const QString &originDirectory) const {
+    if (reference.isEmpty()) return {};
+    const QStringList requested = assetPathComponents(reference);
+    if (requested.isEmpty()) return {};
+
+    const auto candidates = pathsByName_.constFind(requested.back());
+    if (candidates == pathsByName_.cend()) return {};
+    const QDir root(root_);
+    const QString origin = originDirectory.isEmpty()
+        ? QStringLiteral(".") : root.relativeFilePath(originDirectory);
+    QStringList logicalPath = requested;
+    const qsizetype cars = logicalPath.indexOf(QStringLiteral("cars"));
+    if (logicalPath.front() == QStringLiteral("game:") && cars >= 0 && cars + 2 < logicalPath.size()) {
+        logicalPath = logicalPath.sliced(cars + 2);
+    }
+    const QStringList anchored = assetPathComponents(origin + QLatin1Char('/') + logicalPath.join(QLatin1Char('/')));
+    const bool relativeOnly = requested.contains(QStringLiteral(".."));
+    QString best;
+    qsizetype bestScore = 0;
+    bool ambiguous = false;
+    for (const QString &candidate : *candidates) {
+        const QStringList components = assetPathComponents(candidate);
+        qsizetype suffix = 0;
+        while (suffix < std::min(components.size(), requested.size())
+               && components[components.size() - suffix - 1] == requested[requested.size() - suffix - 1]) {
+            ++suffix;
+        }
+        const bool exact = components == anchored;
+        if (relativeOnly && !exact) continue;
+        const qsizetype score = exact ? requested.size() + 1 : suffix;
+        if (score > bestScore) {
+            best = candidate;
+            bestScore = score;
+            ambiguous = false;
+        } else if (score == bestScore) {
+            ambiguous = true;
+        }
+    }
+
+    return best.isEmpty() || ambiguous ? QString() : root.filePath(best);
+}
+
+QString CarAssetIndex::scene(const QString &modelCode) const {
+    const QString namedScene = resolve(modelCode + QStringLiteral(".carbin"));
+    if (!namedScene.isEmpty()) return namedScene;
+
+    QString onlyScene;
+    for (auto it = pathsByName_.cbegin(); it != pathsByName_.cend(); ++it) {
+        if (!it.key().endsWith(QStringLiteral(".carbin"))) continue;
+        if (!onlyScene.isEmpty() || it.value().size() != 1) return {};
+        onlyScene = it.value().front();
+    }
+    if (!onlyScene.isEmpty()) return QDir(root_).filePath(onlyScene);
+
+    const QString namedModel = resolve(modelCode + QStringLiteral(".modelbin"));
+    if (!namedModel.isEmpty()) return namedModel;
+    for (auto it = pathsByName_.cbegin(); it != pathsByName_.cend(); ++it) {
+        if (!it.key().endsWith(QStringLiteral(".modelbin"))) continue;
+        if (!onlyScene.isEmpty() || it.value().size() != 1) return {};
+        onlyScene = it.value().front();
+    }
+
+    return onlyScene.isEmpty() ? QString() : QDir(root_).filePath(onlyScene);
+}
 
 QStringList carModelGames(const QString &preferredGame) {
     static const QStringList games = {

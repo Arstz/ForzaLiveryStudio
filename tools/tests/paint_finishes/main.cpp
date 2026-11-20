@@ -33,9 +33,11 @@ void checkSamplerDefaults() {
         u32(hash);
         parameters.append('\0').append(static_cast<char>(type)).append(QByteArray(16, '\0'));
     };
-    parameters.append('\x02').append('\0');
+    parameters.append('\x03').append('\0');
     parameter(123, 7);
     for (quint32 value : {4u, 4u, 3u, 287454020u}) u32(value);
+    parameter(456, 12);
+    for (quint32 value : {0x3f800000u, 0x3f800000u, 0u, 0u}) u32(value);
     parameter(fls::material_hashes::parameter::kTextureTilingU, 2);
     const float tiling = 32.0f;
     quint32 bits;
@@ -54,8 +56,33 @@ void checkSamplerDefaults() {
     field(40, parameters.size());
     bundle.append(parameters);
     const auto material = fls::decodeMaterialBundle(bundle);
-    require(material && material->parameters.size() == 2 && material->uTiling == tiling,
-            "shader sampler extension misaligned the following parameter");
+    require(material && material->parameters.size() == 3 && material->uTiling == tiling,
+            "shader parameter payload misaligned the following parameter");
+    require(material->parameters[1].type == fls::ModelMaterialParameterType::PackedVector
+            && material->parameters[1].vector == std::array<float, 4>{1, 1, 0, 0},
+            "packed shader vector lost its components");
+}
+
+void checkLampGlassOpacityFallback() {
+    fls::ModelMaterial material;
+    fls::ModelMaterialParameter parameter;
+    parameter.nameHash = fls::material_hashes::parameter::kAlphaTexture[1];
+    parameter.type = fls::ModelMaterialParameterType::Texture2D;
+    parameter.texturePath = QStringLiteral("shared/diffuser.swatchbin");
+    material.parameters.push_back(parameter);
+    require(fls::lampGlassPreviewOpacity(&material, false) == 0.50f,
+            "a masked lens lost its opacity fallback without the shared resources");
+    material.glassOpacity.primary = 0.12f;
+    require(fls::lampGlassPreviewOpacity(&material, false) == 0.12f,
+            "lamp fallback replaced authored opacity");
+    material.glassOpacity.primary.reset();
+    material.resolvedFromResource = true;
+    require(fls::lampGlassPreviewOpacity(&material, false) == 0.20f,
+            "missing-resource fallback changed a resolved material");
+    material.resolvedFromResource = false;
+    material.glassOpacity.useAlphaTexture = false;
+    require(fls::lampGlassPreviewOpacity(&material, false) == 0.20f,
+            "disabled opacity map changed the clear-lens fallback");
 }
 
 void checkWeaveLibrary(const QString &folder) {
@@ -126,6 +153,7 @@ int main(int argc, char **argv) {
     QCoreApplication app(argc, argv);
     try {
         checkSamplerDefaults();
+        checkLampGlassOpacityFallback();
         if (argc >= 2) checkWeaveLibrary(QString::fromLocal8Bit(argv[1]));
         if (argc >= 3) checkAuthoredTangents(QString::fromLocal8Bit(argv[2]));
         std::puts("Paint finish checks passed");

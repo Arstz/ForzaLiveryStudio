@@ -1,6 +1,8 @@
 Small changes:
     -Anull UV cache on manual model change
     -Improve PAINT menu design
+    -Prebake rim models
+    -Deny liv for xb1 titles and pgs/wgs for xb360
 
 Medium changes:
     -Filter parts by game version (Single/Multiple), hide/paint

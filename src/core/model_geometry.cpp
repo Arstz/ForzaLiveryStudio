@@ -5,6 +5,7 @@
 #include "model_material.h"
 
 #include <QFile>
+#include <QHash>
 #include <QtEndian>
 
 #include <algorithm>
@@ -20,6 +21,8 @@ using fls::detail::readLeU16;
 using fls::detail::readLeU32;
 
 namespace {
+
+constexpr int kAuthoredLiveryUvChannel = 3;
 
 quint16 readLeU16Raw(const char *p, int offset) {
     return qFromLittleEndian<quint16>(reinterpret_cast<const uchar *>(p + offset));
@@ -66,6 +69,7 @@ struct VertexElement {
     qint16 semanticIndex = 0;
     qint16 inputSlot = 0;
     qint32 format = 0;
+    qint32 byteOffset = -1;
 };
 
 struct VertexLayout {
@@ -95,6 +99,7 @@ struct MeshInfo {
     quint8 minimumLod = 0;
     quint8 maximumLod = 0;
     bool is32BitIndices = true;
+    qint32 indexBufferIndex = 0;
     qint32 indexBufferOffset = 0;
     qint32 indexBufferDrawOffset = 0;
     qint32 indexedVertexOffset = 0;
@@ -127,15 +132,18 @@ quint8 meshLodMask(const MeshInfo &mesh) {
 
 int formatSize(int fmt) {
     switch (fmt) {
+    case 2:  return 16; // R32G32B32A32_FLOAT
     case 6:  return 12; // R32G32B32_FLOAT
     case 10: return 8;  // R16G16B16A16_FLOAT
+    case 11: return 8;  // R16G16B16A16_UNORM
     case 13: return 8;  // R16G16B16A16_SNORM
     case 16: return 8;  // R32G32_FLOAT
     case 24: return 4;  // R10G10B10A2_UNORM
     case 28: return 4;  // R8G8B8A8_UNORM
+    case 34: return 4;  // R16G16_FLOAT
     case 35: return 4;  // R16G16_UNORM
     case 37: return 4;  // R16G16_SNORM
-    default: return 4;
+    default: return 0;
     }
 }
 
@@ -161,7 +169,7 @@ float halfToFloat(quint16 h) {
     } else if (exp == 31) {
         f = mant == 0 ? std::numeric_limits<float>::infinity() : std::numeric_limits<float>::quiet_NaN();
     } else {
-        f = (mant + 1024) * (1.0f / static_cast<float>(1 << (25 - exp)));
+        f = std::ldexp(static_cast<float>(mant + 1024), exp - 25);
     }
     return sign == 0 ? f : -f;
 }
@@ -249,14 +257,25 @@ ModelVec4 readTangent(const char *p, int format) {
     return {};
 }
 
-ModelVec2 readUv(const char *p, int format) {
-    if (format == 35) { // R16G16_UNORM
-        return {readLeU16Raw(p, 0) / 65535.0f, readLeU16Raw(p, 2) / 65535.0f};
+std::optional<ModelVec2> readUv(const char *p, int format) {
+    switch (format) {
+    case 11:
+    case 35:
+        return ModelVec2{readLeU16Raw(p, 0) / 65535.0f, readLeU16Raw(p, 2) / 65535.0f};
+    case 13:
+    case 37:
+        return ModelVec2{snorm16(static_cast<qint16>(readLeU16Raw(p, 0))),
+                         snorm16(static_cast<qint16>(readLeU16Raw(p, 2)))};
+    case 10:
+    case 34:
+        return ModelVec2{halfToFloat(readLeU16Raw(p, 0)), halfToFloat(readLeU16Raw(p, 2))};
+    case 2:
+    case 6:
+    case 16:
+        return ModelVec2{readLeFloatRaw(p, 0), readLeFloatRaw(p, 4)};
+    default:
+        return std::nullopt;
     }
-    if (format == 16) { // R32G32_FLOAT
-        return {readLeFloatRaw(p, 0), readLeFloatRaw(p, 4)};
-    }
-    return {0.0f, 0.0f};
 }
 
 VertexLayout decodeLayout(const BundleBlobRecord &blob) {
@@ -275,7 +294,7 @@ VertexLayout decodeLayout(const BundleBlobRecord &blob) {
         e.inputSlot = c.i16();
         c.i16(); // inputSlotClass
         e.format = c.i32();
-        c.i32(); // alignedByteOffset
+        e.byteOffset = c.i32();
         c.i32(); // instanceDataStepRate
         layout.elements.push_back(e);
     }
@@ -328,7 +347,7 @@ MeshInfo decodeMesh(const BundleBlobRecord &blob) {
 
     mesh.is32BitIndices = c.u8() != 0;
     c.u16(); // topology
-    c.i32(); // index buffer index
+    mesh.indexBufferIndex = c.i32();
     mesh.indexBufferOffset = c.i32();
     mesh.indexBufferDrawOffset = c.i32();
     mesh.indexedVertexOffset = c.i32();
@@ -554,7 +573,14 @@ CarModel decodeModel(const ModelBundle &bundle, QString *error) {
         return model;
     }
 
-    const BufferData indexBuffer = decodeBuffer(*indexBlobs.front());
+    QHash<quint32, BufferData> indexBuffers;
+    for (const BundleBlobRecord *blob : indexBlobs) {
+        const quint32 index = blob->id.value_or(static_cast<quint32>(blob - bundle.blobs.data()));
+        indexBuffers.insert(index, decodeBuffer(*blob));
+    }
+    if (indexBlobs.size() == 1 && !indexBlobs.front()->id.has_value()) {
+        indexBuffers.insert(0, indexBuffers.cbegin().value());
+    }
 
     std::vector<BufferData> vertexBuffers;
     std::unordered_map<quint32, int> bufferById;
@@ -592,7 +618,7 @@ CarModel decodeModel(const ModelBundle &bundle, QString *error) {
     std::unordered_map<quint32, QString> materialNames;
     std::unordered_map<quint32, std::shared_ptr<ModelMaterial>> materials;
     for (const BundleBlobRecord &blob : bundle.blobs) {
-        if (blob.id.has_value() && !blob.name.isEmpty()) {
+        if (blob.tag == bundle_tags::MaterialInstance && blob.id.has_value() && !blob.name.isEmpty()) {
             materialNames.emplace(*blob.id, blob.name);
         }
         if (blob.tag == bundle_tags::MaterialInstance && blob.id.has_value()) {
@@ -651,26 +677,26 @@ CarModel decodeModel(const ModelBundle &bundle, QString *error) {
             layout = &layouts[it->second];
         } else if (info.vertexLayoutIndex >= 0 && info.vertexLayoutIndex < static_cast<int>(layouts.size())) {
             layout = &layouts[info.vertexLayoutIndex];
-        } else if (!layouts.empty()) {
-            layout = &layouts[0];
         }
         if (layout == nullptr) {
             continue;
         }
 
+        const auto indexBuffer = indexBuffers.constFind(static_cast<quint32>(info.indexBufferIndex));
+        if (indexBuffer == indexBuffers.cend()) continue;
         const int indexStride = info.is32BitIndices ? 4 : 2;
         const long long startIndexOffset =
             static_cast<long long>(info.indexBufferOffset) + static_cast<long long>(info.indexBufferDrawOffset) * indexStride;
         if (info.indexCount <= 0
             || startIndexOffset < 0
-            || startIndexOffset + static_cast<long long>(info.indexCount) * indexStride > indexBuffer.raw.size()) {
+            || startIndexOffset + static_cast<long long>(info.indexCount) * indexStride > indexBuffer->raw.size()) {
             continue;
         }
 
         std::vector<quint32> indices(info.indexCount);
         quint32 minIndex = std::numeric_limits<quint32>::max();
         quint32 maxIndex = 0;
-        const char *indexData = indexBuffer.raw.constData();
+        const char *indexData = indexBuffer->raw.constData();
         for (int i = 0; i < info.indexCount; ++i) {
             const long long addr = startIndexOffset + static_cast<long long>(i) * indexStride;
             const quint32 idx = indexStride == 4 ? readLeU32Raw(indexData, static_cast<int>(addr))
@@ -682,10 +708,11 @@ CarModel decodeModel(const ModelBundle &bundle, QString *error) {
         if (maxIndex < minIndex) {
             continue;
         }
-        const int vertexCount = static_cast<int>(maxIndex - minIndex) + 1;
-        if (vertexCount <= 0) {
+        const quint64 vertexSpan = static_cast<quint64>(maxIndex) - minIndex + 1;
+        if (vertexSpan > std::numeric_limits<int>::max()) {
             continue;
         }
+        const int vertexCount = static_cast<int>(vertexSpan);
 
         CarMesh out;
         out.name = info.name;
@@ -699,8 +726,6 @@ CarModel decodeModel(const ModelBundle &bundle, QString *error) {
                 out.materialName = it->second->name;
             }
         }
-        out.positions.assign(vertexCount, {});
-        out.normals.assign(vertexCount, {0.0f, 1.0f, 0.0f});
         out.indices.resize(indices.size());
         for (size_t i = 0; i < indices.size(); ++i) {
             out.indices[i] = indices[i] - minIndex;
@@ -708,8 +733,6 @@ CarModel decodeModel(const ModelBundle &bundle, QString *error) {
         if (info.rigidBoneIndex >= 0 && info.rigidBoneIndex < static_cast<int>(boneWorld.size())) {
             out.boneTransform = boneWorld[info.rigidBoneIndex].world;
         }
-
-        std::vector<float> posW(vertexCount, 0.0f);
 
         std::unordered_map<int, int> slotOffset;
         struct Elem {
@@ -720,8 +743,14 @@ CarModel decodeModel(const ModelBundle &bundle, QString *error) {
         elements.reserve(layout->elements.size());
         for (const VertexElement &e : layout->elements) {
             int &off = slotOffset[e.inputSlot];
-            elements.push_back({&e, off});
-            off += formatSize(e.format);
+            const int elementOffset = e.byteOffset == -1 ? off : e.byteOffset;
+            const int size = formatSize(e.format);
+            if (elementOffset < 0 || size == 0 || elementOffset > std::numeric_limits<int>::max() - size) {
+                off = -1;
+                continue;
+            }
+            elements.push_back({&e, elementOffset});
+            off = elementOffset + size;
         }
 
         auto readAttribute = [&](const Elem &elem, auto &&perVertex) {
@@ -734,40 +763,51 @@ CarModel decodeModel(const ModelBundle &bundle, QString *error) {
                 }
             }
             if (usage == nullptr) {
-                return;
+                return false;
             }
             const BufferData *vb = resolveBuffer(usage->index);
             if (vb == nullptr || vb->raw.isEmpty()) {
-                return;
+                return false;
             }
-            long long stride = vb->stride > 0 ? vb->stride : usage->stride;
-            if (stride == 0) {
-                stride = 28;
-            }
+            const long long stride = usage->stride > 0 ? usage->stride : vb->stride;
             const char *data = vb->raw.constData();
-            const int bufferLen = vb->raw.size();
             const int fmtSize = formatSize(e.format);
-            for (int i = 0; i < vertexCount; ++i) {
-                const long long vertexId = static_cast<long long>(minIndex) + i + info.indexedVertexOffset;
-                const long long addr = usage->offset + vertexId * stride + elem.offsetInStride;
-                if (addr >= 0 && addr + fmtSize <= bufferLen) {
-                    perVertex(data + addr, i);
-                }
+            const long long firstVertex = static_cast<long long>(minIndex) + info.indexedVertexOffset;
+            const long long lastVertex = static_cast<long long>(maxIndex) + info.indexedVertexOffset;
+            const long long attributeEnd = static_cast<long long>(elem.offsetInStride) + fmtSize;
+            const long long available = vb->raw.size() - static_cast<long long>(usage->offset) - attributeEnd;
+            if (firstVertex < 0 || attributeEnd > stride || available < 0 || lastVertex > available / stride) {
+                return false;
             }
+            const char *first = data + usage->offset + firstVertex * stride + elem.offsetInStride;
+            for (int i = 0; i < vertexCount; ++i) {
+                perVertex(first + i * stride, i);
+            }
+
+            return true;
         };
 
+        std::vector<float> posW;
         for (const Elem &elem : elements) {
-            if (layout->semanticFor(*elem.desc) != QStringLiteral("POSITION")) {
+            if (layout->semanticFor(*elem.desc) != QStringLiteral("POSITION")
+                || (elem.desc->format != 6 && elem.desc->format != 13)) {
                 continue;
             }
-            readAttribute(elem, [&](const char *p, int i) {
+            if (readAttribute(elem, [&](const char *p, int i) {
+                if (i == 0) {
+                    out.positions.resize(vertexCount);
+                    posW.resize(vertexCount);
+                }
                 const PositionSample s = readPosition(p, elem.desc->format, info);
                 out.positions[i] = s.pos;
                 posW[i] = s.w;
-            });
+            })) {
+                break;
+            }
         }
+        if (out.positions.empty()) continue;
+        out.normals.assign(vertexCount, {0.0f, 1.0f, 0.0f});
 
-        int maxChannel = -1;
         for (const Elem &elem : elements) {
             const QString semantic = layout->semanticFor(*elem.desc);
             if (semantic == QStringLiteral("POSITION")) {
@@ -781,8 +821,8 @@ CarModel decodeModel(const ModelBundle &bundle, QString *error) {
                 const int channel = elem.desc->semanticIndex;
                 if (channel < 0) continue;
                 if (static_cast<int>(out.tangentChannels.size()) <= channel) out.tangentChannels.resize(channel + 1);
-                out.tangentChannels[channel].assign(vertexCount, {});
                 readAttribute(elem, [&](const char *p, int i) {
+                    if (i == 0) out.tangentChannels[channel].resize(vertexCount);
                     out.tangentChannels[channel][i] = readTangent(p, elem.desc->format);
                 });
             } else if (semantic == QStringLiteral("TEXCOORD")) {
@@ -790,19 +830,34 @@ CarModel decodeModel(const ModelBundle &bundle, QString *error) {
                 if (channel < 0) {
                     continue;
                 }
-                maxChannel = std::max(maxChannel, channel);
-                if (static_cast<int>(out.uvChannels.size()) <= channel) {
-                    out.uvChannels.resize(channel + 1);
-                }
-                out.uvChannels[channel].assign(vertexCount, {});
+                std::vector<ModelVec2> coordinates;
+                bool valid = true;
                 readAttribute(elem, [&](const char *p, int i) {
-                    out.uvChannels[channel][i] = readUv(p, elem.desc->format);
+                    if (!valid) return;
+                    const auto uv = readUv(p, elem.desc->format);
+                    valid = uv && std::isfinite(uv->u) && std::isfinite(uv->v);
+                    if (valid) {
+                        if (i == 0) coordinates.reserve(vertexCount);
+                        coordinates.push_back(*uv);
+                    }
                 });
+                if (valid && !coordinates.empty()) {
+                    if (static_cast<int>(out.uvChannels.size()) <= channel) {
+                        out.uvChannels.resize(channel + 1);
+                    }
+                    out.uvChannels[channel] = std::move(coordinates);
+                }
             }
         }
 
         out.texCoordTransforms = info.texCoordTransforms;
-        out.liveryUvChannel = (out.uvChannels.size() > 3 && !out.uvChannels[3].empty()) ? 3 : -1;
+        const TexCoordTransform &liveryTransform = out.texCoordTransforms[kAuthoredLiveryUvChannel];
+        if (out.uvChannels.size() > kAuthoredLiveryUvChannel
+            && !out.uvChannels[kAuthoredLiveryUvChannel].empty()
+            && std::isfinite(liveryTransform.offsetU) && std::isfinite(liveryTransform.scaleU)
+            && std::isfinite(liveryTransform.offsetV) && std::isfinite(liveryTransform.scaleV)) {
+            out.liveryUvChannel = kAuthoredLiveryUvChannel;
+        }
 
         if ((lodMask & 0x01u) != 0) {
             bounds.include(out);

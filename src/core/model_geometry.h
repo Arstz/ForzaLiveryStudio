@@ -131,6 +131,7 @@ struct CarWheelMount {
 struct CarModel {
     QString sourcePath;
     QString mediaName;
+    QStringList unresolvedModelPaths;
     std::vector<CarMesh> meshes;
     std::vector<std::vector<CarMesh>> additionalLodMeshes;
     std::vector<CarMesh> variantMeshes;

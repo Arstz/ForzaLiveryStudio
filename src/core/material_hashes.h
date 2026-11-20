@@ -300,6 +300,46 @@ inline constexpr std::array<quint32, 4> kDetailNormalTexture = {
 inline constexpr std::array<quint32, 5> kEmissiveTexture = {
     0x4E0D5E89, 0x6161E552, 0x020B22EB, 0x212B4B48, 0x3CB4DFCB,
 };
+inline constexpr quint32 kEmissiveMaskTexture = 2132370879;
+inline constexpr quint32 kEmissionTint = 493528640;
+inline constexpr quint32 kEmissionEnabled = 3484217686;
+inline constexpr quint32 kEmissionUvOrientation = 3769686720;
+inline constexpr quint32 kEmissionTilingU = 2446521101;
+inline constexpr quint32 kEmissionTilingV = 2069114479;
+inline constexpr quint32 kEmissionMaskTilingU = 2490477472;
+inline constexpr quint32 kEmissionMaskTilingV = 2130147010;
+inline constexpr quint32 kLegacyEmissionTexture = 1156339763;
+inline constexpr quint32 kLegacyEmissionTiling = 763429556;
+inline constexpr quint32 kPrimaryUvSelection = 1076596432;
+inline constexpr quint32 kGlassBackNormal = 2282876097;
+inline constexpr quint32 kGlassBackNormalIntensity = 2224331770;
+inline constexpr quint32 kLegacyGlassNormal = 41477758;
+inline constexpr quint32 kLegacyGlassNormalTiling = 3498128923;
+inline constexpr quint32 kLegacyBulbNormalTiling = 2485952580;
+inline constexpr quint32 kLegacyGlassAlphaTiling = 1334899531;
+inline constexpr quint32 kGlassColor = 421910975;
+inline constexpr quint32 kGlassOpacity = 130281832;
+inline constexpr quint32 kLegacyGlassOpacity = 1087173465;
+inline constexpr quint32 kSecondaryGlassOpacity = 691601806;
+inline constexpr quint32 kGlassDualOpacity = 1136567404;
+inline constexpr quint32 kGlassOpacityMaskMin = 1505996630;
+inline constexpr quint32 kGlassOpacityMaskMax = 3383803836;
+inline constexpr quint32 kAlphaTextureEnabled = 1564372781;
+inline constexpr quint32 kFirstGenerationGlassNormal = 3368554958;
+inline constexpr quint32 kSecondUvGlassNormal = 3908975388;
+inline constexpr quint32 kSecondUvGlassNormalTiling = 2199612831;
+inline constexpr quint32 kSecondUvGlassTilingU = 2964886654;
+inline constexpr quint32 kSecondUvGlassTilingV = 3436818853;
+inline constexpr quint32 kSecondUvGlassRotation = 699108822;
+inline constexpr quint32 kGlassTintMaskTexture = 1907067561;
+inline constexpr quint32 kGlassTintMaskTiling = 3757793948;
+inline constexpr quint32 kGlassTintMaskEnabled = 3570293091;
+inline constexpr quint32 kGlassOpacityTintMask = 3745540453;
+inline constexpr quint32 kGlassTintMultiplier = 2694311068;
+inline constexpr quint32 kLegacyEmissionMaskTexture = 3714532035;
+inline constexpr quint32 kLegacyEmissionMaskTiling = 2949269687;
+inline constexpr quint32 kLegacyEmissionMaskEnabled = 3589082118;
+inline constexpr quint32 kLegacyGlassNormalIntensity = 4005214566;
 
 inline constexpr std::array<quint32, 4> kAlphaTexture = {
     0x698CA64F, 0x57D9D49E, 0x66E53F62, 0x2FDCDBF0,

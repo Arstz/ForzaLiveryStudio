@@ -8,6 +8,8 @@
 
 namespace fls {
 
+class CarAssetIndex;
+
 constexpr int kLiverySideCount = 11;
 
 // Canvas-to-mask mapping is texel_x=x+1024 and texel_y=512-y.
@@ -41,5 +43,7 @@ struct LiveryMaskSet {
 };
 
 LiveryMaskSet loadLiveryMasks(const QString &dir, QString *error = nullptr);
+LiveryMaskSet loadLiveryMasks(const QString &xmlPath, const CarAssetIndex &assets,
+                              QString *error = nullptr);
 
 } // namespace fls

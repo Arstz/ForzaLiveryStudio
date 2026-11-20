@@ -3,8 +3,11 @@
 #include "binary_io.h"
 #include "material_hashes.h"
 
+#include <QHash>
+
 #include <algorithm>
 #include <cmath>
+#include <iterator>
 #include <stdexcept>
 
 namespace fls {
@@ -34,6 +37,13 @@ public:
         }
         throw std::runtime_error("invalid material string length");
     }
+
+    QUuid guid() {
+        std::array<char, 16> id;
+        for (char &byte : id) byte = static_cast<char>(u8());
+
+        return QUuid::fromBytes(id.data(), QSysInfo::LittleEndian);
+    }
 };
 
 bool atLeast(quint8 major, quint8 minor, quint8 wantedMajor, quint8 wantedMinor) {
@@ -50,11 +60,11 @@ ModelMaterialParameter readParameter(Cursor &cursor) {
     parameter.versionMinor = cursor.u8();
     parameter.nameHash = cursor.u32();
     if (atLeast(parameter.versionMajor, parameter.versionMinor, 3, 1) && cursor.u8() != 0) {
-        cursor.u32();
+        parameter.aliasHash = cursor.u32();
     }
     parameter.type = static_cast<ModelMaterialParameterType>(cursor.u8());
     if (parameter.versionMajor >= 3) {
-        cursor.skip(16);
+        parameter.parameterId = cursor.guid();
     }
 
     switch (parameter.type) {
@@ -62,6 +72,7 @@ ModelMaterialParameter readParameter(Cursor &cursor) {
     case ModelMaterialParameterType::Color:
     case ModelMaterialParameterType::Swizzle:
     case ModelMaterialParameterType::FunctionRange:
+    case ModelMaterialParameterType::PackedVector:
         parameter.vector = readVector(cursor);
         break;
     case ModelMaterialParameterType::Float:
@@ -127,7 +138,105 @@ std::vector<ModelMaterialParameter> readParameters(const BundleBlobRecord &blob)
     return parameters;
 }
 
+void appendShaderTextures(ModelMaterial &material, const BundleBlobRecord &blob) {
+    if (!blob.isAtLeastVersion(3, 1)) return;
+    Cursor cursor(blob.data);
+    const quint16 count = cursor.u16();
+    for (quint16 index = 0; index < count; ++index) {
+        ShaderTextureBinding binding;
+        binding.nameHash = cursor.u32();
+        binding.shaderRegister = cursor.u16();
+        binding.parameterId = cursor.guid();
+        material.shaderTextures.push_back(std::move(binding));
+    }
+}
+
+void applyTextureCoordinates(ModelMaterial &material, const ModelMaterialParameter &parameter) {
+    using namespace material_hashes::parameter;
+    using Type = ModelMaterialParameterType;
+    if (parameter.type == Type::Bool && parameter.nameHash == kPrimaryUvSelection) {
+        material.materialUvChannel = parameter.boolean ? 0 : 1;
+    } else if (parameter.type == Type::Vector2) {
+        const std::array<float, 2> tiling = {parameter.vector[0], parameter.vector[1]};
+        if (parameter.nameHash == kLegacyGlassAlphaTiling) {
+            material.alphaUv = MaterialUvMapping{tiling};
+            material.glassOpacity.interpolateAlphaTexture = true;
+        } else if (parameter.nameHash == kLegacyGlassNormalTiling || parameter.nameHash == kLegacyBulbNormalTiling) {
+            material.normalUv = MaterialUvMapping{tiling};
+        } else if (parameter.nameHash == kSecondUvGlassNormalTiling) {
+            material.normalUv = MaterialUvMapping{tiling, 1};
+        } else if (parameter.nameHash == kLegacyEmissionTiling) {
+            material.emissiveUv = MaterialUvMapping{tiling};
+        } else if (parameter.nameHash == kLegacyEmissionMaskTiling) {
+            material.emissiveMaskUv = MaterialUvMapping{tiling};
+        } else if (parameter.nameHash == kGlassTintMaskTiling) {
+            material.glassTintUv = MaterialUvMapping{tiling};
+        }
+    } else if (parameter.type == Type::Float && std::isfinite(parameter.scalar)) {
+        MaterialUvMapping emission = material.emissiveUv.value_or(MaterialUvMapping{});
+        MaterialUvMapping mask = material.emissiveMaskUv.value_or(MaterialUvMapping{});
+        const float value = parameter.scalar;
+        switch (parameter.nameHash) {
+        case kSecondUvGlassTilingU:
+        case kSecondUvGlassTilingV:
+        case kSecondUvGlassRotation: {
+            MaterialUvMapping mapping = material.normalUv.value_or(MaterialUvMapping{});
+            mapping.channel = 1;
+            mapping.tileBeforeRotation = true;
+            if (parameter.nameHash == kSecondUvGlassRotation) mapping.rotationDegrees = value;
+            else mapping.tiling[parameter.nameHash == kSecondUvGlassTilingU ? 0 : 1] = value;
+            material.normalUv = material.alphaUv = mapping;
+            material.glassOpacity.interpolateAlphaTexture = true;
+            return;
+        }
+        case kEmissionUvOrientation:
+            emission.rotationDegrees = value;
+            mask.rotationDegrees = value;
+            break;
+        case kEmissionTilingU: emission.tiling[0] = value; break;
+        case kEmissionTilingV: emission.tiling[1] = value; break;
+        case kEmissionMaskTilingU: mask.tiling[0] = value; break;
+        case kEmissionMaskTilingV: mask.tiling[1] = value; break;
+        default: return;
+        }
+        material.emissiveUv = emission;
+        material.emissiveMaskUv = mask;
+    }
+}
+
+void applyGlassAndEmission(ModelMaterial &material, const ModelMaterialParameter &parameter) {
+    using namespace material_hashes::parameter;
+    using Type = ModelMaterialParameterType;
+    const quint32 id = parameter.nameHash;
+    if (parameter.type == Type::Bool) {
+        if (id == kGlassDualOpacity) material.glassOpacity.dualOpacity = parameter.boolean;
+        if (id == kAlphaTextureEnabled) material.glassOpacity.useAlphaTexture = parameter.boolean;
+        if (id == kEmissionEnabled) material.emissionEnabled = parameter.boolean;
+        if (id == kLegacyEmissionMaskEnabled) material.emissionMaskEnabled = parameter.boolean;
+        if (id == kGlassTintMaskEnabled) material.useGlassTintMask = parameter.boolean;
+        if (id == kGlassOpacityTintMask) material.useGlassTintForOpacity = parameter.boolean;
+    } else if (parameter.type == Type::Float && std::isfinite(parameter.scalar)) {
+        const float opacity = std::clamp(parameter.scalar, 0.0f, 1.0f);
+        if (id == kGlassOpacity || id == kLegacyGlassOpacity) material.glassOpacity.primary = opacity;
+        if (id == kSecondaryGlassOpacity) material.glassOpacity.secondary = opacity;
+        if (id == kGlassOpacityMaskMin) material.glassOpacity.maskMin = opacity;
+        if (id == kGlassOpacityMaskMax) material.glassOpacity.maskMax = opacity;
+        if (id == kGlassBackNormalIntensity || id == kLegacyGlassNormalIntensity) {
+            material.normalIntensity = parameter.scalar;
+        }
+        if (id == kGlassTintMultiplier) material.glassTintMultiplier = parameter.scalar;
+    } else if (parameter.type == Type::Color || parameter.type == Type::Vector) {
+        if (id == kEmissionTint) {
+            material.usesTintedEmission = true;
+            material.emissiveColor = {parameter.vector[0], parameter.vector[1], parameter.vector[2]};
+        }
+        if (id == kGlassColor) material.glass = true;
+    }
+}
+
 void applyPreviewParameter(ModelMaterial &material, const ModelMaterialParameter &parameter) {
+    applyTextureCoordinates(material, parameter);
+    applyGlassAndEmission(material, parameter);
     const bool vectorValue = parameter.type == ModelMaterialParameterType::Vector
         || parameter.type == ModelMaterialParameterType::Color;
     if (vectorValue
@@ -215,9 +324,46 @@ void applyPreviewParameter(ModelMaterial &material, const ModelMaterialParameter
 
 void appendParameters(ModelMaterial &material, const BundleBlobRecord &blob) {
     std::vector<ModelMaterialParameter> decoded = readParameters(blob);
-    for (const ModelMaterialParameter &parameter : decoded) {
+    material.parameters.insert(material.parameters.end(), std::make_move_iterator(decoded.begin()),
+                               std::make_move_iterator(decoded.end()));
+}
+
+void applyEffectiveParameters(ModelMaterial &material) {
+    const auto key = [](const ModelMaterialParameter &parameter) {
+        return (static_cast<quint64>(parameter.nameHash) << 8) | static_cast<quint8>(parameter.type);
+    };
+    QHash<quint64, const ModelMaterialParameter *> effective;
+    for (const auto &parameter : material.parameters) effective.insert(key(parameter), &parameter);
+    std::vector<ModelMaterialParameter> parameters;
+    parameters.reserve(effective.size());
+    for (auto &parameter : material.parameters) {
+        if (effective.value(key(parameter)) != &parameter) continue;
         applyPreviewParameter(material, parameter);
-        material.parameters.push_back(parameter);
+        parameters.push_back(std::move(parameter));
+    }
+    material.parameters = std::move(parameters);
+    QString resource = material.resourcePath.toLower();
+    resource.replace(QLatin1Char('\\'), QLatin1Char('/'));
+    material.glass |= resource.contains(QStringLiteral("/glass/"))
+        || resource.contains(QStringLiteral("/exterior_glass/"))
+        || resource.contains(QStringLiteral("/exterior_litglass/"))
+        || resource.contains(QStringLiteral("/rad_glm_"))
+        || resource.contains(QStringLiteral("/gls_"));
+    const auto shader = std::find_if(material.linkedPaths.crbegin(), material.linkedPaths.crend(),
+        [](const QString &path) { return path.endsWith(QStringLiteral(".shaderbin"), Qt::CaseInsensitive); });
+    if (shader == material.linkedPaths.crend()) return;
+    QString shaderPath = shader->toLower();
+    shaderPath.replace(QLatin1Char('\\'), QLatin1Char('/'));
+    const QString program = shaderPath.section(QLatin1Char('/'), -1);
+    if (program == QStringLiteral("glm_ch2_illuminatingglass_ch1mask.shaderbin")
+        || program == QStringLiteral("glm_ch2bumpch1mask.shaderbin")
+        || program == QStringLiteral("gls_ch2glossopacityemissive.shaderbin")) {
+        material.materialUvChannel = 1;
+        MaterialUvMapping alpha = material.alphaUv.value_or(MaterialUvMapping{});
+        MaterialUvMapping emission = material.emissiveUv.value_or(MaterialUvMapping{});
+        alpha.channel = emission.channel = 1;
+        material.alphaUv = alpha;
+        material.emissiveUv = emission;
     }
 }
 
@@ -239,6 +385,8 @@ std::shared_ptr<ModelMaterial> decodeMaterialFromBundle(
             if (child.isAtLeastVersion(1, 2)) {
                 material->linkedPaths.push_back(cursor.string7());
             }
+        } else if (child.tag == bundle_tags::TextureParameterMapping) {
+            appendShaderTextures(*material, child);
         }
     }
     for (const BundleBlobRecord &child : bundle.blobs) {
@@ -251,6 +399,11 @@ std::shared_ptr<ModelMaterial> decodeMaterialFromBundle(
             appendParameters(*material, child);
         }
     }
+    if (!bundle.blobsWithTag(bundle_tags::TextureParameterMapping).empty()) {
+        for (auto &parameter : material->parameters) parameter.shaderDefault = true;
+    }
+    applyEffectiveParameters(*material);
+
     return material;
 }
 
@@ -275,20 +428,61 @@ std::shared_ptr<ModelMaterial> mergeModelMaterialDefaults(
     const ModelMaterial &defaults, const ModelMaterial &instance) {
     auto merged = std::make_shared<ModelMaterial>();
     merged->name = instance.name;
-    merged->resourcePath = instance.resourcePath;
+    merged->resourcePath = instance.resourcePath.isEmpty() ? defaults.resourcePath : instance.resourcePath;
     merged->linkedPaths = defaults.linkedPaths;
     merged->linkedPaths.append(instance.linkedPaths);
     merged->parameters.reserve(defaults.parameters.size() + instance.parameters.size());
+    merged->shaderTextures = instance.shaderTextures.empty() ? defaults.shaderTextures : instance.shaderTextures;
 
-    for (const ModelMaterialParameter &parameter : defaults.parameters) {
-        applyPreviewParameter(*merged, parameter);
-        merged->parameters.push_back(parameter);
-    }
-    for (const ModelMaterialParameter &parameter : instance.parameters) {
-        applyPreviewParameter(*merged, parameter);
-        merged->parameters.push_back(parameter);
-    }
+    merged->parameters.insert(merged->parameters.end(), defaults.parameters.begin(), defaults.parameters.end());
+    merged->parameters.insert(merged->parameters.end(), instance.parameters.begin(), instance.parameters.end());
+    merged->overriddenByScene = instance.overriddenByScene;
+    merged->resolvedFromResource = defaults.resolvedFromResource || instance.resolvedFromResource;
+    merged->resolvedFromShader = defaults.resolvedFromShader || instance.resolvedFromShader;
+    applyEffectiveParameters(*merged);
+
     return merged;
+}
+
+std::optional<quint32> shaderTextureParameter(
+    const ModelMaterial &material, const ModelMaterialParameter &parameter) {
+    if (material.shaderTextures.empty()) return parameter.nameHash;
+    const auto &bindings = material.shaderTextures;
+    const auto exact = std::find_if(bindings.cbegin(), bindings.cend(), [&](const auto &binding) {
+        return binding.nameHash == parameter.nameHash;
+    });
+    if (exact != bindings.cend()) return exact->nameHash;
+    const auto alias = std::find_if(bindings.cbegin(), bindings.cend(), [&](const auto &binding) {
+        return (!parameter.parameterId.isNull() && parameter.parameterId == binding.parameterId)
+            || parameter.aliasHash == binding.nameHash;
+    });
+
+    return alias == bindings.cend() ? std::nullopt : std::optional(alias->nameHash);
+}
+
+float lampGlassPreviewOpacity(const ModelMaterial *material, bool colored) {
+    constexpr float kMaskedOpacity = 0.50f;
+    constexpr float kColoredOpacity = 0.34f;
+    constexpr float kClearOpacity = 0.20f;
+
+    if (material != nullptr) {
+        if (material->glassOpacity.primary) return *material->glassOpacity.primary;
+        if (!material->resolvedFromResource && !material->resolvedFromShader
+            && material->glassOpacity.useAlphaTexture.value_or(true)) {
+            const auto &parameters = material->parameters;
+            const bool hasOpacityMap = std::any_of(parameters.cbegin(), parameters.cend(),
+                [&](const ModelMaterialParameter &parameter) {
+                    if (parameter.type != ModelMaterialParameterType::Texture2D
+                        || parameter.texturePath.isEmpty()) return false;
+                    const auto binding = shaderTextureParameter(*material, parameter);
+
+                    return binding && material_hashes::contains(material_hashes::parameter::kAlphaTexture, *binding);
+                });
+            if (hasOpacityMap) return kMaskedOpacity;
+        }
+    }
+
+    return colored ? kColoredOpacity : kClearOpacity;
 }
 
 } // namespace fls
