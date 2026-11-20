@@ -145,47 +145,25 @@ QByteArray readImportFile(const QString &path, bool optional = false) {
     return file.readAll();
 }
 
-std::optional<fls::Xbox360Credentials> chooseXbox360Credentials(
-    QWidget *parent, fls::ExportGameVersion game, fls::Xbox360FileKind kind, bool exporting) {
-    const bool executable = fls::xbox360SupportsExecutableKeys(game, kind);
-    const QString filter = executable
-        ? QStringLiteral("Decompressed game executable (*.pe);;Profile-derived keys (*.keys)")
-        : QStringLiteral("Profile-derived keys (*.keys)");
+std::optional<fls::Xbox360Credentials> chooseXbox360KeyFile(QWidget *parent, fls::ExportGameVersion game) {
+    constexpr qint64 kMaximumKeyFileSize = 48;
     const QString path = QFileDialog::getOpenFileName(parent,
-        QStringLiteral("Select %1 Xbox 360 key material").arg(fls::exportGameCode(game)),
-        QString(), filter);
+        QStringLiteral("Select %1 Xbox 360 Key File").arg(fls::exportGameCode(game)),
+        QString(), QStringLiteral("Profile-derived keys (*.keys)"));
     if (path.isEmpty()) {
         return std::nullopt;
     }
+    if (QFileInfo(path).suffix().compare(QStringLiteral("keys"), Qt::CaseInsensitive) != 0) {
+        throw std::runtime_error("select an Xbox 360 .keys file");
+    }
     QFile file(path);
-    constexpr qint64 kMaximumExecutableSize = 128 * 1024 * 1024;
-    if (!file.open(QIODevice::ReadOnly) || file.size() > kMaximumExecutableSize) {
-        throw std::runtime_error("could not read Xbox 360 key material");
+    if (!file.open(QIODevice::ReadOnly)) {
+        throw std::runtime_error("could not read the Xbox 360 key file");
     }
     fls::Xbox360Credentials credentials;
-    credentials.keyData = file.readAll();
-    if (QFileInfo(path).suffix().compare(QStringLiteral("keys"), Qt::CaseInsensitive) == 0) {
-        return credentials;
-    }
-    bool accepted = false;
-    const QString profileId = QInputDialog::getText(parent, QStringLiteral("Xbox 360 Profile"),
-        QStringLiteral("Save profile ID (16 hexadecimal digits from the profile folder name)"),
-        QLineEdit::Normal, QString(), &accepted);
-    if (!accepted) {
-        return std::nullopt;
-    }
-    credentials.profileId = fls::xbox360ProfileId(profileId);
-    credentials.source = fls::Xbox360KeySource::Executable;
-    if (exporting && game == fls::ExportGameVersion::Horizon1) {
-        const QStringList builds{QStringLiteral("Disc executable"), QStringLiteral("Title Update 4 executable")};
-        const QString selected = QInputDialog::getItem(parent, QStringLiteral("Forza Horizon 1 Executable"),
-            QStringLiteral("Executable version"), builds, 0, false, &accepted);
-        if (!accepted) {
-            return std::nullopt;
-        }
-        if (selected == builds.back()) {
-            credentials.source = fls::Xbox360KeySource::HorizonTitleUpdate;
-        }
+    credentials.keyData = file.read(kMaximumKeyFileSize + 1);
+    if (file.error() != QFileDevice::NoError) {
+        throw std::runtime_error("could not read the Xbox 360 key file");
     }
 
     return credentials;
@@ -193,7 +171,7 @@ std::optional<fls::Xbox360Credentials> chooseXbox360Credentials(
 
 std::optional<fls::ExportGameVersion> xbox360ImportGame(QWidget *parent, fls::Xbox360Envelope envelope) {
     if (envelope == fls::Xbox360Envelope::Motorsport2) {
-        throw std::runtime_error("Forza Motorsport 2 uses a different livery format");
+        throw std::runtime_error("FM2 is not supported");
     }
     if (envelope == fls::Xbox360Envelope::Sha1) {
         return fls::ExportGameVersion::Motorsport3;
@@ -874,7 +852,7 @@ bool MainWindow::importAny(const QString &path, QString *error) {
                 if (!game) {
                     return false;
                 }
-                const auto credentials = chooseXbox360Credentials(this, *game, xbox360Kind, false);
+                const auto credentials = chooseXbox360KeyFile(this, *game);
                 if (!credentials) {
                     return false;
                 }
@@ -1296,8 +1274,7 @@ void MainWindow::exportDialog() {
         try {
             std::optional<fls::Xbox360Credentials> credentials;
             if (selection->containerFormat == ExportContainerFormat::Xbox360SignedFile) {
-                const auto kind = livery ? fls::Xbox360FileKind::Livery : fls::Xbox360FileKind::Group;
-                credentials = chooseXbox360Credentials(this, selection->gameVersion, kind, true);
+                credentials = chooseXbox360KeyFile(this, selection->gameVersion);
                 if (!credentials) {
                     return;
                 }

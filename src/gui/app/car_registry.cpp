@@ -39,6 +39,10 @@ constexpr int kCarDialogWidth = 1000;
 constexpr int kCarDialogHeight = 560;
 constexpr int kClosestModelYearDifference = 5;
 
+const QStringList kLegacyGameOrder = {
+    QStringLiteral("FH1"), QStringLiteral("FM4"), QStringLiteral("FM3"), QStringLiteral("FM2"),
+};
+
 QStringList supportedGames(const QString &versions) {
     QStringList games = versions.toUpper().split(QLatin1Char(','), Qt::SkipEmptyParts);
     for (QString &game : games) {
@@ -446,6 +450,11 @@ bool chooseCarModel(QWidget *parent, int currentId, int *outId, bool confirmMiss
         }
     }
     QStringList games = fls::carModelGames();
+    for (const QString &game : kLegacyGameOrder) {
+        if (catalogGames.remove(game)) {
+            games.append(game);
+        }
+    }
     QStringList otherGames = catalogGames.values();
     otherGames.sort();
     for (const QString &game : otherGames) {

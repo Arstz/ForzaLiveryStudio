@@ -37,7 +37,7 @@ I ~hate~ love this name. A standalone C++ QT editor for Forza vinyl groups and l
 
 Download the latest [release](https://github.com/Arstz/ForzaLiveryStudio/releases/latest), launch `ForzaLiveryStudio.exe`. Read [manual](docs/MANUAL.md) for keyboard shortcuts and tools guide.
 
-Configure all the windows as you need them and press `Window -> Save Layout`. If you want to rename the default shapes, go to `assets/vector/shape_names.json`.
+Configure all the windows as you need them, layout will save automatically. If you want to rename the default shapes, go to `assets/vector/shape_names.json`.
 
 All settings as well as custom groups are stored in your QSettings, in the registry `HKEY_CURRENT_USER\Software\ForzaTools\ForzaLiveryStudio`.
 
@@ -89,19 +89,25 @@ See [developer guide](docs/DEV.md) for detailed build and development instructio
 
 ## Status
 
-The import/export for groups is fully supported, core functionality in place. Source-backed liveries can be imported, previewed in 3D on a car model. The icons are handmade, we need a proper designer, I know they are ugly but at least we wont get sued. Livery import/export may have some shape transform mutations due to alingment issues, create an issue and attach a livery if that happens, we will investigate.
+Encoder/decoder should be pretty robust now, PGS, WGS and LIV can be read without errors, at least on everything tested so far. Car models can be loaded with some inconsistencies, but UV unwrap should be correct for almost all.
 
 | Version     | Group          | Livery        |
 |-------------|----------------|---------------| 
 | Horizon 6   | Import/Export  | Import/Export |
 | Motosport 23| Import/Export  | Import/Export |
 | Horizon 5   | Import/Export  | Import/Export |
-| Motosport 7 | Import/Export  | Import/Export |
 | Horizon 4   | Import/Export  | Import/Export |
+| Motosport 7 | Import/Export  | Import/Export |
 | Horizon 3   | Import/Export  | Import/Export |
 | Motosport 6 | Import/Export  | Import/Export |
 | Horizon 2   | Import/Export  | Import/Export |
 | Motosport 5 | Import/Export  | Import/Export |
+| Horizon 1   | Import         | Import        |
+| Motosport 4 | Import         | Import        |
+| Motosport 3 | Import         | Import        |
+| Motosport 2 |                |               |
+
+*360 titles have export support but is not stable
 
 ## Documentation
 
