@@ -49,13 +49,30 @@ QJsonObject forGame(QJsonObject entry, const QString &game) {
     return entry;
 }
 
-QString wheelLibrary(const QString &sourcePath) {
+QString wheelLibrary(const QString &sourcePath, const QString &gameFolder) {
+    const QString library = QStringLiteral("_library/scene");
+    QStringList carsDirectories = fls::gameCarsDirs(gameFolder);
     QDir directory = QFileInfo(sourcePath).absoluteDir();
-    while (true) {
-        const QString path = fls::gameAssetFilePath(directory, QStringLiteral("_library/scene"));
-        if (QDir(path).exists()) return path;
-        if (!directory.cdUp()) break;
+
+    if (!carsDirectories.isEmpty()) {
+        const QString source = directory.absolutePath() + QLatin1Char('/');
+        const auto loadedCarsDirectory = std::find_if(carsDirectories.begin(), carsDirectories.end(),
+            [&source](const QString &path) { return source.startsWith(path + QLatin1Char('/'), Qt::CaseInsensitive); });
+        if (loadedCarsDirectory != carsDirectories.end()) {
+            std::rotate(carsDirectories.begin(), loadedCarsDirectory, loadedCarsDirectory + 1);
+        }
+        for (const QString &carsDirectory : carsDirectories) {
+            const QString path = fls::gameAssetFilePath(QDir(carsDirectory), library);
+            if (QFileInfo(path).isDir()) return path;
+        }
+        return {};
     }
+
+    do {
+        const QString path = fls::gameAssetFilePath(directory, library);
+        if (QFileInfo(path).isDir()) return path;
+        if (directory.dirName().compare(QStringLiteral("media"), Qt::CaseInsensitive) == 0) break;
+    } while (directory.cdUp());
 
     return {};
 }
@@ -297,7 +314,8 @@ bool selectWheelPreviewStyle(WheelPreviewState &state, int partType, int optionI
 }
 
 std::shared_ptr<WheelPreviewState> prepareWheelPreview(
-    const fls::CarModel &model, const QString &sourcePath, const QString &game, const fls::WheelSizing &sizing) {
+    const fls::CarModel &model, const QString &sourcePath, const QString &game, const fls::WheelSizing &sizing,
+    const QString &gameFolder) {
     auto state = std::make_shared<WheelPreviewState>();
     const auto catalog = readCatalog(QStringLiteral("rim_ids.json"));
     const auto parts = readCatalog(QStringLiteral("part_names.json"));
@@ -310,7 +328,7 @@ std::shared_ptr<WheelPreviewState> prepareWheelPreview(
     state->independentRimStyles = !game.isEmpty() && version == QStringLiteral("FH6");
     state->sizing = sizing;
     state->mounts = model.wheelMounts;
-    state->libraryPath = wheelLibrary(sourcePath);
+    state->libraryPath = wheelLibrary(sourcePath, gameFolder);
     if (state->mounts.empty() || state->libraryPath.isEmpty()) return {};
     for (const auto &mesh : model.meshes) {
         QString path = mesh.sourceModelPath;

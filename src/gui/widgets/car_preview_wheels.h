@@ -70,7 +70,8 @@ bool isRimSelector(int partType);
 bool selectWheelPreviewStyle(WheelPreviewState &state, int partType, int optionId);
 void resolveTireTemplateMaterials(fls::CarModel &model, const QString &archivePath, bool loadTextures);
 std::shared_ptr<WheelPreviewState> prepareWheelPreview(
-    const fls::CarModel &model, const QString &sourcePath, const QString &game, const fls::WheelSizing &sizing);
+    const fls::CarModel &model, const QString &sourcePath, const QString &game, const fls::WheelSizing &sizing,
+    const QString &gameFolder = {});
 void installWheelPartOptions(fls::CarModel &model, const WheelPreviewState &state);
 QVector<WheelSizeOption> wheelSizeOptions(const WheelPreviewState &state, bool front, bool diameter,
     int bodyOptionId);

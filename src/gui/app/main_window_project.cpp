@@ -128,23 +128,28 @@ void MainWindow::maybeAutoLoadCarForProject(bool replaceLoadedModel, bool offerG
             return;
         }
         carPreview_->clearModel();
+        updateCarUnwrapOverlay();
         if (headerMetadata_ != nullptr) {
             headerMetadata_->setTargetCarLabel(targetCarLabel());
         }
     }
-    if (project.carId == 0) {
+    const int carId = project.carId;
+    if (carId == 0) {
         return;
     }
-    const QString modelName = sharedCarRegistry().name(project.carId);
-    const QString modelCode = sharedCarRegistry().modelCode(project.carId);
+    const CarRegistry &registry = sharedCarRegistry();
+    const QString modelName = registry.displayName(carId);
+    const QString modelCode = registry.modelCode(carId);
+    const QString preferredGame = project.liveryPaint.game;
+
     if (modelCode.isEmpty()) {
         return;
     }
 
-    CarRegistry::ModelSource source = sharedCarRegistry().findModel(project.carId, settings.gameFolders, project.liveryPaint.game);
-    if (source.path.isEmpty() && offerGameFolderSetup) {
-        for (const QString &game : fls::carModelGames(project.liveryPaint.game)) {
-            if (!sharedCarRegistry().isSupported(project.carId, game)
+    auto sources = registry.findModels(carId, settings.gameFolders, preferredGame);
+    if (sources.isEmpty() && offerGameFolderSetup) {
+        for (const QString &game : fls::carModelGames(preferredGame)) {
+            if (!registry.isSupported(carId, game)
                 || !fls::gameCarsDirs(settings.gameFolders.value(game)).isEmpty()
                 || promptedGameFolders_.contains(game)) continue;
             promptedGameFolders_.insert(game);
@@ -153,7 +158,7 @@ void MainWindow::maybeAutoLoadCarForProject(bool replaceLoadedModel, bool offerG
                 QStringLiteral("This livery targets \"%1\".\n\nChoose your %2 install folder so the "
                                "matching car and its paint materials can be loaded automatically? "
                                "(You can also set it later under Settings > General.)")
-                    .arg(modelName.isEmpty() ? modelCode : modelName, game),
+                    .arg(modelName, game),
                 QMessageBox::Yes | QMessageBox::No);
             if (choice == QMessageBox::Yes) {
                 const QString picked = QFileDialog::getExistingDirectory(this, QStringLiteral("%1 Game Folder").arg(game));
@@ -161,19 +166,22 @@ void MainWindow::maybeAutoLoadCarForProject(bool replaceLoadedModel, bool offerG
                     settings.gameFolders.insert(game, picked);
                     saveBehaviorSettings(settings);
                     carPreview_->setGameFolder(settings.gameFolders.value(QStringLiteral("FH6")));
-                    source = sharedCarRegistry().findModel(project.carId, settings.gameFolders, project.liveryPaint.game);
+                    sources = registry.findModels(carId, settings.gameFolders, preferredGame);
                 }
             }
             break;
         }
     }
 
-    if (source.path.isEmpty()) {
+    if (sources.isEmpty()) {
         canvasStatusBar_->showMessage(
             QStringLiteral("No car model matching \"%1\" found in the configured game folders").arg(modelCode), 4000);
         return;
     }
-    loadCarModel(source.path, true, source.game);
+    const auto source = chooseCarModelSource(this, modelName, sources);
+    if (!source.path.isEmpty()) {
+        loadCarModel(source.path, true, source.game);
+    }
 }
 
 void MainWindow::rebuildSectionBar() {

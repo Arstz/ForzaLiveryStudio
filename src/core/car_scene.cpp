@@ -819,7 +819,7 @@ CarModel loadCarBin(const QString &path, const CarAssetIndex &assets, QString *e
     CarModel car;
     car.sourcePath = path;
     car.mediaName = mediaName;
-    car.partOptions = parts.options;
+    car.partOptions = std::move(parts.options);
     car.locators = loadCarLocators(assets.resolve(QStringLiteral("Locators.xml"), carbinDir));
     ModelBounds bounds;
     int loaded = 0;
@@ -883,6 +883,7 @@ CarModel loadCarBin(const QString &path, const CarAssetIndex &assets, QString *e
     }
 
     QSet<QString> unresolvedPaths;
+    QSet<QString> loadedPartPaths;
     for (const PartInstance &part : instances) {
         const int currentInstanceId = modelInstanceId++;
         const bool stock = part.stock;
@@ -910,6 +911,7 @@ CarModel loadCarBin(const QString &path, const CarAssetIndex &assets, QString *e
         if (model.meshes.empty() && !hasAdditionalMeshes) {
             continue;
         }
+        loadedPartPaths.insert(part.path);
 
         const bool boneOnly = placedByBoneAlone(part);
         const int corner = cornerFromBoneName(part.boneName);
@@ -1044,6 +1046,12 @@ CarModel loadCarBin(const QString &path, const CarAssetIndex &assets, QString *e
     }
     car.boundsMin = bounds.minimum;
     car.boundsMax = bounds.maximum;
+    std::erase_if(car.partOptions, [&loadedPartPaths](const CarPartOption &option) {
+        return !option.stock && !option.modelPaths.isEmpty()
+            && std::none_of(option.modelPaths.cbegin(), option.modelPaths.cend(), [&loadedPartPaths](const QString &path) {
+                return loadedPartPaths.contains(path);
+            });
+    });
     car.unresolvedModelPaths = unresolvedPaths.values();
     car.unresolvedModelPaths.sort(Qt::CaseInsensitive);
     return car;

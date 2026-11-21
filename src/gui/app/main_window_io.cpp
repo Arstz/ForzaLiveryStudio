@@ -617,15 +617,18 @@ bool MainWindow::loadImportedProject(const std::function<fls::Project()> &load,
             && registry.findModel(project.carId, gameFolders, project.liveryPaint.game).path.isEmpty();
 
         if (missingModel) {
-            const auto alternative = registry.findClosestModel(project.carId, gameFolders, project.liveryPaint.game);
+            const int alternativeCarId = registry.findClosestModelCarId(project.carId, gameFolders,
+                                                                        project.liveryPaint.game);
+            const QString alternativeName = registry.name(alternativeCarId);
             const QString targetGame = project.liveryPaint.game.isEmpty()
                 ? QStringLiteral("unknown game") : project.liveryPaint.game;
-            const auto choice = chooseMissingCarModel(this, project.carId, targetGame, alternative.name);
+            const auto choice = chooseMissingCarModel(this, project.carId, targetGame, alternativeName);
             if (choice == MissingCarModelChoice::Cancel) {
                 return false;
             }
             if (choice == MissingCarModelChoice::LoadClosest) {
-                alternativeSource = alternative.source;
+                alternativeSource = chooseCarModelSource(this, alternativeName,
+                    registry.findModels(alternativeCarId, gameFolders, project.liveryPaint.game));
             }
         }
         setProject(std::move(project), missingModel);
@@ -1510,7 +1513,7 @@ QString MainWindow::targetCarLabel() const {
     }
     QString label = sharedCarRegistry().displayName(state_->project_.carId);
     if (!label.isEmpty() && (carPreview_ == nullptr || !carPreview_->hasModel())) {
-        label += QStringLiteral(" (No model found)");
+        label += QStringLiteral(" (No model loaded)");
     }
 
     return label;

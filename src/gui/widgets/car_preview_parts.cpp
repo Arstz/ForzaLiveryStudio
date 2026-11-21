@@ -37,6 +37,7 @@ constexpr int kPartPreviewIntervalMs = 12;
 constexpr int kWheelPreviewWorkerPriority = -1;
 constexpr float kPartPreviewFieldOfView = 35.0f;
 constexpr float kPartPreviewDistanceRatio = 4.0f;
+const QString kFh6PartNamePrefix = QStringLiteral("Forza Horizon 6 ");
 
 class PartHotspotButton final : public QAbstractButton {
 public:
@@ -132,7 +133,7 @@ bool isWidebodyKit(const fls::CarPartOption &option) {
     return option.partType == fls::car_part_types::CarBody && !option.stock;
 }
 
-QString partOptionName(const QString &mediaName, const fls::CarPartOption &option, int index,
+QString partOptionName(const QString &mediaName, const QString &game, const fls::CarPartOption &option, int index,
                        const WheelPreviewState *wheels) {
     if (isWidebodyKit(option)) return QStringLiteral("Widebody");
     if (wheels != nullptr && isWheelSelector(option.partType)) {
@@ -155,19 +156,26 @@ QString partOptionName(const QString &mediaName, const fls::CarPartOption &optio
         return names;
     }();
     const QJsonObject names = kPartNames.value(mediaName.toLower()).toObject();
-    const QString catalogName = names.value(
-        QStringLiteral("%1:%2").arg(option.partType).arg(option.id)).toString();
+    const QJsonObject gameNames = names.value(QStringLiteral("games")).toObject().value(game).toObject();
+    const QString partKey = QStringLiteral("%1:%2").arg(option.partType).arg(option.id);
+    const QString gameName = gameNames.value(partKey).toString();
+    const QString catalogName = names.value(partKey).toString();
+    const QString genericName = QStringLiteral("Option %1").arg(index + 1);
 
     if (option.partType == fls::car_part_types::RearWing && option.modelPaths.isEmpty()) {
         return QStringLiteral("No wing");
     }
-    if (!catalogName.isEmpty()) return catalogName;
+    if (!gameName.isEmpty()) return gameName;
+    if (!catalogName.isEmpty()
+        && (game == QStringLiteral("FH6") || !catalogName.startsWith(kFh6PartNamePrefix))) {
+        return catalogName;
+    }
     if (option.stock) return QStringLiteral("Stock");
     if (option.modelPaths.isEmpty() && option.partType != fls::car_part_types::CarBody) {
         return QStringLiteral("None");
     }
 
-    return QStringLiteral("Option %1").arg(index + 1);
+    return game.isEmpty() ? genericName : QStringLiteral("%1 - %2").arg(game, genericName);
 }
 
 QVector3D partAnchorPoint(const fls::ModelBounds &bounds, int partType, float clearance) {
@@ -326,7 +334,8 @@ void CarPreviewWidget::syncPartControls() {
         hasChoices = hasChoices || hotspot.options.size() > 1;
         for (qsizetype index = 0; index < hotspot.options.size(); ++index) {
             if (hotspot.options[index]->id == selected) {
-                currentName = partOptionName(model_.mediaName, *hotspot.options[index], static_cast<int>(index), wheelPreview_.get());
+                currentName = partOptionName(model_.mediaName, loadedCarGame_, *hotspot.options[index],
+                                             static_cast<int>(index), wheelPreview_.get());
                 break;
             }
         }
@@ -470,7 +479,7 @@ void CarPreviewWidget::beginPartSelection(int partType, QAbstractButton *anchor)
     if (options.size() < 2 || modelLoadPending_ || modelUploadPending_) return;
     for (qsizetype index = 0; index < options.size(); ++index) {
         const auto &option = *options[index];
-        choices.push_back({partOptionName(model_.mediaName, option, static_cast<int>(index), wheelPreview_.get()),
+        choices.push_back({partOptionName(model_.mediaName, loadedCarGame_, option, static_cast<int>(index), wheelPreview_.get()),
             previews.value(option.id), option.id,
             partType != fls::car_part_types::CarBody && option.modelPaths.isEmpty(),
             isRimSelector(partType) || isWidebodyKit(option), previews.contains(option.id)});

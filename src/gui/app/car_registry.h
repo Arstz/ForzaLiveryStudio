@@ -25,11 +25,6 @@ public:
         QString game;
     };
 
-    struct ModelAlternative {
-        QString name;
-        ModelSource source;
-    };
-
     bool loadDefault(QString *error = nullptr);
     bool loadFromFile(const QString &path, QString *error = nullptr);
 
@@ -42,14 +37,18 @@ public:
     bool isSupported(int id, const QString &game) const;
     ModelSource findModel(int id, const QMap<QString, QString> &gameFolders,
                           const QString &preferredGame = {}) const;
-    ModelAlternative findClosestModel(int id, const QMap<QString, QString> &gameFolders,
-                                      const QString &preferredGame) const;
+    QVector<ModelSource> findModels(int id, const QMap<QString, QString> &gameFolders,
+                                    const QString &preferredGame = {}) const;
+    int findClosestModelCarId(int id, const QMap<QString, QString> &gameFolders,
+                              const QString &preferredGame) const;
     QHash<int, QStringList> modelAvailability(const QMap<QString, QString> &gameFolders) const;
     QString displayName(int id) const;
     const QVector<Entry> &entries() const { return sorted_; }
     bool isEmpty() const { return names_.isEmpty(); }
 
 private:
+    QString findModelPathForGame(int id, const QString &game, const QString &gameFolder) const;
+
     QHash<int, QString> names_;
     QHash<int, QString> models_;
     QHash<int, QHash<QString, QString>> gameModels_;
@@ -62,6 +61,8 @@ const CarRegistry &sharedCarRegistry();
 
 enum class MissingCarModelChoice { Cancel, Continue, LoadClosest };
 
+CarRegistry::ModelSource chooseCarModelSource(
+    QWidget *parent, const QString &carName, const QVector<CarRegistry::ModelSource> &sources);
 MissingCarModelChoice chooseMissingCarModel(
     QWidget *parent, int carId, const QString &targetGame, const QString &alternativeModel = {});
 bool chooseCarModel(QWidget *parent, int currentId, int *outId, bool confirmMissingModel = false);

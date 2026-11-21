@@ -331,27 +331,40 @@ bool CarRegistry::isSupported(int id, const QString &game) const {
 CarRegistry::ModelSource CarRegistry::findModel(int id, const QMap<QString, QString> &gameFolders,
                                               const QString &preferredGame) const {
     for (const QString &game : fls::carModelGames(preferredGame)) {
-        if (!isSupported(id, game)) continue;
-        for (const QString &directory : fls::gameCarsDirs(gameFolders.value(game))) {
-            const QString path = fls::findCarModelPath(directory, modelCode(id, game));
-            if (!path.isEmpty()) return {path, game};
+        const QString path = findModelPathForGame(id, game, gameFolders.value(game));
+        if (!path.isEmpty()) {
+            return {path, game};
         }
     }
 
     return {};
 }
 
-CarRegistry::ModelAlternative CarRegistry::findClosestModel(
+QVector<CarRegistry::ModelSource> CarRegistry::findModels(int id, const QMap<QString, QString> &gameFolders,
+                                                         const QString &preferredGame) const {
+    QVector<ModelSource> sources;
+
+    for (const QString &game : fls::carModelGames(preferredGame)) {
+        const QString path = findModelPathForGame(id, game, gameFolders.value(game));
+        if (!path.isEmpty()) {
+            sources.push_back({path, game});
+        }
+    }
+
+    return sources;
+}
+
+int CarRegistry::findClosestModelCarId(
     int id, const QMap<QString, QString> &gameFolders, const QString &preferredGame) const {
     const QString family = modelFamily(models_.value(id));
     const QStringList games = fls::carModelGames(preferredGame);
-    ModelAlternative closest;
     const int year = years_.value(id);
+    int closestCarId = 0;
     int closestDifference = kClosestModelYearDifference + 1;
     qsizetype closestGameRank = games.size();
 
     if (year <= 0 || family.isEmpty()) {
-        return {};
+        return 0;
     }
     for (const Entry &entry : sorted_) {
         const int candidateYear = years_.value(entry.id);
@@ -366,13 +379,13 @@ CarRegistry::ModelAlternative CarRegistry::findClosestModel(
         }
         const qsizetype gameRank = games.indexOf(source.game);
         if (difference < closestDifference || gameRank < closestGameRank) {
-            closest = {entry.name, source};
+            closestCarId = entry.id;
             closestDifference = difference;
             closestGameRank = gameRank;
         }
     }
 
-    return closest;
+    return closestCarId;
 }
 
 QHash<int, QStringList> CarRegistry::modelAvailability(const QMap<QString, QString> &gameFolders) const {
@@ -400,6 +413,21 @@ QString CarRegistry::displayName(int id) const {
     return found.isEmpty() ? QStringLiteral("Unknown car (#%1)").arg(id) : found;
 }
 
+QString CarRegistry::findModelPathForGame(int id, const QString &game, const QString &gameFolder) const {
+    if (gameFolder.isEmpty() || !isSupported(id, game)) {
+        return {};
+    }
+    const QString code = modelCode(id, game);
+    for (const QString &directory : fls::gameCarsDirs(gameFolder)) {
+        const QString path = fls::findCarModelPath(directory, code);
+        if (!path.isEmpty()) {
+            return path;
+        }
+    }
+
+    return {};
+}
+
 const CarRegistry &sharedCarRegistry() {
     static const CarRegistry registry = [] {
         CarRegistry r;
@@ -407,6 +435,28 @@ const CarRegistry &sharedCarRegistry() {
         return r;
     }();
     return registry;
+}
+
+CarRegistry::ModelSource chooseCarModelSource(
+    QWidget *parent, const QString &carName, const QVector<CarRegistry::ModelSource> &sources) {
+    if (sources.size() < 2) {
+        return sources.value(0);
+    }
+
+    QMessageBox dialog(QMessageBox::Question, QStringLiteral("Choose Car Model"),
+                       QStringLiteral("Can load multiple models for %1, which to load (UV can differ between versions)?")
+                           .arg(carName),
+                       QMessageBox::Cancel, parent);
+    QHash<QAbstractButton *, CarRegistry::ModelSource> sourcesByButton;
+
+    dialog.setTextFormat(Qt::PlainText);
+    for (const CarRegistry::ModelSource &source : sources) {
+        sourcesByButton.insert(dialog.addButton(source.game, QMessageBox::AcceptRole), source);
+    }
+    dialog.setDefaultButton(QMessageBox::Cancel);
+    dialog.exec();
+
+    return sourcesByButton.value(dialog.clickedButton());
 }
 
 MissingCarModelChoice chooseMissingCarModel(

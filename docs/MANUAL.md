@@ -44,7 +44,7 @@ To place guidelines left click with `Alt` held on the rulers, the guidelines can
 
 ### 3D preview
 
-3D preview is disabled by default, enable it with `Window->3D Preview`. With a Livery project open or car model loaded in a Group project, you can see the car with the decals applied. Configure each game's install or media folder in `Window->Settings->General`. Opening a livery searches its game's folder first, then the other configured games from newest to oldest. Both `media/Cars` and `media/pcfamily/Cars` are searched. You can also load a model with `File->Import Car Model`. Native textures can be enabled with `Load car textures` in Settings. The preview is a reference approximation of how the car looks ingame.
+3D preview is disabled by default, enable it with `Window->3D Preview`. With a Livery project open or car model loaded in a Group project, you can see the car with the decals applied. Configure each game's install or media folder in `Window->Settings->General`. Automatic loading searches both `media/Cars` and `media/pcfamily/Cars` in the configured games. When multiple versions of the car are available, choose a game or select `Cancel` to skip loading the preview model. UV layouts can differ between versions. You can also load a model with `File->Import Car Model`. Native textures can be enabled with `Load car textures` in Settings. The preview is a reference approximation of how the car looks ingame.
 
 Rotate model with left mouse button, zoom with scrollwheel and pan with middle mouse. With model loaded you can enable UV unwrap and/or wireframe with `Options->Show Car UV Unwrap` and `Options->Wireframe->Show Section Wireframe`. Enable `Options->Wireframe->Wireframe in 2D canvas only` to limit wireframe display to the canvas.
 

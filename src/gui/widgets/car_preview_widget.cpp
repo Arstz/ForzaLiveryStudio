@@ -1311,7 +1311,7 @@ std::shared_ptr<PreparedCar> prepareCar(
     checkpoint(QStringLiteral("tires_ms"));
     assignSharedSlotMaterials(model);
     resolveModelMaterials(model, path, QFileInfo(loadPath).absolutePath(), assets, resourceSource, loadCarTextures);
-    auto wheelPreview = prepareWheelPreview(model, resourceSource, modelGame, wheelSizing);
+    auto wheelPreview = prepareWheelPreview(model, path, modelGame, wheelSizing, gameFolder);
     if (wheelPreview) {
         wheelPreview->loadCarTextures = loadCarTextures;
         auto front = buildWheelPreviewGeometry(*wheelPreview, true, wheelPreview->axles[0].rimId,

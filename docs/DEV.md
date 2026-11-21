@@ -135,8 +135,9 @@ configuration in [COMPACT_FIT_CONFIG.md](COMPACT_FIT_CONFIG.md).
 
 Per-game settings accept an installation root or its `media` directory.
 `game_paths.*` resolves car folders and shared material and texture archives.
-Automatic model loading prefers the imported livery's game, then searches other
-configured games. The car registry provides availability, model names, and
+Automatic model loading searches configured games and presents the available
+versions for selection when more than one matches. The livery's game is listed
+first when available. The car registry provides availability, model names, and
 wheel sizing for each title.
 
 FH3 PC asset lookup recognizes the obfuscated media layout. It translates file
