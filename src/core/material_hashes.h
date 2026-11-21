@@ -52,6 +52,13 @@ inline constexpr quint64 kWingPlane = 0x6E3810972EA4DBF4ULL;
 inline constexpr quint64 kWingStruts = 0xB0C163FF8ADE48FDULL;
 inline constexpr quint64 kTowHook = 0x471A5FA481625396ULL;
 
+inline constexpr std::array<quint64, 16> kPositionalPaintSlots = {
+    kBodyPaint, 0, kHoodPaint, kMirrorPaint, kSpoilerPaint, kBrakeCaliper,
+    kRims, kWindowGlass, kBodySecondaryPaint, kHoodSecondaryPaint,
+    kMirrorSecondaryPaint, kWingSecondaryPaint, kBodyTertiaryPaint,
+    kHoodTertiaryPaint, kMirrorTertiaryPaint, kWingTertiaryPaint,
+};
+
 inline constexpr std::array<quint64, 7> kWheelPaintGroups = {
     kRims,
     kRims2,

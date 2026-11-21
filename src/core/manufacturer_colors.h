@@ -15,7 +15,9 @@ struct ModelMaterial;
 struct ManufacturerColor {
     QStringList materialSlots;
     QString materialPath;
+    QString liveryMaterialPath;
     std::shared_ptr<ModelMaterial> material;
+    std::shared_ptr<ModelMaterial> liveryMaterial;
     std::array<float, 3> primary = {0.0f, 0.0f, 0.0f};
     std::array<float, 3> secondary = {0.0f, 0.0f, 0.0f};
     quint32 materialIndexMask = 0;

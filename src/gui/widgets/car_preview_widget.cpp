@@ -1065,7 +1065,9 @@ void resolveModelMaterials(
                 if (slot == NativeTextureSlot::Unknown || assigned.contains(slot)) {
                     continue;
                 }
-                if ((slot == NativeTextureSlot::Diffuse && !mesh.material->useDiffuseTexture.value_or(true))
+                if ((slot == NativeTextureSlot::Diffuse
+                        && (!mesh.material->useDiffuseTexture.value_or(true)
+                            || (legacySurface && legacySurface->manufacturerLivery)))
                     || (slot == NativeTextureSlot::Alpha && !weave
                         && (!mesh.material->opacityTextureEnabled
                             || !mesh.material->glassOpacity.useAlphaTexture.value_or(true)))
@@ -1214,6 +1216,32 @@ fls::ManufacturerColorPalette loadManufacturerColors(
     return palette;
 }
 
+void loadManufacturerLiveries(fls::ManufacturerColorPalette &palette, fls::CarModel &model,
+                              const QString &path, const QString &carRoot, const fls::CarAssetIndex &assets,
+                              const QString &resourceSource) {
+    const auto meshSets = renderMeshSets(model);
+    const bool hasLiveryMeshes = std::any_of(meshSets.cbegin(), meshSets.cend(), [](const auto *meshes) {
+        return std::any_of(meshes->cbegin(), meshes->cend(), usesManufacturerLivery);
+    });
+    if (!hasLiveryMeshes) return;
+
+    fls::CarModel liveryMaterials;
+    std::vector<fls::ManufacturerColor *> colors;
+    for (auto &color : palette.colors) {
+        if (color.liveryMaterialPath.isEmpty()) continue;
+        auto &mesh = liveryMaterials.meshes.emplace_back();
+        mesh.material = std::make_shared<fls::ModelMaterial>();
+        mesh.material->resourcePath = color.liveryMaterialPath;
+        colors.push_back(&color);
+    }
+    if (colors.empty()) return;
+
+    resolveModelMaterials(liveryMaterials, path, carRoot, assets, resourceSource, true);
+    for (size_t index = 0; index < colors.size(); ++index) {
+        colors[index]->liveryMaterial = std::move(liveryMaterials.meshes[index].material);
+    }
+}
+
 struct PreparedCar {
     fls::CarModel model;
     std::shared_ptr<WheelPreviewState> wheels;
@@ -1303,6 +1331,10 @@ std::shared_ptr<PreparedCar> prepareCar(
     prepared->model = std::move(model);
     prepared->wheels = std::move(wheelPreview);
     prepared->manufacturerColors = loadManufacturerColors(carDir.absolutePath(), resourceSource, assets);
+    if (loadCarTextures) {
+        loadManufacturerLiveries(prepared->manufacturerColors, prepared->model, path, carDir.absolutePath(),
+                                 assets, resourceSource);
+    }
     checkpoint(QStringLiteral("manufacturer_ms"));
     prepared->extractedCarDir = std::move(extracted);
     prepared->loadedCarPath = path;
@@ -2196,7 +2228,7 @@ void CarPreviewWidget::paintGL() {
 
     if (modelUploadPending_ && carRenderer_.isInitialized()) {
         partDepthViewProjection_.reset();
-        carRenderer_.uploadModel(model_, selectedLodIndex_);
+        carRenderer_.uploadModel(model_, selectedLodIndex_, &manufacturerColors_);
         modelUploadPending_ = false;
         if (modelFitPending_) {
             fitCameraToModel();

@@ -24,6 +24,7 @@ constexpr quint32 MaterialResource = 0x4D415449;
 constexpr quint32 MaterialLinks = 0x4D41544C;
 constexpr quint32 MaterialParameters = 0x4D545052;
 constexpr quint32 DefaultMaterialParameters = 0x44465052;
+constexpr quint32 ConstantBufferMapping = 0x43424D50;
 constexpr quint32 TextureParameterMapping = 0x54584D50;
 constexpr quint32 ShaderVersion = 0x56455253;
 constexpr quint32 ShaderVariants = 0x56415253;

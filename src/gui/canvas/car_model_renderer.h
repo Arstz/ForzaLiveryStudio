@@ -21,6 +21,7 @@ struct ModelMaterialTexture;
 namespace gui {
 
 bool isVisibleCarMesh(const fls::CarMesh &mesh, const QHash<int, int> &selections);
+bool usesManufacturerLivery(const fls::CarMesh &mesh);
 
 CarUnwrapOverlay buildCarUnwrapOverlay(const fls::CarModel &model,
                                        const fls::LiveryMaskSet &masks,
@@ -46,7 +47,8 @@ public:
     static QString shaderSelfTest();
     bool hasModel() const;
 
-    void uploadModel(const fls::CarModel &model, int lodIndex = 0);
+    void uploadModel(const fls::CarModel &model, int lodIndex = 0,
+                     const fls::ManufacturerColorPalette *manufacturerColors = nullptr);
     void clearModel();
     void setPartSelections(const QHash<int, int> &selections) { partSelections_ = selections; }
 
@@ -89,6 +91,7 @@ private:
         bool authoredPaintSurface = false;
         bool diffuseAlpha = true;
         bool paintColorTexture = false;
+        bool manufacturerLivery = false;
         bool opacityCutout = false;
         bool opacityFromAlpha = false;
         QVector3D materialColor;
@@ -170,6 +173,7 @@ private:
     std::vector<std::unique_ptr<MeshBuffers>> meshes_;
     std::vector<std::unique_ptr<WireframeBuffers>> wireframeMeshes_;
     QHash<QString, MaterialTextureCacheEntry> materialTextureCache_;
+    QVector<GLuint> manufacturerLiveryTextures_;
     qsizetype materialTextureCacheBytes_ = 0;
     QHash<int, FinishTextureEntry> finishTextureCache_;
     unsigned paintFinishGeneration_ = 0;

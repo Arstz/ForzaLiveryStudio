@@ -101,6 +101,7 @@ struct LegacyMaterialSurface {
     quint32 emissionMaskMap = 0;
     bool diffuseAlpha = false;
     bool paintColorTexture = false;
+    bool manufacturerLivery = false;
     bool opacityCutout = false;
     bool opacityFromAlpha = false;
 };
@@ -115,6 +116,12 @@ enum class ShaderBindingLayout {
     EarlyLegacy,
     Legacy,
     Current,
+};
+
+enum class WindowSurface {
+    None,
+    Exterior,
+    Interior,
 };
 
 struct ShaderTextureBinding {
@@ -135,6 +142,8 @@ struct ModelMaterial {
     std::vector<ModelMaterialParameter> parameters;
     std::vector<ShaderTextureBinding> shaderTextures;
     std::optional<ShaderBindingLayout> shaderBindingLayout;
+    std::optional<quint32> shaderOpacitySwitch;
+    WindowSurface windowSurface = WindowSurface::None;
     MaterialOpacity glassOpacity;
     std::optional<LegacyMaterialSurface> legacySurface;
     std::optional<MaterialWeave> weave;

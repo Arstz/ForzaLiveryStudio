@@ -866,7 +866,8 @@ bool usesLegacyMetalBlend(const fls::CarMesh &mesh) {
 }
 
 bool isBodyPaintMesh(const fls::CarMesh &mesh) {
-    return !usesLegacyMetalBlend(mesh) && (isBodyPaintMaterial(mesh.materialName)
+    return !usesLegacyMetalBlend(mesh) && !usesManufacturerLivery(mesh)
+        && (isBodyPaintMaterial(mesh.materialName)
         || fls::material_hashes::contains(
             fls::material_hashes::binding::kDefaultCarPaintGroups,
             mesh.paintMaterialHash));
@@ -967,6 +968,9 @@ bool isCockpitOnly(const fls::CarMesh &mesh) {
 }
 
 bool isWindowGlassMaterial(const fls::CarMesh &mesh) {
+    if (mesh.material && mesh.material->windowSurface != fls::WindowSurface::None) {
+        return mesh.material->windowSurface == fls::WindowSurface::Exterior;
+    }
     const QString name = mesh.materialName.toLower();
     if (name.contains(QStringLiteral("screw"))
         || name.contains(QStringLiteral("frame"))
@@ -994,8 +998,11 @@ bool isWindowGlassMaterial(const fls::CarMesh &mesh) {
         || (name.contains(QStringLiteral("blackglass")) && glassResource);
 }
 
-bool isInteriorWindowShell(const QString &rawName) {
-    QString name = rawName.toLower();
+bool isInteriorWindowShell(const fls::CarMesh &mesh) {
+    if (mesh.material && mesh.material->windowSurface == fls::WindowSurface::Interior) {
+        return true;
+    }
+    QString name = mesh.name.toLower();
     const int pipe = name.indexOf(QLatin1Char('|'));
     if (pipe >= 0) {
         name = name.left(pipe);
@@ -1372,6 +1379,7 @@ void CarModelRenderer::clearModel() {
     }
     meshes_.clear();
     wireframeMeshes_.clear();
+    manufacturerLiveryTextures_.clear();
 }
 
 void CarModelRenderer::clearLivery() {
@@ -1604,7 +1612,7 @@ bool meshHasSurfaceArea(const fls::CarMesh &mesh) {
 }
 
 std::vector<quint64> paintMaterialHashes(const fls::CarMesh &mesh, bool cockpitOnly) {
-    if (cockpitOnly || usesLegacyMetalBlend(mesh) || isBrakeRotorMesh(mesh)) {
+    if (cockpitOnly || usesLegacyMetalBlend(mesh) || isBrakeRotorMesh(mesh) || usesManufacturerLivery(mesh)) {
         return {};
     }
     const quint64 semanticHash = fallbackPaintHash(mesh);
@@ -2580,7 +2588,12 @@ std::vector<uint8_t> upsampleCoverageMask(const fls::SwatchMask &mask, int dstW,
 
 bool isVisibleCarMesh(const fls::CarMesh &mesh, const QHash<int, int> &selections) {
     return visibleCarPart(mesh.carPartType, mesh.stockPart, mesh.partOptionIds, selections)
-        && !isPrebakedLiveryMesh(mesh) && !isInteriorWindowShell(mesh.name) && !isCoarseInteriorLod(mesh);
+        && !isPrebakedLiveryMesh(mesh) && !isInteriorWindowShell(mesh) && !isCoarseInteriorLod(mesh);
+}
+
+bool usesManufacturerLivery(const fls::CarMesh &mesh) {
+    return mesh.paintMaterialHash == fls::material_hashes::binding::kLegacyLiveryOverlay
+        && mesh.material && mesh.material->legacySurface && mesh.material->legacySurface->manufacturerLivery;
 }
 
 QSet<quint64> carPaintableBindings(const fls::CarModel &model, int lodIndex,
@@ -2961,7 +2974,8 @@ void CarModelRenderer::setPaintTextureRegions(const QVector<QVector4D> &regions)
     sidePaintRegion_ = regions.size() == sideCount_ ? regions : defaultSidePaintRegion_;
 }
 
-void CarModelRenderer::uploadModel(const fls::CarModel &model, int lodIndex) {
+void CarModelRenderer::uploadModel(const fls::CarModel &model, int lodIndex,
+                                    const fls::ManufacturerColorPalette *manufacturerColors) {
     if (!initialized_) {
         return;
     }
@@ -3018,6 +3032,11 @@ void CarModelRenderer::uploadModel(const fls::CarModel &model, int lodIndex) {
         requireTexture(mesh.material->emissiveMaskTexture, false);
         requireTexture(mesh.material->glassTintTexture, false);
         requireTexture(mesh.material->weaveMaskTexture, false);
+    }
+    if (manufacturerColors != nullptr) {
+        for (const auto &color : manufacturerColors->colors) {
+            if (color.liveryMaterial) requireTexture(color.liveryMaterial->diffuseTexture, false);
+        }
     }
     constexpr qsizetype textureCacheBudget = 256ll * 1024 * 1024;
     if (materialTextureCacheBytes_ + missingTextureBytes > textureCacheBudget) {
@@ -3078,12 +3097,20 @@ void CarModelRenderer::uploadModel(const fls::CarModel &model, int lodIndex) {
         return id;
     };
 
+    if (manufacturerColors != nullptr) {
+        manufacturerLiveryTextures_.reserve(manufacturerColors->colors.size());
+        for (const auto &color : manufacturerColors->colors) {
+            manufacturerLiveryTextures_.append(color.liveryMaterial
+                ? uploadTexture(color.liveryMaterial->diffuseTexture, false) : 0);
+        }
+    }
+
     for (size_t mi = 0; mi < renderMeshes.size(); ++mi) {
         const fls::CarMesh &mesh = *renderMeshes[mi];
         if (mesh.positions.empty() || mesh.indices.empty()) {
             continue;
         }
-        if (isInteriorWindowShell(mesh.name)) {
+        if (isInteriorWindowShell(mesh)) {
             continue;
         }
         if (isCoarseInteriorLod(mesh)) {
@@ -3112,6 +3139,8 @@ void CarModelRenderer::uploadModel(const fls::CarModel &model, int lodIndex) {
         const fls::MaterialUvMapping firstChannel;
         const MeshTextureCoordinates materialUv(mesh, materialData
             ? materialData->diffuseUv.value_or(materialMapping) : materialMapping);
+        const bool manufacturerLivery = usesManufacturerLivery(mesh);
+        if (manufacturerLivery && !materialUv.valid()) continue;
         const MeshTextureCoordinates normalUv(mesh, materialData
             ? materialData->normalUv.value_or(materialMapping) : materialMapping);
         const auto opacityMapping = materialData
@@ -3190,6 +3219,7 @@ void CarModelRenderer::uploadModel(const fls::CarModel &model, int lodIndex) {
         buffers->windowGlass = windowGlass;
         buffers->allowedSides = cockpitOnly ? 0 : renderedLiverySidesForMesh(mesh);
         buffers->applyLivery = buffers->allowedSides != 0;
+        buffers->manufacturerLivery = manufacturerLivery;
         buffers->paintMaterialHashes = paintMaterialHashes(mesh, cockpitOnly);
         if (mesh.material) {
             buffers->hasMaterialColor = mesh.material->hasBaseColor;
@@ -3391,7 +3421,7 @@ void CarModelRenderer::uploadModel(const fls::CarModel &model, int lodIndex) {
         }
         buffers->translucent = buffers->alpha < 0.995f
             || (buffers->opacityCutout && (buffers->alphaTexture != 0
-                || (buffers->diffuseAlpha && buffers->diffuseTexture != 0)));
+                || (buffers->diffuseAlpha && (buffers->diffuseTexture != 0 || buffers->manufacturerLivery))));
         buffers->normalAlphaCoverage = !buffers->translucent && !buffers->glassSurface
             && buffers->metalBlendOpacityFromNormal && buffers->normalTexture != 0;
         buffers->doubleSided = tire || wheelPath.contains(QStringLiteral("/wheels/"))
@@ -3795,8 +3825,16 @@ void CarModelRenderer::render(
         }
     }
 
+    const auto *bodyPaint = paintState != nullptr ? paintState->find(fls::material_hashes::binding::kBodyPaint) : nullptr;
+    const quint32 manufacturerSelector = bodyPaint != nullptr && bodyPaint->manufacturerSelector != 0xffffffffu
+        ? bodyPaint->manufacturerSelector : 0;
+    const GLuint manufacturerLiveryTexture =
+        !liveryCustomPainted && manufacturerSelector < static_cast<quint32>(manufacturerLiveryTextures_.size())
+        ? manufacturerLiveryTextures_[manufacturerSelector] : 0;
     const QMatrix4x4 viewProjection = projection * view;
     const auto drawMesh = [&](MeshBuffers &mesh) {
+        if (mesh.manufacturerLivery && manufacturerLiveryTexture == 0) return;
+        const GLuint diffuseTexture = mesh.manufacturerLivery ? manufacturerLiveryTexture : mesh.diffuseTexture;
         QVector3D primary = mesh.hasMaterialColor
             ? mesh.materialColor
             : (mesh.bodyPaint ? fallbackColor : kDefaultMaterialColor);
@@ -3937,7 +3975,7 @@ void CarModelRenderer::render(
             program_.setUniformValue(samplerLocation, unit);
             program_.setUniformValue(enabledLocation, texture != 0 ? 1 : 0);
         };
-        bindMaterialTexture(2, replacePaintTexture ? 0 : mesh.diffuseTexture, nativeDiffuseLocation_, hasNativeDiffuseLocation_);
+        bindMaterialTexture(2, replacePaintTexture ? 0 : diffuseTexture, nativeDiffuseLocation_, hasNativeDiffuseLocation_);
         const bool usesMetalBlendTexture = metalBlendMode == static_cast<int>(fls::LegacyMetalBlendMode::SeparateMasks)
             || metalBlendMode == static_cast<int>(fls::LegacyMetalBlendMode::GlossReflectance);
         GLuint alphaTexture = mesh.alphaTexture;

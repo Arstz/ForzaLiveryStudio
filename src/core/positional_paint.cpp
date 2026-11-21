@@ -17,12 +17,6 @@ constexpr int kBlockOverhead = kPositionalPaintBlockOverhead;
 constexpr quint32 kCustomColorSelector = 0xffffffffu;
 constexpr std::array<int, 3> kRecordCounts = {20, 30, 34};
 using namespace material_hashes::binding;
-constexpr std::array<quint64, 16> kSlotBindings = {
-    kBodyPaint, 0, kHoodPaint, kMirrorPaint, kSpoilerPaint, kBrakeCaliper,
-    kRims, kWindowGlass, kBodySecondaryPaint, kHoodSecondaryPaint,
-    kMirrorSecondaryPaint, kWingSecondaryPaint, kBodyTertiaryPaint,
-    kHoodTertiaryPaint, kMirrorTertiaryPaint, kWingTertiaryPaint,
-};
 
 bool validPaintBlock(const QByteArray &block) {
     const int recordCount = (static_cast<int>(block.size()) - kBlockOverhead) / kRecordSize;
@@ -182,8 +176,8 @@ LiveryPaintState decodePositionalPaint(const QByteArray &block, const QString &g
     }
     state.positionalSource = block;
     state.game = game;
-    for (int slot = 0; slot < static_cast<int>(kSlotBindings.size()); ++slot) {
-        const quint64 hash = kSlotBindings[slot];
+    for (int slot = 0; slot < static_cast<int>(kPositionalPaintSlots.size()); ++slot) {
+        const quint64 hash = kPositionalPaintSlots[slot];
         if (hash != 0) {
             state.materials.push_back(decodeRecord(block.mid(1 + slot * kRecordSize, kRecordSize), hash));
         }
@@ -207,7 +201,7 @@ QByteArray encodePositionalPaint(const Project &project, int recordCount, const 
         throw std::runtime_error("invalid destination paint record count");
     }
     for (int slot = 0; slot < recordCount; ++slot) {
-        const quint64 hash = slot < static_cast<int>(kSlotBindings.size()) ? kSlotBindings[slot] : 0;
+        const quint64 hash = slot < static_cast<int>(kPositionalPaintSlots.size()) ? kPositionalPaintSlots[slot] : 0;
         const bool retained = slot < sourceCount;
         QByteArray record = retained ? source.mid(1 + slot * kRecordSize, kRecordSize) : defaultRecord(slot);
         const LiveryPaintMaterial *material = hash == kRims && wheels ? &*wheels : state.find(hash);

@@ -14,6 +14,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
 #include <limits>
 #include <map>
@@ -159,6 +160,16 @@ int canonicalPartType(quint32 type) {
     return type >= 42 ? static_cast<int>(type + 1) : static_cast<int>(type);
 }
 
+quint64 positionalMaterialBinding(quint32 mask) {
+    const auto &bindings = material_hashes::binding::kPositionalPaintSlots;
+    const size_t slot = std::countr_zero(mask);
+    if (std::has_single_bit(mask) && slot < bindings.size() && bindings[slot] != 0) {
+        return bindings[slot];
+    }
+
+    return mask;
+}
+
 PartInstance readRenderModel(Cursor &c, quint16 sceneVersion) {
     const quint16 version = c.u16();
     const Series series = renderModelSeries(sceneVersion, version);
@@ -197,7 +208,7 @@ PartInstance readRenderModel(Cursor &c, quint16 sceneVersion) {
             if (version >= 21) {
                 binding.hash = c.u64();
             } else {
-                binding.hash = static_cast<quint32>(c.i32());
+                binding.hash = positionalMaterialBinding(c.u32());
             }
             part.materialBindings.push_back(std::move(binding));
         }

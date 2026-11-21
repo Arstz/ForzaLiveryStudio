@@ -1,6 +1,7 @@
 #include "manufacturer_colors.h"
 
 #include "binary_io.h"
+#include "material_hashes.h"
 #include "model_bundle.h"
 
 #include <stdexcept>
@@ -65,19 +66,27 @@ ManufacturerColorPalette decodePaletteBlob(const QByteArray &data,
             color.materialPath = cursor.string8();
         }
 
+        constexpr quint32 kLiveryMask = material_hashes::binding::kLegacyLiveryOverlay;
+        if ((color.materialIndexMask & kLiveryMask) != 0) {
+            color.liveryMaterialPath = color.materialPath;
+        }
         for (quint32 entryIndex = 1; entryIndex < entryCount; ++entryIndex) {
+            quint32 materialMask = 0;
             if (blobVersionMajor >= 2) {
                 const quint32 nameCount = cursor.u32();
                 for (quint32 i = 0; i < nameCount; ++i) {
                     cursor.string8();
                 }
             } else if (blobVersionMinor >= 1) {
-                cursor.u32();
+                materialMask = cursor.u32();
             } else {
-                cursor.u16();
+                materialMask = cursor.u16();
             }
             readColor(cursor);
-            cursor.string8();
+            QString materialPath = cursor.string8();
+            if (color.liveryMaterialPath.isEmpty() && (materialMask & kLiveryMask) != 0) {
+                color.liveryMaterialPath = std::move(materialPath);
+            }
         }
 
         if (blobVersionMajor >= 2) {

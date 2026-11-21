@@ -15,7 +15,8 @@
 namespace gui {
 namespace {
 
-constexpr int kPositionalBindingCount = 15;
+constexpr int kPositionalBindingCount =
+    static_cast<int>(fls::material_hashes::binding::kPositionalPaintSlots.size()) - 1;
 
 QString displayName(QString name) {
     name.replace(QLatin1Char('_'), QLatin1Char(' '));
@@ -148,11 +149,10 @@ QVector<PaintColorPreset> carManufacturerColors(const QString &game, int carId, 
         .value(QString::number(carId)).toObject();
     const QJsonArray colors = palette.value(QStringLiteral("colors")).toArray();
     const QString token = slotToken(slot);
-    const auto &bindings = fls::material_hashes::binding::kLiveryMaterials;
-    const auto legacyEnd = bindings.begin() + kPositionalBindingCount;
-    const auto legacyBinding = std::find(bindings.begin(), legacyEnd, slot);
-    const int legacyIndex = static_cast<int>(legacyBinding - bindings.begin());
-    const quint64 mask = legacyBinding == legacyEnd ? 0 : quint64(1) << (legacyIndex == 0 ? 0 : legacyIndex + 1);
+    const auto &bindings = fls::material_hashes::binding::kPositionalPaintSlots;
+    const auto legacyBinding = std::find(bindings.cbegin(), bindings.cend(), slot);
+    const quint64 mask = slot == 0 || legacyBinding == bindings.cend()
+        ? 0 : quint64(1) << (legacyBinding - bindings.cbegin());
     QVector<PaintColorPreset> result;
     for (const QJsonValue &value : colors) {
         const QJsonObject color = value.toObject();
