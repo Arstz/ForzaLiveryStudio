@@ -15,6 +15,7 @@ struct PartRadialChoice {
     int optionId = -1;
     bool empty = false;
     bool preserveName = false;
+    bool previewReady = false;
 };
 
 class PartRadialSelector final : public QWidget {
@@ -25,6 +26,7 @@ public:
     explicit PartRadialSelector(QWidget *parent = nullptr);
     void beginSelection(const QPoint &origin, const QString &title,
         QVector<PartRadialChoice> choices, int selectedOptionId, PreviewProvider previewProvider);
+    void setChoicePreview(int optionId, const QImage &preview);
     void cancelSelection();
     bool isSelecting() const;
 

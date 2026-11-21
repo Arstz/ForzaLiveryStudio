@@ -100,13 +100,29 @@ QString wheelArchivePath(const QString &libraryPath, const QString &archive, boo
         : QStringLiteral("tires/")) + archive + QStringLiteral(".zip"));
 }
 
-std::shared_ptr<const fls::CarModel> wheelTemplate(WheelPreviewState &state, const QString &archive,
+std::shared_ptr<const fls::CarModel> cacheWheelTemplate(WheelTemplateCache &cache, const QString &key,
+    std::shared_ptr<const fls::CarModel> model) {
+    const QMutexLocker lock(&cache.mutex);
+    const auto cached = cache.models.constFind(key);
+
+    if (cached != cache.models.cend()) return *cached;
+    if (cache.models.size() >= kWheelTemplateCacheLimit) cache.models.erase(cache.models.begin());
+    cache.models.insert(key, model);
+
+    return model;
+}
+
+std::shared_ptr<const fls::CarModel> wheelTemplate(const WheelPreviewState &state, const QString &archive,
                                                   bool left, bool rim, QString *error) {
     QString path = wheelArchivePath(state.libraryPath, archive, rim);
     const QString key = path + (left ? QStringLiteral("|L") : QStringLiteral("|R"));
-    const auto cached = state.templates.constFind(key);
 
-    if (cached != state.templates.cend()) return *cached;
+    {
+        const QMutexLocker lock(&state.templates->mutex);
+        const auto cached = state.templates->models.constFind(key);
+
+        if (cached != state.templates->models.cend()) return *cached;
+    }
     QStringList entries = fls::listZipEntries(path, error);
     const auto findEntry = [rim, left](const QStringList &names) {
         const QString suffix = rim ? QStringLiteral("WheelLF.modelbin")
@@ -129,11 +145,11 @@ std::shared_ptr<const fls::CarModel> wheelTemplate(WheelPreviewState &state, con
     if (entry.isEmpty() && !rim && !left) {
         const auto fallback = wheelTemplate(state, archive, true, false, error);
         if (fallback) {
-            state.templates.insert(key, fallback);
             if (error != nullptr) error->clear();
+            return cacheWheelTemplate(*state.templates, key, fallback);
         }
 
-        return fallback;
+        return {};
     }
     if (entry.isEmpty()) return {};
     try {
@@ -144,10 +160,7 @@ std::shared_ptr<const fls::CarModel> wheelTemplate(WheelPreviewState &state, con
             for (auto &mesh : model->meshes) mesh.sourceModelPath = path;
             resolveTireTemplateMaterials(*model, path, state.loadCarTextures);
         }
-        if (state.templates.size() >= kWheelTemplateCacheLimit) state.templates.erase(state.templates.begin());
-        state.templates.insert(key, model);
-
-        return model;
+        return cacheWheelTemplate(*state.templates, key, std::move(model));
     } catch (const std::exception &failure) {
         if (error != nullptr) *error = QString::fromUtf8(failure.what());
     }
@@ -203,7 +216,7 @@ void resizeStockRim(fls::CarMesh &mesh, const fls::CarWheelMount &mount,
     mesh.boneTransform = {};
 }
 
-fls::CarModel buildRimPreviewGeometry(WheelPreviewState &state, bool front, int rimId, QString *error = nullptr) {
+fls::CarModel buildRimPreviewGeometry(const WheelPreviewState &state, bool front, int rimId, QString *error = nullptr) {
     const auto *option = styleOption(state.rims, rimId);
     const auto &stock = front ? state.stockSizing.front : state.stockSizing.rear;
     const auto &sizing = front ? state.sizing.front : state.sizing.rear;
@@ -481,7 +494,7 @@ bool normalizeWheelPreviewSizing(WheelPreviewState &state, int bodyOptionId) {
     return changed;
 }
 
-fls::CarModel buildWheelPreviewGeometry(WheelPreviewState &state, bool front, int rimId, int tireId, QString *error) {
+fls::CarModel buildWheelPreviewGeometry(const WheelPreviewState &state, bool front, int rimId, int tireId, QString *error) {
     const auto *tireOption = styleOption(state.tires, tireId);
 
     if (tireOption == nullptr) return {};
@@ -502,6 +515,25 @@ fls::CarModel buildWheelPreviewGeometry(WheelPreviewState &state, bool front, in
     return result;
 }
 
+WheelOptionPreview buildWheelOptionPreview(const WheelPreviewState &state, int partType, int optionId) {
+    WheelOptionPreview preview;
+    const bool front = isFrontWheelSelector(partType);
+
+    preview.model = isRimSelector(partType) ? buildRimPreviewGeometry(state, front, optionId)
+        : buildWheelPreviewGeometry(state, front, state.axles[0].rimId, optionId);
+    auto &meshes = preview.model.meshes;
+    meshes.erase(std::remove_if(meshes.begin(), meshes.end(), [partType](const fls::CarMesh &mesh) {
+        if (mesh.carPartType != partType) return true;
+        fls::ModelBounds bounds;
+        bounds.include(mesh);
+
+        return bounds.minimum.x + bounds.maximum.x > 0.0f;
+    }), meshes.end());
+    for (const auto &mesh : meshes) preview.bounds.include(mesh);
+
+    return preview;
+}
+
 void replaceWheelPreviewGeometry(fls::CarModel &model, const fls::CarModel &wheels) {
     const auto replace = [&wheels](std::vector<fls::CarMesh> &meshes, bool append) {
         meshes.erase(std::remove_if(meshes.begin(), meshes.end(), wheelMesh), meshes.end());
@@ -513,28 +545,14 @@ void replaceWheelPreviewGeometry(fls::CarModel &model, const fls::CarModel &whee
     for (auto &meshes : model.additionalVariantLodMeshes) replace(meshes, false);
 }
 
-QImage CarPreviewWidget::renderWheelOptionPreview(int partType, int optionId) {
-    if (!wheelPreview_ || !context()) return {};
-    const bool front = isFrontWheelSelector(partType);
-    const auto &axle = wheelPreview_->axles[front ? 0 : 1];
-    auto geometry = isRimSelector(partType) ? buildRimPreviewGeometry(*wheelPreview_, front, optionId)
-        : buildWheelPreviewGeometry(*wheelPreview_, front, axle.rimId, optionId);
-    fls::ModelBounds bounds;
-
-    geometry.meshes.erase(std::remove_if(geometry.meshes.begin(), geometry.meshes.end(),
-        [partType](const fls::CarMesh &mesh) {
-            fls::ModelBounds bounds;
-            bounds.include(mesh);
-            return mesh.carPartType != partType || bounds.minimum.x + bounds.maximum.x > 0.0f;
-        }), geometry.meshes.end());
-    if (geometry.meshes.empty()) return {};
-    for (const auto &mesh : geometry.meshes) bounds.include(mesh);
+QImage CarPreviewWidget::renderWheelOptionPreview(int partType, int optionId, const WheelOptionPreview &preview) {
+    if (preview.model.meshes.empty() || !context()) return {};
     makeCurrent();
     if (!wheelRenderer_.isInitialized()) wheelRenderer_.initialize();
-    wheelRenderer_.uploadModel(geometry);
+    wheelRenderer_.uploadModel(preview.model);
     doneCurrent();
 
-    return renderGeometryPreview(wheelRenderer_, bounds, {{partType, optionId}}, partType, false);
+    return renderGeometryPreview(wheelRenderer_, preview.bounds, {{partType, optionId}}, partType, false);
 }
 
 void CarPreviewWidget::selectWheelOption(int partType, int optionId) {
@@ -551,7 +569,7 @@ void CarPreviewWidget::selectWheelOption(int partType, int optionId) {
     rebuildColorsPanel();
 }
 
-bool CarPreviewWidget::applyWheelGeometry() {
+bool CarPreviewWidget::applyWheelGeometry(bool sizingChanged) {
     QString error;
     auto front = buildWheelPreviewGeometry(*wheelPreview_, true, wheelPreview_->axles[0].rimId,
         wheelPreview_->tireId, &error);
@@ -565,6 +583,13 @@ bool CarPreviewWidget::applyWheelGeometry() {
     }
     front.meshes.insert(front.meshes.end(), rear.meshes.begin(), rear.meshes.end());
     replaceWheelPreviewGeometry(model_, front);
+    wheelPreviewBakeState_.reset();
+    invalidatePartPreview(fls::car_part_types::CarBody);
+    invalidatePartPreview(kTireSelector);
+    if (sizingChanged) {
+        invalidatePartPreview(kFrontRimSelector);
+        invalidatePartPreview(kRearRimSelector);
+    }
     for (int type : kWheelSelectors) {
         const auto &axle = wheelPreview_->axles[isFrontWheelSelector(type) ? 0 : 1];
         const int id = isRimSelector(type) ? axle.rimId : wheelPreview_->tireId;
@@ -573,7 +598,7 @@ bool CarPreviewWidget::applyWheelGeometry() {
     }
     carRenderer_.setPartSelections(selectedPartOptions_);
     modelUploadPending_ = true;
-    rebuildPartControls();
+    syncPartControls();
     update();
 
     return true;
@@ -637,7 +662,7 @@ void CarPreviewWidget::selectWheelSize(bool front, bool diameter, int optionId, 
     if (qFuzzyCompare(selected, value)) return;
     selected = value;
     fitTireAspect(stock, sizing);
-    if (!applyWheelGeometry()) {
+    if (!applyWheelGeometry(true)) {
         sizing = previous;
         rebuildColorsPanel();
         return;

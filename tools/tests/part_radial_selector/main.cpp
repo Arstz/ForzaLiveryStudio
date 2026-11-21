@@ -106,6 +106,13 @@ void testGestures() {
     mouse(selector, QEvent::MouseButtonRelease, {400, 180});
     require(applied.last() == 108, "release selected a part from the wrong page");
 
+    rendered = 0;
+    begin(10);
+    selector.setChoicePreview(108, {});
+    scroll(selector, -120);
+    require(rendered == 9, "a completed preview was requested again when its page opened");
+    selector.cancelSelection();
+
     begin(10, 109);
     key(selector, Qt::Key_Right);
     key(selector, Qt::Key_Return);

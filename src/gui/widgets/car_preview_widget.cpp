@@ -1569,6 +1569,7 @@ void CarPreviewWidget::loadCarAsync(const QString &path, CarLoadCallback callbac
                     guard->modelLoadPending_ = false;
                     if (!prepared) {
                         guard->updateModelStatus();
+                        guard->schedulePartPreviewBake();
                         for (const CarLoadCallback &callback : callbacks) {
                             callback(false, error);
                         }
@@ -1577,6 +1578,8 @@ void CarPreviewWidget::loadCarAsync(const QString &path, CarLoadCallback callbac
 
                     guard->model_ = std::move(prepared->model);
                     guard->wheelPreview_ = std::move(prepared->wheels);
+                    guard->wheelPreviewBakeState_.reset();
+                    guard->invalidatePartPreviews();
                     guard->manufacturerColors_ = std::move(prepared->manufacturerColors);
                     guard->extractedCarDir_ = std::move(prepared->extractedCarDir);
                     guard->loadedCarPath_ = std::move(prepared->loadedCarPath);
@@ -1676,6 +1679,8 @@ void CarPreviewWidget::clearModel() {
     loadedCarKey_.clear();
     manufacturerColors_ = {};
     wheelPreview_.reset();
+    wheelPreviewBakeState_.reset();
+    invalidatePartPreviews();
     selectedLodIndex_ = 0;
     selectedPartOptions_.clear();
     paintControls_.clear();
@@ -1762,6 +1767,7 @@ void CarPreviewWidget::selectLod(int lodIndex) {
     }
     partSelector_->cancelSelection();
     selectedLodIndex_ = lodIndex;
+    invalidateExteriorPartPreviews();
     switchCarUnwrapOverlay();
     modelUploadPending_ = true;
 
@@ -1784,6 +1790,7 @@ void CarPreviewWidget::setProject(fls::Project *project) {
     if (paintPopup_) paintPopup_->close();
     project_ = project;
     paintControls_.clear();
+    invalidatePartPreviews();
     invalidateCachedLivery();
     updateCarColorControl();
     update();
@@ -1803,6 +1810,7 @@ void CarPreviewWidget::setEditorState(EditorState *state) {
         connect(state_, &EditorState::canvasRepaintRequested, this, &CarPreviewWidget::markLiveryDirtyImmediate);
         connect(state_, &EditorState::projectPaintChanged, this, [this]() {
             updateCarColorControl();
+            invalidatePartPreviews();
             update();
         });
         connect(state_, &EditorState::projectStructureChanged, this, [this]() {
@@ -1822,6 +1830,7 @@ void CarPreviewWidget::setBasePaint(const QColor &color) {
         return;
     }
     basePaint_ = color;
+    invalidatePartPreviews();
     update();
 }
 
@@ -2099,6 +2108,7 @@ void CarPreviewWidget::setLiveryTextureScale(int scale) {
     liveryTexture_ = 0;
     liveryDirty_ = true;
     liveLiveryFullDirty_ = true;
+    invalidateExteriorPartPreviews();
     update();
 }
 
@@ -2136,6 +2146,7 @@ void CarPreviewWidget::markLiverySectionsDirty(const QVector<QString> &nodeIds) 
     dirtySectionIds_.unite(sections);
     liveLiveryFullDirty_ = false;
     liveryDirty_ = true;
+    invalidateExteriorPartPreviews();
     update();
 }
 
@@ -2184,7 +2195,7 @@ void CarPreviewWidget::paintGL() {
     };
 
     if (modelUploadPending_ && carRenderer_.isInitialized()) {
-        partAnchorsDirty_ = true;
+        partDepthViewProjection_.reset();
         carRenderer_.uploadModel(model_, selectedLodIndex_);
         modelUploadPending_ = false;
         if (modelFitPending_) {
@@ -2366,6 +2377,7 @@ void CarPreviewWidget::setGameFolder(const QString &folder) {
     const quint64 generation = ++paintFinishLoadGeneration_;
     if (folder.isEmpty()) {
         paintFinishes_.clear();
+        invalidatePartPreviews();
         update();
         return;
     }
@@ -2383,6 +2395,7 @@ void CarPreviewWidget::setGameFolder(const QString &folder) {
                     return;
                 }
                 guard->paintFinishes_.replace(std::move(*library));
+                guard->invalidatePartPreviews();
                 guard->update();
             },
             Qt::QueuedConnection);
@@ -2454,6 +2467,7 @@ void CarPreviewWidget::invalidateCachedLivery() {
     dirtySectionIds_.clear();
     projectedSectionCache_.clear();
     liveryDirty_ = true;
+    invalidateExteriorPartPreviews();
 }
 
 void CarPreviewWidget::layoutOverlayControls() {

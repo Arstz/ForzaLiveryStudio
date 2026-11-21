@@ -43,6 +43,8 @@
 
 namespace {
 
+constexpr int kDefaultCatalogSize = 98;
+
 void require(bool condition, const QString &message) {
     if (!condition) {
         throw std::runtime_error(message.toStdString());
@@ -3701,12 +3703,13 @@ void shapeConfigurationTests(const gui::ShapeGeometryStore &geometry) {
     QString error;
     write(QJsonDocument(original).toJson());
     const auto baseline = gui::catalog::buildCatalog(geometry, path, &error);
-    require(error.isEmpty() && baseline.size() == 96,
+    require(error.isEmpty() && baseline.size() == kDefaultCatalogSize,
         QStringLiteral("Baseline catalog has %1 shapes: %2").arg(baseline.size()).arg(error));
-    require(gui::catalog::shapeIdsForTask(baseline, ShapeTask::Interior) == QVector<int>({102, 101, 109, 110, 124, 2117}),
+    require(gui::catalog::shapeIdsForTask(baseline, ShapeTask::Interior)
+        == QVector<int>({102, 101, 109, 110, 124, 2117, 120, 122, 130, 137, 138, 2133, 2138, 3138}),
         QStringLiteral("Configuration changed interior seed order"));
-    require(gui::catalog::shapeIdsForTask(baseline, ShapeTask::Curves).size() == 25
-        && gui::catalog::shapeIdsForTask(baseline, ShapeTask::Curves).contains(2133),
+    const auto curveIds = gui::catalog::shapeIdsForTask(baseline, ShapeTask::Curves);
+    require(curveIds.size() == 29 && curveIds.contains(2133) && curveIds.contains(2138) && curveIds.contains(3138),
         QStringLiteral("Configuration changed the default curve families"));
     for (const auto &primitive : baseline)
         require(gui::catalog::usesTask(primitive, ShapeTask::CutoutReplacements) == (primitive.shape.contours.size() > 1),
@@ -4401,7 +4404,7 @@ int main(int argc, char **argv) {
                    << timer.elapsed() << " ms\n";
             return 0;
         }
-        require(fullCatalog.size() == 96, QStringLiteral("Unexpected curated catalog size"));
+        require(fullCatalog.size() == kDefaultCatalogSize, QStringLiteral("Unexpected curated catalog size"));
         require(std::any_of(fullCatalog.begin(), fullCatalog.end(), [](const auto &primitive) {
             return primitive.shape.shapeId == 2124 && primitive.shape.contours.size() > 1;
         }), QStringLiteral("Catalog lost a shape's hole"));

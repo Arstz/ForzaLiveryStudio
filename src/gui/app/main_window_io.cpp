@@ -1248,6 +1248,13 @@ void MainWindow::exportDialog() {
     }
     const QString game = fls::exportGameCode(selection->gameVersion);
     const CarRegistry &registry = sharedCarRegistry();
+    const ExportContainerFormat format = selection->containerFormat;
+
+    if (!supportsExportContainer(selection->gameVersion, format)) {
+        QMessageBox::critical(this, QStringLiteral("Export failed"),
+            QStringLiteral("The selected container format is unavailable for %1.").arg(game));
+        return;
+    }
     if (state_->project_.isLivery && selection->gameVersion != fls::ExportGameVersion::Motorsport2
         && !registry.isSupported(state_->project_.carId, game)) {
         const QString car = registry.displayName(state_->project_.carId);
@@ -1256,7 +1263,7 @@ void MainWindow::exportDialog() {
             : QStringLiteral("%1 is not listed as supported in %2.").arg(car, game));
         return;
     }
-    if (fls::isXbox360ExportGame(selection->gameVersion)) {
+    if (format == ExportContainerFormat::Xbox360PlainFile || format == ExportContainerFormat::Xbox360SignedFile) {
         const bool livery = state_->project_.isLivery;
         const auto kind = livery ? fls::Xbox360FileKind::Livery : fls::Xbox360FileKind::Group;
         const QString extension = fls::xbox360ExportExtension(selection->gameVersion, kind);
@@ -1273,7 +1280,7 @@ void MainWindow::exportDialog() {
         const QString path = destination.selectedFiles().front();
         try {
             std::optional<fls::Xbox360Credentials> credentials;
-            if (selection->containerFormat == ExportContainerFormat::Xbox360SignedFile) {
+            if (format == ExportContainerFormat::Xbox360SignedFile) {
                 credentials = chooseXbox360KeyFile(this, selection->gameVersion);
                 if (!credentials) {
                     return;
@@ -1288,7 +1295,7 @@ void MainWindow::exportDialog() {
         }
         return;
     }
-    if (selection->containerFormat == ExportContainerFormat::WgsContainer) {
+    if (format == ExportContainerFormat::WgsContainer) {
         if (!selection->wgsTarget) {
             return;
         }
@@ -1308,14 +1315,14 @@ void MainWindow::exportDialog() {
         }
     }
     const QString folder = selection->directory;
-    if (selection->containerFormat == ExportContainerFormat::PgsFolder) {
+    if (format == ExportContainerFormat::PgsFolder) {
         rememberImportDirectory(folder, QStringLiteral("exportFolder"));
         rememberImportDirectory(folder, QStringLiteral("exportNested"));
     }
 
     QString error;
     if (!exportFolderImpl(folder, selection->gameVersion, &error,
-                          selection->wgsTarget ? &*selection->wgsTarget : nullptr)) {
+                          format == ExportContainerFormat::WgsContainer ? &*selection->wgsTarget : nullptr)) {
         QMessageBox::critical(this, QStringLiteral("Export failed"), error);
     }
 }

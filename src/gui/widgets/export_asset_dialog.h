@@ -28,6 +28,8 @@ struct ExportAssetSelection {
     ExportContainerFormat containerFormat = ExportContainerFormat::PgsFolder;
 };
 
+bool supportsExportContainer(ExportGameVersion game, ExportContainerFormat format);
+
 std::optional<ExportAssetSelection> showExportAssetDialog(
     QWidget *parent, const QString &startDirectory, const QString &projectName, bool livery,
     int carId = 0, quint64 maskedLayerCount = 0,

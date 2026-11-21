@@ -4,6 +4,7 @@
 
 #include <QHash>
 #include <QJsonObject>
+#include <QMutex>
 #include <QVector>
 
 #include <memory>
@@ -36,6 +37,11 @@ struct WheelAxlePreview {
     int widthId = 0;
 };
 
+struct WheelTemplateCache {
+    QMutex mutex;
+    QHash<QString, std::shared_ptr<const fls::CarModel>> models;
+};
+
 struct WheelPreviewState {
     fls::WheelSizing stockSizing;
     fls::WheelSizing sizing;
@@ -47,10 +53,15 @@ struct WheelPreviewState {
     std::array<WheelAxlePreview, 2> axles;
     std::vector<fls::CarWheelMount> mounts;
     std::vector<fls::CarMesh> stockRims;
-    QHash<QString, std::shared_ptr<const fls::CarModel>> templates;
+    std::shared_ptr<WheelTemplateCache> templates = std::make_shared<WheelTemplateCache>();
     int tireId = 0;
     bool independentRimStyles = false;
     bool loadCarTextures = false;
+};
+
+struct WheelOptionPreview {
+    fls::CarModel model;
+    fls::ModelBounds bounds;
 };
 
 bool isWheelSelector(int partType);
@@ -64,8 +75,9 @@ void installWheelPartOptions(fls::CarModel &model, const WheelPreviewState &stat
 QVector<WheelSizeOption> wheelSizeOptions(const WheelPreviewState &state, bool front, bool diameter,
     int bodyOptionId);
 bool normalizeWheelPreviewSizing(WheelPreviewState &state, int bodyOptionId);
-fls::CarModel buildWheelPreviewGeometry(WheelPreviewState &state, bool front, int rimId, int tireId,
+fls::CarModel buildWheelPreviewGeometry(const WheelPreviewState &state, bool front, int rimId, int tireId,
     QString *error = nullptr);
+WheelOptionPreview buildWheelOptionPreview(const WheelPreviewState &state, int partType, int optionId);
 void replaceWheelPreviewGeometry(fls::CarModel &model, const fls::CarModel &wheels);
 
 } // namespace gui

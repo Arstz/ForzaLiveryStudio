@@ -17,12 +17,30 @@
 #include <QPushButton>
 #include <QSettings>
 #include <QSignalBlocker>
-#include <QStandardItemModel>
+#include <QVariant>
 #include <QVBoxLayout>
 
 #include <exception>
 
 namespace gui {
+
+bool supportsExportContainer(ExportGameVersion game, ExportContainerFormat format) {
+    const bool xbox360 = fls::isXbox360ExportGame(game);
+
+    switch (format) {
+    case ExportContainerFormat::PgsFolder:
+        return !xbox360;
+    case ExportContainerFormat::WgsContainer:
+        return game == ExportGameVersion::Horizon5;
+    case ExportContainerFormat::Xbox360PlainFile:
+        return xbox360;
+    case ExportContainerFormat::Xbox360SignedFile:
+        return xbox360 && game != ExportGameVersion::Motorsport2;
+    }
+
+    return false;
+}
+
 namespace {
 
 constexpr int kDialogWidth = 640;
@@ -31,6 +49,18 @@ constexpr int kLayoutMargin = kUiMargin;
 constexpr int kLayoutSpacing = kUiSpacing;
 constexpr char kGeometrySettingsKey[] = "export/dialogGeometry";
 constexpr char kDescriptorSettingsKey[] = "export/wgsDescriptor";
+
+struct ExportContainerOption {
+    ExportContainerFormat format;
+    const char *label;
+};
+
+constexpr ExportContainerOption kContainerOptions[] = {
+    {ExportContainerFormat::PgsFolder, "PGS / asset folder"},
+    {ExportContainerFormat::WgsContainer, "WGS / replace existing container"},
+    {ExportContainerFormat::Xbox360PlainFile, "Xbox 360 plaintext file"},
+    {ExportContainerFormat::Xbox360SignedFile, "Xbox 360 encrypted file"},
+};
 
 class ExportAssetDialog final : public QDialog {
 public:
@@ -99,14 +129,6 @@ public:
         form->addRow(QStringLiteral("Game version"), gameVersion_);
 
         containerFormat_ = new QComboBox(this);
-        containerFormat_->addItem(QStringLiteral("PGS / asset folder"),
-                                  static_cast<int>(ExportContainerFormat::PgsFolder));
-        containerFormat_->addItem(QStringLiteral("WGS / replace existing container"),
-                                  static_cast<int>(ExportContainerFormat::WgsContainer));
-        containerFormat_->addItem(QStringLiteral("Xbox 360 plaintext file"),
-                                  static_cast<int>(ExportContainerFormat::Xbox360PlainFile));
-        containerFormat_->addItem(QStringLiteral("Xbox 360 encrypted file"),
-                                  static_cast<int>(ExportContainerFormat::Xbox360SignedFile));
         form->addRow(QStringLiteral("Container format"), containerFormat_);
         layout->addLayout(form);
 
@@ -169,7 +191,7 @@ public:
         });
         connect(gameClosed_, &QCheckBox::toggled, this, [this]() { updateDestination(); });
         connect(directoryEdit_, &QLineEdit::textChanged, this, [this]() { updateDestination(); });
-        connect(gameVersion_, &QComboBox::currentIndexChanged, this, [this]() { updateFormat(); });
+        connect(gameVersion_, &QComboBox::currentIndexChanged, this, [this]() { updateFormatOptions(); });
         connect(containerFormat_, &QComboBox::currentIndexChanged, this, [this]() { updateFormat(); });
         connect(buttons_, &QDialogButtonBox::accepted, this, [this]() {
             updateDestination();
@@ -183,7 +205,7 @@ public:
         connect(buttons_, &QDialogButtonBox::rejected, this, &QDialog::reject);
 
         restoreGeometry(QSettings().value(QLatin1String(kGeometrySettingsKey)).toByteArray());
-        updateFormat();
+        updateFormatOptions();
     }
 
     ~ExportAssetDialog() override {
@@ -194,27 +216,43 @@ public:
         ExportAssetSelection selected;
         selected.directory = QFileInfo(destinationDirectory()).absoluteFilePath();
         selected.gameVersion = static_cast<ExportGameVersion>(gameVersion_->currentData().toInt());
-        selected.containerFormat = static_cast<ExportContainerFormat>(containerFormat_->currentData().toInt());
+        selected.containerFormat = selectedFormat();
         selected.wgsTarget = wgsTarget_;
 
         return selected;
     }
 
 private:
+    ExportContainerFormat selectedFormat() const {
+        return static_cast<ExportContainerFormat>(containerFormat_->currentData().toInt());
+    }
+
     bool wgsSelected() const {
-        return static_cast<ExportContainerFormat>(containerFormat_->currentData().toInt()) == ExportContainerFormat::WgsContainer;
+        return selectedFormat() == ExportContainerFormat::WgsContainer;
+    }
+
+    void updateFormatOptions() {
+        const QSignalBlocker blocker(containerFormat_);
+        const QVariant previousFormat = containerFormat_->currentData();
+        const auto game = static_cast<ExportGameVersion>(gameVersion_->currentData().toInt());
+
+        containerFormat_->clear();
+        for (const ExportContainerOption &option : kContainerOptions) {
+            if (supportsExportContainer(game, option.format)) {
+                containerFormat_->addItem(QString::fromLatin1(option.label), static_cast<int>(option.format));
+            }
+        }
+        const int previousIndex = containerFormat_->findData(previousFormat);
+        if (previousIndex >= 0) {
+            containerFormat_->setCurrentIndex(previousIndex);
+        }
+        updateFormat();
     }
 
     void updateFormat() {
-        auto *model = qobject_cast<QStandardItemModel *>(containerFormat_->model());
         const auto game = static_cast<ExportGameVersion>(gameVersion_->currentData().toInt());
         const quint64 incompatibleCount = incompatibleLayerCount_ ? incompatibleLayerCount_(game) : 0;
-        const int folderIndex = containerFormat_->findData(static_cast<int>(ExportContainerFormat::PgsFolder));
-        const int wgsIndex = containerFormat_->findData(static_cast<int>(ExportContainerFormat::WgsContainer));
-        const int plainIndex = containerFormat_->findData(static_cast<int>(ExportContainerFormat::Xbox360PlainFile));
-        const int signedIndex = containerFormat_->findData(static_cast<int>(ExportContainerFormat::Xbox360SignedFile));
         const bool xbox360 = fls::isXbox360ExportGame(game);
-        const bool supported = game == ExportGameVersion::Horizon5;
 
         maskWarning_->setVisible(maskedLayerCount_ > 0 && !fls::exportGameSupportsMasks(game));
         if (incompatibleCount > 0) {
@@ -225,15 +263,6 @@ private:
                     .arg(incompatibleCount).arg(gameVersion_->currentText()));
         }
         shapeWarning_->setVisible(incompatibleCount > 0);
-        model->item(folderIndex)->setEnabled(!xbox360);
-        model->item(wgsIndex)->setEnabled(supported);
-        model->item(wgsIndex)->setToolTip(QStringLiteral("FH5 existing-slot replacement"));
-        model->item(plainIndex)->setEnabled(xbox360);
-        model->item(signedIndex)->setEnabled(xbox360 && game != ExportGameVersion::Motorsport2);
-        if (!model->item(containerFormat_->currentIndex())->isEnabled()) {
-            const QSignalBlocker blocker(containerFormat_);
-            containerFormat_->setCurrentIndex(xbox360 ? plainIndex : folderIndex);
-        }
         const bool wgs = wgsSelected();
         if (wgs != wgsActive_) {
             const QSignalBlocker blocker(directoryEdit_);
@@ -283,10 +312,18 @@ private:
 
     void updateDestination() {
         const auto game = static_cast<ExportGameVersion>(gameVersion_->currentData().toInt());
+        const bool unsupportedFormat = containerFormat_->currentIndex() < 0
+            || !supportsExportContainer(game, selectedFormat());
         const bool unsupported = livery_ && game != ExportGameVersion::Motorsport2
             && !sharedCarRegistry().isSupported(carId_, fls::exportGameCode(game));
 
         wgsTarget_.reset();
+        if (unsupportedFormat) {
+            setUiState(hint_, QStringLiteral("error"));
+            hint_->setText(QStringLiteral("Choose a container format supported by %1.").arg(gameVersion_->currentText()));
+            buttons_->button(QDialogButtonBox::Save)->setEnabled(false);
+            return;
+        }
         setUiState(hint_, unsupported ? QStringLiteral("error") : QString());
         if (unsupported) {
             profileEdit_->clear();

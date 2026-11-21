@@ -991,7 +991,6 @@ set(FLS_GUI_ASSETS
 
 set(FLS_GUI_ASSET_FILES
     compact_fit_shapes.json
-    compact_fit_shapes_combined.json
     lining_shapes.json
     settings_tips.json
     themes.json

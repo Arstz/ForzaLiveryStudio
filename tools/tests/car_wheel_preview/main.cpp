@@ -175,7 +175,9 @@ void testCar(const QString &archive) {
         const auto geometry = buildWheelPreviewGeometry(*state, true, kStockRimStyle, compound.id, &error);
         if (meshCount(geometry, kTireSelector) == 0) {
             std::fprintf(stderr, "Compound %s (%s): %s\n", qPrintable(compound.name), qPrintable(compound.archive), qPrintable(error));
-            for (auto cached = state->templates.begin(); cached != state->templates.end(); ++cached) {
+            const QMutexLocker lock(&state->templates->mutex);
+            const auto &templates = state->templates->models;
+            for (auto cached = templates.cbegin(); cached != templates.cend(); ++cached) {
                 if (!cached.key().contains(compound.archive)) continue;
                 for (const auto &mesh : cached.value()->meshes) std::fprintf(stderr, "  template %s\n", qPrintable(mesh.name));
             }

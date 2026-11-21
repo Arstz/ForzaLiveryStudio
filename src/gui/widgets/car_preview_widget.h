@@ -35,6 +35,7 @@ namespace gui {
 
 class EditorState;
 class PartRadialSelector;
+struct WheelOptionPreview;
 struct WheelPreviewState;
 
 QJsonObject profileCarLoading(const QString &path, bool loadTextures, int repetitions, bool verifyUnwrap,
@@ -106,10 +107,12 @@ private:
         QAbstractButton *button = nullptr;
         QHash<int, fls::ModelBounds> optionBounds;
         QVector<const fls::CarPartOption *> options;
-        std::optional<QVector3D> surfaceAnchor;
+        QVector3D anchor;
         std::optional<QPoint> visibleCenter;
         int partType = -1;
     };
+
+    using PartPreviewKey = QPair<int, int>;
 
     QMatrix4x4 cameraView() const;
     QMatrix4x4 cameraProjection() const;
@@ -125,17 +128,26 @@ private:
     void rebuildPartControls();
     QVector<const fls::CarPartOption *> availablePartOptions(int partType) const;
     void syncPartControls();
-    void rebuildPartAnchors();
     void updatePartVisibility();
     void layoutPartControls();
     void beginPartSelection(int partType, QAbstractButton *anchor);
+    QImage requestPartOptionPreview(int partType, int optionId);
+    void invalidatePartPreview(int partType);
+    void invalidateExteriorPartPreviews();
+    void invalidatePartPreviews();
+    void rebuildPartPreviewQueue();
+    bool canBakePartPreviews() const;
+    void schedulePartPreviewBake();
+    void bakeNextPartPreview();
+    void bakeWheelOptionPreview(const PartPreviewKey &key);
+    void storePartOptionPreview(const PartPreviewKey &key, QImage preview);
     QImage renderPartOptionPreview(int partType, int optionId);
     QImage renderGeometryPreview(CarModelRenderer &renderer, const fls::ModelBounds &bounds,
         const QHash<int, int> &selections, int partType, bool wholeCar);
     void selectPartOption(int partType, int optionId);
-    QImage renderWheelOptionPreview(int partType, int optionId);
+    QImage renderWheelOptionPreview(int partType, int optionId, const WheelOptionPreview &preview);
     void selectWheelOption(int partType, int optionId);
-    bool applyWheelGeometry();
+    bool applyWheelGeometry(bool sizingChanged = false);
     void rebuildWheelSizingControls();
     void selectWheelSize(bool front, bool diameter, int optionId, float value);
     void rebuildColorsPanel();
@@ -212,11 +224,16 @@ private:
     QToolButton *partsToggle_ = nullptr;
     PartRadialSelector *partSelector_ = nullptr;
     QVector<PartHotspot> partHotspots_;
+    QHash<int, QHash<int, QImage>> partOptionPreviews_;
+    QList<PartPreviewKey> partPreviewQueue_;
+    QTimer partPreviewTimer_;
+    std::shared_ptr<const WheelPreviewState> wheelPreviewBakeState_;
+    std::optional<PartPreviewKey> wheelPreviewBakeJob_;
     QOpenGLShaderProgram partDepthProgram_;
     QOpenGLVertexArrayObject partDepthVao_;
     std::optional<QMatrix4x4> partDepthViewProjection_;
     QSize partDepthViewport_;
-    bool partAnchorsDirty_ = true;
+    bool partPreviewQueueDirty_ = true;
     QHash<int, int> selectedPartOptions_;
     QHash<int, int> individualPartOptions_;
     int partSelectorType_ = -1;

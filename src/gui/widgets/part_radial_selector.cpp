@@ -165,6 +165,18 @@ void PartRadialSelector::beginSelection(const QPoint &origin, const QString &tit
     update();
 }
 
+void PartRadialSelector::setChoicePreview(int optionId, const QImage &preview) {
+    const auto choice = std::find_if(choices_.begin(), choices_.end(), [optionId](const PartRadialChoice &item) {
+        return item.optionId == optionId;
+    });
+
+    if (choice == choices_.end()) return;
+    choice->preview = preview;
+    choice->previewReady = true;
+    const auto index = choice - choices_.begin();
+    if (index / kChoicesPerPage == page_) update();
+}
+
 void PartRadialSelector::cancelSelection() {
     finishSelection(false);
 }
@@ -230,7 +242,8 @@ void PartRadialSelector::paintEvent(QPaintEvent *) {
         } else {
             painter.setPen(colors.mutedText);
             painter.drawText(tile.adjusted(4, 4, -4, -4), Qt::AlignCenter | Qt::TextWordWrap,
-                choice.empty ? QStringLiteral("None") : QStringLiteral("No preview"));
+                choice.empty ? QStringLiteral("None") : previewProvider_ && !choice.previewReady
+                    ? QStringLiteral("Loading…") : QStringLiteral("No preview"));
         }
         painter.restore();
         painter.setPen(colors.text);
@@ -329,7 +342,9 @@ void PartRadialSelector::hideEvent(QHideEvent *event) {
 void PartRadialSelector::preparePage() {
     for (int index = 0; index < pageChoiceCount(); ++index) {
         PartRadialChoice &choice = choices_[page_ * kChoicesPerPage + index];
-        if (choice.preview.isNull() && previewProvider_) choice.preview = previewProvider_(choice.optionId);
+        if (!choice.empty && !choice.previewReady && choice.preview.isNull() && previewProvider_) {
+            choice.preview = previewProvider_(choice.optionId);
+        }
     }
 }
 

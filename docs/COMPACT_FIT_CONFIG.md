@@ -20,8 +20,7 @@ into an existing `build/Release/assets` directory, run:
 ```
 
 `-AssetsDirectory` selects a different deployed asset directory.
-`-ConfigurationPath` selects an alternate source file. The repository includes
-`assets/compact_fit_shapes_combined.json` for experimental task additions.
+`-ConfigurationPath` selects an alternate source file.
 Running the helper without `-ConfigurationPath` restores the default catalog.
 Edit deployed `lining_shapes.json` directly to try Lining catalog changes;
 a later build redeploys the repository version.
@@ -107,13 +106,16 @@ Build `fls_compact_fit_tests` with `FLS_BUILD_TESTS=ON`.
 `--shape-config <path>` selects an explicit general Compact Fit catalog for a
 headless run while leaving the deployed editor configuration unchanged.
 
-Run `python tools/tests/compact_fit/compare_compact_fit_configs.py --request <contour-log>` to compare
-the baseline against task additions in `tools/tests/fixtures/compact_fit_shape_trials.json`.
+Run `python tools/tests/compact_fit/compare_compact_fit_configs.py --request <contour-log> --variants <task-additions>`
+to compare new task additions against the current catalog. The bundled trials
+use additions now in the default catalog. Use a saved baseline to reproduce those
+comparisons.
 
 | Argument | Purpose |
 | --- | --- |
 | Repeated `--request` | Compare multiple contour requests. |
-| `--variants` | Select a different task-addition file. |
+| `--base` | Select a baseline catalog. Defaults to `assets/compact_fit_shapes.json`. |
+| `--variants` | Select task additions. Defaults to `tools/tests/fixtures/compact_fit_shape_trials.json`. |
 | `--only` | Select named variants. |
 | `--allowance` | Use one outward allowance for every fit. |
 | `--output` | Select the result directory; defaults to `build/compact_fit_shape_trials`. |
