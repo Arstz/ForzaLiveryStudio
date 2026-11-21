@@ -157,7 +157,8 @@ private:
                                    const QString &id,
                                    const QString &label,
                                    const QKeySequence &shortcut) const;
-    void setProject(fls::Project project, bool importedWithoutModel = false);
+    enum class ProjectPreviewMode { Automatic, Keep, Clear };
+    void setProject(fls::Project project, ProjectPreviewMode previewMode = ProjectPreviewMode::Automatic);
     void updateStatus();
     void updateClipboardWidget();
     void updateColorPaletteWidget();

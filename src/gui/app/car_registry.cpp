@@ -354,38 +354,41 @@ QVector<CarRegistry::ModelSource> CarRegistry::findModels(int id, const QMap<QSt
     return sources;
 }
 
-int CarRegistry::findClosestModelCarId(
+CarRegistry::ClosestModel CarRegistry::findClosestModel(
     int id, const QMap<QString, QString> &gameFolders, const QString &preferredGame) const {
+    const ModelSource exact = findModel(id, gameFolders, preferredGame);
     const QString family = modelFamily(models_.value(id));
     const QStringList games = fls::carModelGames(preferredGame);
+    ClosestModel closest;
     const int year = years_.value(id);
-    int closestCarId = 0;
     int closestDifference = kClosestModelYearDifference + 1;
-    qsizetype closestGameRank = games.size();
 
+    if (!exact.path.isEmpty()) {
+        return {exact, id};
+    }
     if (year <= 0 || family.isEmpty()) {
-        return 0;
+        return {};
     }
-    for (const Entry &entry : sorted_) {
-        const int candidateYear = years_.value(entry.id);
-        const int difference = std::abs(year - candidateYear);
-        if (entry.id == id || candidateYear <= 0 || difference > closestDifference
-            || difference > kClosestModelYearDifference || modelFamily(models_.value(entry.id)) != family) {
-            continue;
-        }
-        const ModelSource source = findModel(entry.id, gameFolders, preferredGame);
-        if (source.path.isEmpty() || modelFamily(modelCode(entry.id, source.game)) != family) {
-            continue;
-        }
-        const qsizetype gameRank = games.indexOf(source.game);
-        if (difference < closestDifference || gameRank < closestGameRank) {
-            closestCarId = entry.id;
-            closestDifference = difference;
-            closestGameRank = gameRank;
+    for (const QString &game : games) {
+        const QString folder = gameFolders.value(game);
+        if (folder.isEmpty()) continue;
+
+        for (const Entry &entry : sorted_) {
+            const int candidateYear = years_.value(entry.id);
+            const int difference = std::abs(year - candidateYear);
+            if (entry.id == id || candidateYear <= 0 || difference >= closestDifference
+                || modelFamily(modelCode(entry.id, game)) != family) {
+                continue;
+            }
+            const QString path = findModelPathForGame(entry.id, game, folder);
+            if (!path.isEmpty()) {
+                closest = {{path, game}, entry.id};
+                closestDifference = difference;
+            }
         }
     }
 
-    return closestCarId;
+    return closest;
 }
 
 QHash<int, QStringList> CarRegistry::modelAvailability(const QMap<QString, QString> &gameFolders) const {
@@ -465,10 +468,9 @@ MissingCarModelChoice chooseMissingCarModel(
     const QString expectation = versions.isEmpty() ? QStringLiteral("supported games unknown")
         : versions.contains(QLatin1Char(',')) ? QStringLiteral("expected one of %1").arg(versions)
         : QStringLiteral("expected %1").arg(versions);
-    const QString expected = targetGame.isEmpty() ? expectation
-        : QStringLiteral("%1, targets %2").arg(expectation, targetGame);
-    QString message = QStringLiteral(
-        "No model found within configured games folders (%1), continue without?").arg(expected);
+    QString message = targetGame.isEmpty()
+        ? QStringLiteral("No model found in the configured game folders (%1), continue without?").arg(expectation)
+        : QStringLiteral("No model found in the configured %1 game folder, continue without?").arg(targetGame);
     if (!alternativeModel.isEmpty()) {
         message += QStringLiteral("\n\nCan load %1 instead.").arg(alternativeModel);
     }

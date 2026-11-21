@@ -610,30 +610,35 @@ bool MainWindow::loadImportedProject(const std::function<fls::Project()> &load,
     }
     try {
         fls::Project project = load();
-        const CarRegistry &registry = sharedCarRegistry();
-        const auto gameFolders = loadBehaviorSettings().gameFolders;
-        CarRegistry::ModelSource alternativeSource;
-        const bool missingModel = project.isLivery && project.carId > 0
-            && registry.findModel(project.carId, gameFolders, project.liveryPaint.game).path.isEmpty();
+        CarRegistry::ModelSource source;
+        ProjectPreviewMode previewMode = ProjectPreviewMode::Automatic;
 
-        if (missingModel) {
-            const int alternativeCarId = registry.findClosestModelCarId(project.carId, gameFolders,
-                                                                        project.liveryPaint.game);
-            const QString alternativeName = registry.name(alternativeCarId);
-            const QString targetGame = project.liveryPaint.game.isEmpty()
-                ? QStringLiteral("unknown game") : project.liveryPaint.game;
-            const auto choice = chooseMissingCarModel(this, project.carId, targetGame, alternativeName);
-            if (choice == MissingCarModelChoice::Cancel) {
-                return false;
-            }
-            if (choice == MissingCarModelChoice::LoadClosest) {
-                alternativeSource = chooseCarModelSource(this, alternativeName,
-                    registry.findModels(alternativeCarId, gameFolders, project.liveryPaint.game));
+        if (project.isLivery && project.carId > 0) {
+            const CarRegistry &registry = sharedCarRegistry();
+            const BehaviorSettings settings = loadBehaviorSettings();
+            const QString game = project.liveryPaint.game.trimmed().toUpper();
+            const QMap<QString, QString> targetFolders{{game, settings.gameFolders.value(game)}};
+
+            source = registry.findModel(project.carId, targetFolders, game);
+            previewMode = ProjectPreviewMode::Clear;
+            if (source.path.isEmpty()) {
+                const auto closest = registry.findClosestModel(project.carId, settings.gameFolders, game);
+                const QString alternative = closest.source.path.isEmpty() ? QString()
+                    : QStringLiteral("%1 (%2)").arg(registry.displayName(closest.carId), closest.source.game);
+                const auto choice = chooseMissingCarModel(this, project.carId, game, alternative);
+                if (choice == MissingCarModelChoice::Cancel) {
+                    return false;
+                }
+                if (choice == MissingCarModelChoice::LoadClosest) {
+                    source = closest.source;
+                }
+            } else if (carPreview_ != nullptr && carPreview_->hasModel() && !settings.discardModelOnLiveryOpen) {
+                previewMode = ProjectPreviewMode::Keep;
             }
         }
-        setProject(std::move(project), missingModel);
-        if (!alternativeSource.path.isEmpty()) {
-            loadCarModel(alternativeSource.path, true, alternativeSource.game);
+        setProject(std::move(project), previewMode);
+        if (previewMode == ProjectPreviewMode::Clear && carPreview_ != nullptr && !source.path.isEmpty()) {
+            loadCarModel(source.path, true, source.game);
         }
         canvasStatusBar_->showMessage(statusMessage, 5000);
         return true;

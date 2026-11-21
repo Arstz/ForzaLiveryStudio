@@ -25,6 +25,11 @@ public:
         QString game;
     };
 
+    struct ClosestModel {
+        ModelSource source;
+        int carId = 0;
+    };
+
     bool loadDefault(QString *error = nullptr);
     bool loadFromFile(const QString &path, QString *error = nullptr);
 
@@ -39,8 +44,8 @@ public:
                           const QString &preferredGame = {}) const;
     QVector<ModelSource> findModels(int id, const QMap<QString, QString> &gameFolders,
                                     const QString &preferredGame = {}) const;
-    int findClosestModelCarId(int id, const QMap<QString, QString> &gameFolders,
-                              const QString &preferredGame) const;
+    ClosestModel findClosestModel(int id, const QMap<QString, QString> &gameFolders,
+                                  const QString &preferredGame) const;
     QHash<int, QStringList> modelAvailability(const QMap<QString, QString> &gameFolders) const;
     QString displayName(int id) const;
     const QVector<Entry> &entries() const { return sorted_; }

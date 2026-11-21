@@ -34,16 +34,15 @@ constexpr int kSectionBarLabelSlots[fls::kLiverySideCount] = {
 
 } // namespace
 
-void MainWindow::setProject(fls::Project project, bool importedWithoutModel) {
+void MainWindow::setProject(fls::Project project, ProjectPreviewMode previewMode) {
     clearScratchCopy();
     if (carPreview_ != nullptr) {
         carPreview_->cancelCarLoad();
+        if ((!project.isLivery || previewMode == ProjectPreviewMode::Clear) && carPreview_->hasModel()) {
+            carPreview_->clearModel();
+        }
     }
     state_->setProject(std::move(project));
-    if (!state_->project_.isLivery && carPreview_ != nullptr
-        && carPreview_->hasModel()) {
-        carPreview_->clearModel();
-    }
     projectJsonPath_.clear();
     autoExpandedTreeIndexes_.clear();
     autoExpandedGroupIds_.clear();
@@ -67,7 +66,9 @@ void MainWindow::setProject(fls::Project project, bool importedWithoutModel) {
     if (carUnwrapAction_ != nullptr) {
         carUnwrapAction_->setChecked(state_->project_.isLivery);
     }
-    maybeAutoLoadCarForProject(importedWithoutModel, !importedWithoutModel);
+    if (previewMode == ProjectPreviewMode::Automatic) {
+        maybeAutoLoadCarForProject();
+    }
     updateCarUnwrapOverlay();
 }
 
