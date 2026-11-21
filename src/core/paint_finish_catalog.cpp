@@ -72,7 +72,7 @@ void resolveWeaveDefaults(QHash<int, std::shared_ptr<ModelMaterial>> &materials,
             const QString relative = link.mid(start + prefix.size());
             const int separator = relative.indexOf(QLatin1Char('/'));
             if (separator < 0) continue;
-            const QString archive = QDir(gameCarsDir(gameFolder)).filePath(
+            const QString archive = gameAssetFilePath(QDir(gameCarsDir(gameFolder)),
                 QStringLiteral("_library/shaders/") + relative.left(separator) + QStringLiteral(".zip"));
             const QString entry = relative.mid(separator + 1).toLower();
             sources.insert(material.key(), {archive, entry});

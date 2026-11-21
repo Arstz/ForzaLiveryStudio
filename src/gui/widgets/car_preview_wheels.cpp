@@ -1,6 +1,7 @@
 #include "car_preview_wheels.h"
 
 #include "car_preview_widget.h"
+#include "game_paths.h"
 #include "gui_assets.h"
 #include "model_bundle.h"
 #include "theme_manager.h"
@@ -32,6 +33,7 @@ constexpr int kFrontRimDiameterPart = 10;
 constexpr int kRearRimDiameterPart = 11;
 constexpr int kFrontTireWidthPart = 38;
 constexpr int kRearTireWidthPart = 39;
+const QString kFallbackStockTire = QStringLiteral("tire_b");
 
 QJsonObject readCatalog(const QString &name) {
     QFile file(assetPath(QStringLiteral("cars/") + name));
@@ -50,7 +52,7 @@ QJsonObject forGame(QJsonObject entry, const QString &game) {
 QString wheelLibrary(const QString &sourcePath) {
     QDir directory = QFileInfo(sourcePath).absoluteDir();
     while (true) {
-        const QString path = directory.filePath(QStringLiteral("_library/scene"));
+        const QString path = fls::gameAssetFilePath(directory, QStringLiteral("_library/scene"));
         if (QDir(path).exists()) return path;
         if (!directory.cdUp()) break;
     }
@@ -84,10 +86,23 @@ QString tireArchive(const QString &name) {
     return QStringLiteral("tire_street");
 }
 
+QString fh3StockTireArchive(const QString &label) {
+    static const QRegularExpression kStockCompound(
+        QStringLiteral(R"(^Stock Tire Compound \(([A-Za-z0-9_]+)\)$)"),
+        QRegularExpression::CaseInsensitiveOption);
+    const auto match = kStockCompound.match(label);
+
+    return match.hasMatch() ? QStringLiteral("tire_") + match.captured(1) : QString();
+}
+
+QString wheelArchivePath(const QString &libraryPath, const QString &archive, bool rim) {
+    return fls::gameAssetFilePath(QDir(libraryPath), (rim ? QStringLiteral("wheels/")
+        : QStringLiteral("tires/")) + archive + QStringLiteral(".zip"));
+}
+
 std::shared_ptr<const fls::CarModel> wheelTemplate(WheelPreviewState &state, const QString &archive,
                                                   bool left, bool rim, QString *error) {
-    QString path = QDir(state.libraryPath).filePath((rim ? QStringLiteral("wheels/")
-        : QStringLiteral("tires/")) + archive + QStringLiteral(".zip"));
+    QString path = wheelArchivePath(state.libraryPath, archive, rim);
     const QString key = path + (left ? QStringLiteral("|L") : QStringLiteral("|R"));
     const auto cached = state.templates.constFind(key);
 
@@ -105,8 +120,8 @@ std::shared_ptr<const fls::CarModel> wheelTemplate(WheelPreviewState &state, con
     };
     QString entry = findEntry(entries);
     if (entry.isEmpty() && !rim && !left) {
-        const QString rightPath = QDir(state.libraryPath).filePath(QStringLiteral("tires/")
-            + QString(archive).replace(QStringLiteral("tire_"), QStringLiteral("tireR_")) + QStringLiteral(".zip"));
+        const QString rightPath = wheelArchivePath(state.libraryPath,
+            QString(archive).replace(QStringLiteral("tire_"), QStringLiteral("tireR_")), rim);
         path = rightPath;
         entries = fls::listZipEntries(path, error);
         entry = findEntry(entries);
@@ -188,6 +203,50 @@ void resizeStockRim(fls::CarMesh &mesh, const fls::CarWheelMount &mount,
     mesh.boneTransform = {};
 }
 
+fls::CarModel buildRimPreviewGeometry(WheelPreviewState &state, bool front, int rimId, QString *error = nullptr) {
+    const auto *option = styleOption(state.rims, rimId);
+    const auto &stock = front ? state.stockSizing.front : state.stockSizing.rear;
+    const auto &sizing = front ? state.sizing.front : state.sizing.rear;
+    fls::CarModel result;
+    const bool stockRim = rimId == kStockRimStyle;
+
+    if (option == nullptr) return result;
+    const auto rim = stockRim ? std::shared_ptr<const fls::CarModel>{}
+        : wheelTemplate(state, option->archive, true, true, error);
+    if (!stockRim && !rim) return result;
+    for (auto mount : state.mounts) {
+        if (mount.front != front) continue;
+        if (stockRim) {
+            for (const auto &source : state.stockRims) {
+                if (source.modelInstanceId != mount.instanceId) continue;
+                auto mesh = source;
+                resizeStockRim(mesh, mount, stock, sizing);
+                result.meshes.push_back(std::move(mesh));
+            }
+        } else {
+            mount.transform.m[12] = (mount.left ? -1.0f : 1.0f)
+                * (sizing.trackOuterMetres - sizing.tireWidthMillimetres * kMetresPerMillimetre) * 0.5f;
+            mount.transform.m[13] += tireRadius(sizing) - tireRadius(stock);
+            fls::appendCarRim(result, *rim, mount, sizing);
+        }
+    }
+    for (auto &mesh : result.meshes) {
+        mesh.carPartType = front ? kFrontRimSelector : kRearRimSelector;
+        mesh.partOptionIds = {rimId};
+        mesh.stockPart = true;
+        if (stockRim) continue;
+        mesh.sourceModelPath = QStringLiteral("_library/scene/wheels/") + option->archive;
+        for (const auto &source : state.stockRims) {
+            if (source.materialName.compare(mesh.materialName, Qt::CaseInsensitive) == 0 && source.material) {
+                mesh.material = source.material;
+                break;
+            }
+        }
+    }
+
+    return result;
+}
+
 } // namespace
 
 bool isWheelSelector(int partType) {
@@ -232,6 +291,7 @@ std::shared_ptr<WheelPreviewState> prepareWheelPreview(
     const auto cars = readCatalog(QStringLiteral("car_ids.json"));
     const QString version = game.isEmpty() ? QStringLiteral("FH6") : game.toUpper();
     QString carId;
+    const bool fh3 = version == QStringLiteral("FH3");
 
     state->stockSizing = sizing;
     state->independentRimStyles = !game.isEmpty() && version == QStringLiteral("FH6");
@@ -272,7 +332,7 @@ std::shared_ptr<WheelPreviewState> prepareWheelPreview(
             const QString archive = value.value(QStringLiteral("model")).toString();
             const QStringList versions = value.value(QStringLiteral("version")).toString().split(QStringLiteral(", "));
             if (value.value(QStringLiteral("stock")).toBool() || !versions.contains(version)
-                || !QFileInfo::exists(QDir(state->libraryPath).filePath(QStringLiteral("wheels/") + archive + QStringLiteral(".zip")))) continue;
+                || !QFileInfo::exists(wheelArchivePath(state->libraryPath, archive, true))) continue;
             const auto manufacturer = forGame(catalog.value(QStringLiteral("manufacturers")).toObject()
                 .value(QString::number(value.value(QStringLiteral("manufacturer")).toInt())).toObject(), version);
             const QString brand = manufacturer.value(QStringLiteral("name")).toString();
@@ -286,16 +346,30 @@ std::shared_ptr<WheelPreviewState> prepareWheelPreview(
         return first.name.localeAwareCompare(second.name) < 0;
     });
     static const QRegularExpression kCompound(QStringLiteral(R"(^8:(\d+)$)"));
+    bool selectedAuthoredStock = false;
     for (auto part = state->partNames.begin(); part != state->partNames.end(); ++part) {
         const auto match = kCompound.match(part.key());
         if (!match.hasMatch()) continue;
         const QString name = part.value().toString();
-        const QString archive = tireArchive(name);
-        if (!QFileInfo::exists(QDir(state->libraryPath).filePath(QStringLiteral("tires/") + archive + QStringLiteral(".zip")))) continue;
-        state->tires.push_back({name, archive, match.captured(1).toInt()});
-        if (name.startsWith(QStringLiteral("Stock"), Qt::CaseInsensitive)) state->tireId = match.captured(1).toInt();
+        const QString authoredArchive = fh3 ? fh3StockTireArchive(name) : QString();
+        QString archive = authoredArchive.isEmpty() ? tireArchive(name) : authoredArchive;
+        const bool stock = name.startsWith(QStringLiteral("Stock"), Qt::CaseInsensitive);
+        const int id = match.captured(1).toInt();
+
+        if (!QFileInfo::exists(wheelArchivePath(state->libraryPath, archive, false))) {
+            if (!stock || !QFileInfo::exists(wheelArchivePath(state->libraryPath, kFallbackStockTire, false))) continue;
+            archive = kFallbackStockTire;
+        }
+        state->tires.push_back({name, archive, id});
+        const bool authoredStock = archive == authoredArchive;
+        if (stock && (authoredStock || !selectedAuthoredStock)) {
+            state->tireId = id;
+            selectedAuthoredStock = authoredStock;
+        }
     }
-    if (state->tires.isEmpty()) state->tires.push_back({QStringLiteral("Stock"), QStringLiteral("tire_b"), 0});
+    if (styleOption(state->tires, state->tireId) == nullptr) {
+        state->tires.push_back({QStringLiteral("Stock"), kFallbackStockTire, state->tireId});
+    }
     std::sort(state->tires.begin(), state->tires.end(), [&state](const auto &first, const auto &second) {
         if ((first.id == state->tireId) != (second.id == state->tireId)) return first.id == state->tireId;
         return first.name.localeAwareCompare(second.name) < 0;
@@ -408,44 +482,11 @@ bool normalizeWheelPreviewSizing(WheelPreviewState &state, int bodyOptionId) {
 }
 
 fls::CarModel buildWheelPreviewGeometry(WheelPreviewState &state, bool front, int rimId, int tireId, QString *error) {
-    const auto *rimOption = styleOption(state.rims, rimId);
     const auto *tireOption = styleOption(state.tires, tireId);
-    const auto &stock = front ? state.stockSizing.front : state.stockSizing.rear;
-    const auto &sizing = front ? state.sizing.front : state.sizing.rear;
-    fls::CarModel result;
-    const auto rim = rimId == kStockRimStyle || rimOption == nullptr ? std::shared_ptr<const fls::CarModel>{}
-        : wheelTemplate(state, rimOption->archive, true, true, error);
 
-    if (rimOption == nullptr || tireOption == nullptr || (rimId != kStockRimStyle && !rim)) return result;
-    for (auto mount : state.mounts) {
-        if (mount.front != front) continue;
-        if (rimId == kStockRimStyle) {
-            for (const auto &source : state.stockRims) {
-                if (source.modelInstanceId != mount.instanceId) continue;
-                auto mesh = source;
-                resizeStockRim(mesh, mount, stock, sizing);
-                result.meshes.push_back(std::move(mesh));
-            }
-        } else {
-            mount.transform.m[12] = (mount.left ? -1.0f : 1.0f)
-                * (sizing.trackOuterMetres - sizing.tireWidthMillimetres * kMetresPerMillimetre) * 0.5f;
-            mount.transform.m[13] += tireRadius(sizing) - tireRadius(stock);
-            fls::appendCarRim(result, *rim, mount, sizing);
-        }
-    }
-    for (auto &mesh : result.meshes) {
-        mesh.carPartType = front ? kFrontRimSelector : kRearRimSelector;
-        mesh.partOptionIds = {rimId};
-        mesh.stockPart = true;
-        if (!rim) continue;
-        mesh.sourceModelPath = QStringLiteral("_library/scene/wheels/") + rimOption->archive;
-        for (const auto &source : state.stockRims) {
-            if (source.materialName.compare(mesh.materialName, Qt::CaseInsensitive) == 0 && source.material) {
-                mesh.material = source.material;
-                break;
-            }
-        }
-    }
+    if (tireOption == nullptr) return {};
+    auto result = buildRimPreviewGeometry(state, front, rimId, error);
+    if (result.meshes.empty()) return result;
     const auto left = wheelTemplate(state, tireOption->archive, true, false, error);
     const auto right = wheelTemplate(state, tireOption->archive, false, false, error);
     if (!left || !right) return {};
@@ -476,8 +517,8 @@ QImage CarPreviewWidget::renderWheelOptionPreview(int partType, int optionId) {
     if (!wheelPreview_ || !context()) return {};
     const bool front = isFrontWheelSelector(partType);
     const auto &axle = wheelPreview_->axles[front ? 0 : 1];
-    auto geometry = buildWheelPreviewGeometry(*wheelPreview_, front,
-        isRimSelector(partType) ? optionId : axle.rimId, isRimSelector(partType) ? wheelPreview_->tireId : optionId);
+    auto geometry = isRimSelector(partType) ? buildRimPreviewGeometry(*wheelPreview_, front, optionId)
+        : buildWheelPreviewGeometry(*wheelPreview_, front, axle.rimId, optionId);
     fls::ModelBounds bounds;
 
     geometry.meshes.erase(std::remove_if(geometry.meshes.begin(), geometry.meshes.end(),

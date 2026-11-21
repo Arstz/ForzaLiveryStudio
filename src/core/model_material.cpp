@@ -139,9 +139,9 @@ std::vector<ModelMaterialParameter> readParameters(const BundleBlobRecord &blob)
 }
 
 void appendShaderTextures(ModelMaterial &material, const BundleBlobRecord &blob) {
-    if (!blob.isAtLeastVersion(3, 1)) return;
+    if (!blob.isAtLeastVersion(3, 0)) return;
     Cursor cursor(blob.data);
-    const quint16 count = cursor.u16();
+    const quint16 count = blob.isAtLeastVersion(3, 1) ? cursor.u16() : cursor.u8();
     for (quint16 index = 0; index < count; ++index) {
         ShaderTextureBinding binding;
         binding.nameHash = cursor.u32();
@@ -348,8 +348,14 @@ constexpr quint32 kGlossLow = 0xB9DE26A0;
 constexpr quint32 kGlossHigh = 0x52E99DA3;
 constexpr quint32 kFirstChannelNormalEnabled = 0x553D641D;
 constexpr quint32 kFirstChannelOpacityEnabled = 0xA6BF15E8;
+constexpr quint32 kSecondChannelOpacityEnabled = 2680666280;
 constexpr quint32 kFirstChannelOpacityTiling = 0x4F90F34B;
 constexpr quint32 kFirstChannelGlossEnabled = 0x5A0DA36A;
+constexpr quint32 kPaintOpacityEnabled = 3780761211;
+constexpr quint32 kEarlyBadgeColorMap = 1842973913;
+constexpr quint32 kEarlyBadgeNormalMap = 2355464081;
+constexpr quint32 kEarlyBadgeNormalTiling = 1930371206;
+constexpr quint32 kEarlyBadgeNormalStrength = 3137481076;
 
 class MaterialParameters {
 public:
@@ -463,8 +469,7 @@ void applyLegacyMetalEmission(ModelMaterial &material, LegacyMaterialSurface &su
 }
 
 void applyLegacyBadgeSurface(ModelMaterial &material, LegacyMaterialSurface &surface,
-                             const MaterialParameters &parameters, float normalStrength, bool separateMasks) {
-    using material_hashes::parameter::kNormalTexture;
+                             const MaterialParameters &parameters, bool separateMasks, bool earlyBindings) {
     constexpr std::array kWhite = {1.0f, 1.0f, 1.0f};
     constexpr std::array kDielectric = {0.04f, 0.04f, 0.04f};
     constexpr quint32 kBadgeColor = 1661209993;
@@ -477,6 +482,12 @@ void applyLegacyBadgeSurface(ModelMaterial &material, LegacyMaterialSurface &sur
     constexpr quint32 kGlossTiling = 4223801439;
     constexpr quint32 kOuterReflectance = 2764571043;
     constexpr quint32 kOuterGloss = 1444695454;
+    constexpr quint32 kEarlyMaskTexture = 864026763;
+    constexpr quint32 kEarlyMaskTiling = 1189686453;
+    constexpr quint32 kEarlyOuterMaskTexture = 3817553802;
+    constexpr quint32 kEarlyOuterMaskTiling = 767613520;
+    const auto maskUv = parameters.uv(0, earlyBindings ? kEarlyMaskTiling : kMaskTiling);
+    const quint32 maskTexture = earlyBindings ? kEarlyMaskTexture : kMaskTexture;
     const bool mappedColor = parameters.enabled(kBadgeUsesColorMap);
     const bool metalMask = parameters.enabled(kBadgeUsesMetalMask);
     const float highGloss = parameters.number(kGlossHigh, material.gloss);
@@ -490,48 +501,48 @@ void applyLegacyBadgeSurface(ModelMaterial &material, LegacyMaterialSurface &sur
 
     setMaterialColor(material, mappedColor ? kWhite : parameters.color(kBadgeColor, kWhite));
     if (mappedColor) {
-        surface.diffuseMap = kLegacyColorMap;
+        surface.diffuseMap = earlyBindings ? kEarlyBadgeColorMap : kLegacyColorMap;
         material.diffuseUv = MaterialUvMapping{};
     }
     if (separateMasks) {
         blend.mode = LegacyMetalBlendMode::SeparateMasks;
-        blend.maskUv = parameters.uv(0, kMaskTiling);
+        blend.maskUv = maskUv;
         blend.outerReflectance = parameters.color(kOuterReflectance, kDielectric);
         blend.outerGloss = std::clamp(parameters.number(kOuterGloss, highGloss), 0.0f, 1.0f);
-        surface.metalBlendMaskMap = kMaskTexture;
-        surface.glossMap = kGlossTexture;
-        surface.glossUv = parameters.uv(0, kGlossTiling);
+        surface.metalBlendMaskMap = maskTexture;
+        surface.glossMap = earlyBindings ? kEarlyOuterMaskTexture : kGlossTexture;
+        surface.glossUv = parameters.uv(0, earlyBindings ? kEarlyOuterMaskTiling : kGlossTiling);
     } else if (metalMask) {
         blend.mode = LegacyMetalBlendMode::SingleMask;
         if (!mappedColor) {
-            surface.glossMap = kMaskTexture;
-            surface.glossUv = parameters.uv(0, kMaskTiling);
+            surface.glossMap = maskTexture;
+            surface.glossUv = maskUv;
         }
     }
     surface.glossRange = {std::clamp(highGloss, 0.0f, 1.0f), std::clamp(lowGloss, 0.0f, 1.0f)};
     material.gloss = surface.glossRange[1];
-    setLegacyNormal(material, surface, kNormalTexture, parameters.uv(0, kNormalTiling), normalStrength);
 }
 
 void applyLegacyBadgeOcclusion(ModelMaterial &material, LegacyMaterialSurface &surface,
-                              const MaterialParameters &parameters, bool separateOcclusion) {
+                              const MaterialParameters &parameters, bool separateOcclusion, bool earlyBindings) {
     constexpr quint32 kUseAmbientOcclusion = 3900104140;
     constexpr quint32 kUseSpecularOcclusion = 4267420983;
     constexpr quint32 kAmbientOcclusionMap = 4101427739;
     constexpr quint32 kAmbientOcclusionTiling = 1737689294;
+    constexpr quint32 kEarlyAmbientOcclusionMap = 2145005339;
+    constexpr quint32 kEarlyAmbientOcclusionTiling = 1977016980;
     auto &blend = *surface.metalBlend;
     blend.usesAmbientOcclusion = parameters.enabled(kUseAmbientOcclusion);
     blend.usesSpecularOcclusion = separateOcclusion
         ? parameters.enabled(kUseSpecularOcclusion) : blend.usesAmbientOcclusion;
     if (blend.usesAmbientOcclusion || blend.usesSpecularOcclusion) {
-        surface.ambientOcclusionMap = kAmbientOcclusionMap;
-        material.surfaceUv = parameters.uv(0, kAmbientOcclusionTiling);
+        surface.ambientOcclusionMap = earlyBindings ? kEarlyAmbientOcclusionMap : kAmbientOcclusionMap;
+        material.surfaceUv = parameters.uv(0, earlyBindings ? kEarlyAmbientOcclusionTiling : kAmbientOcclusionTiling);
     }
 }
 
 void applyLegacyBadgeGlossSurface(ModelMaterial &material, LegacyMaterialSurface &surface,
-                                 const MaterialParameters &parameters, float normalStrength) {
-    using material_hashes::parameter::kNormalTexture;
+                                 const MaterialParameters &parameters, bool earlyBindings) {
     constexpr std::array kWhite = {1.0f, 1.0f, 1.0f};
     constexpr std::array kDielectric = {0.04f, 0.04f, 0.04f};
     constexpr quint32 kUseDiffuseMap = 83425786;
@@ -541,6 +552,11 @@ void applyLegacyBadgeGlossSurface(ModelMaterial &material, LegacyMaterialSurface
     constexpr quint32 kDiffuseTiling = 1972415244;
     constexpr quint32 kGlossTiling = 1711498804;
     constexpr quint32 kSpecularTiling = 977636089;
+    constexpr quint32 kEarlyDiffuseTiling = 3248255181;
+    constexpr quint32 kEarlyGlossMap = 2118795745;
+    constexpr quint32 kEarlyGlossTiling = 1053368021;
+    constexpr quint32 kEarlySpecularMap = 571256108;
+    constexpr quint32 kEarlySpecularTiling = 3411007342;
     const bool mappedColor = parameters.enabled(kUseDiffuseMap);
     const bool mappedSpecular = parameters.enabled(kUseSpecularMap);
     const bool mappedGloss = parameters.enabled(kFirstChannelGlossEnabled);
@@ -559,25 +575,23 @@ void applyLegacyBadgeGlossSurface(ModelMaterial &material, LegacyMaterialSurface
     material.useDiffuseTexture = mappedColor;
     setMaterialColor(material, mappedColor ? kWhite : parameters.color(kDiffuseColor, kWhite));
     if (mappedColor) {
-        surface.diffuseMap = kLegacyColorMap;
-        material.diffuseUv = parameters.uv(0, kDiffuseTiling);
+        surface.diffuseMap = earlyBindings ? kEarlyBadgeColorMap : kLegacyColorMap;
+        material.diffuseUv = parameters.uv(0, earlyBindings ? kEarlyDiffuseTiling : kDiffuseTiling);
     } else if (mappedGloss || blend.usesReflectanceMask) {
-        surface.glossMap = kLegacyGlossMap;
-        surface.glossUv = parameters.uv(0, kGlossTiling);
+        surface.glossMap = earlyBindings ? kEarlyGlossMap : kLegacyGlossMap;
+        surface.glossUv = parameters.uv(0, earlyBindings ? kEarlyGlossTiling : kGlossTiling);
     }
     if (mappedSpecular) {
-        surface.metalBlendMaskMap = kLegacySpecularMap;
-        blend.maskUv = parameters.uv(0, kSpecularTiling);
+        surface.metalBlendMaskMap = earlyBindings ? kEarlySpecularMap : kLegacySpecularMap;
+        blend.maskUv = parameters.uv(0, earlyBindings ? kEarlySpecularTiling : kSpecularTiling);
     }
-    applyLegacyBadgeOcclusion(material, surface, parameters, true);
+    applyLegacyBadgeOcclusion(material, surface, parameters, true, earlyBindings);
     surface.glossRange = {std::clamp(lowGloss, 0.0f, 1.0f), std::clamp(highGloss, 0.0f, 1.0f)};
     material.gloss = surface.glossRange[1];
-    setLegacyNormal(material, surface, kNormalTexture, parameters.uv(0, kNormalTiling), normalStrength);
 }
 
 void applyLegacySimpleBadgeSurface(ModelMaterial &material, LegacyMaterialSurface &surface,
-                                  const MaterialParameters &parameters, float normalStrength) {
-    using material_hashes::parameter::kNormalTexture;
+                                  const MaterialParameters &parameters, bool earlyBindings) {
     constexpr quint32 kMetalEnabled = 2560295535;
     constexpr std::array kWhite = {1.0f, 1.0f, 1.0f};
     constexpr std::array kDielectric = {0.04f, 0.04f, 0.04f};
@@ -594,14 +608,38 @@ void applyLegacySimpleBadgeSurface(ModelMaterial &material, LegacyMaterialSurfac
     if (metal) setLegacySpecular(material, blend.maskedReflectance);
     material.useDiffuseTexture = false;
     surface.glossRange = {material.gloss, material.gloss};
-    applyLegacyBadgeOcclusion(material, surface, parameters, false);
-    setLegacyNormal(material, surface, kNormalTexture, parameters.uv(0, kNormalTiling), normalStrength);
+    applyLegacyBadgeOcclusion(material, surface, parameters, false, earlyBindings);
+}
+
+bool applyLegacyBadgeShader(ModelMaterial &material, const QString &program, bool earlyBindings) {
+    using material_hashes::parameter::kNormalTexture;
+    LegacyMaterialSurface surface;
+    const MaterialParameters parameters(material);
+    const auto normalUv = parameters.uv(0, earlyBindings ? kEarlyBadgeNormalTiling : kNormalTiling);
+    const float normalStrength = parameters.number(
+        earlyBindings ? kEarlyBadgeNormalStrength : kNormalStrength, material.normalIntensity);
+    const bool separateMasks = program == QStringLiteral("badge_clc_2metaldiffuselerpch1.shaderbin");
+
+    if (separateMasks || program == QStringLiteral("badge_clc_diffusemetallerpch1masknorm.shaderbin")) {
+        applyLegacyBadgeSurface(material, surface, parameters, separateMasks, earlyBindings);
+    } else if (program == QStringLiteral("badge_ch1difnormglossao.shaderbin")) {
+        applyLegacyBadgeGlossSurface(material, surface, parameters, earlyBindings);
+    } else if (program == QStringLiteral("badge_simplemetal.shaderbin")) {
+        applyLegacySimpleBadgeSurface(material, surface, parameters, earlyBindings);
+    } else {
+        return false;
+    }
+    setLegacyNormal(material, surface, earlyBindings ? kEarlyBadgeNormalMap : kNormalTexture,
+                    normalUv, normalStrength);
+    material.legacySurface = surface;
+    material.opacity = 1.0f;
+
+    return true;
 }
 
 bool applyLegacyPaintSurface(ModelMaterial &material, LegacyMaterialSurface &surface, const MaterialParameters &parameters) {
     constexpr quint32 kPaintColorMap = 3165326196;
     constexpr quint32 kPaintOpacityMap = 3719701651;
-    constexpr quint32 kPaintOpacityEnabled = 3780761211;
     constexpr quint32 kUseDiffuseColor = 3789039613;
     constexpr quint32 kDiffuseUsesTexture = 2518010538;
     constexpr quint32 kFlakeUsesTexture = 1902750849;
@@ -672,7 +710,6 @@ void applyLegacyShaderSurface(ModelMaterial &material, const QString &program) {
     const bool wetInteriorEmbossed = program == QStringLiteral("w_int_ch1_normdiffuseopacity.shaderbin");
     const bool mixedNormals = program == QStringLiteral("ch1ch2normlerpch1glossdiff.shaderbin");
     const bool interiorMixedNormals = program == QStringLiteral("int_ch1_dualsurface_simple.shaderbin");
-    const bool separateBadgeMasks = program == QStringLiteral("badge_clc_2metaldiffuselerpch1.shaderbin");
     const float normalStrength = parameters.number(kNormalStrength, material.normalIntensity);
     LegacyMaterialSurface surface;
     if (metal || channelTwo || channelOne || interiorDual) {
@@ -700,7 +737,7 @@ void applyLegacyShaderSurface(ModelMaterial &material, const QString &program) {
                 : metal ? parameters.secondChannelUv(kNormalTiling) : sharedUv;
             setLegacyNormal(material, surface, kNormalTexture, uv, normalStrength);
         }
-        if (parameters.enabled(firstChannel ? kFirstChannelOpacityEnabled : 0x9FC7B8A8)
+        if (parameters.enabled(firstChannel ? kFirstChannelOpacityEnabled : kSecondChannelOpacityEnabled)
             && !(interiorDual && mappedColor)) {
             surface.opacityMap = kLegacyOpacityMap;
             material.alphaUv = firstChannel ? parameters.uv(0, kFirstChannelOpacityTiling) : sharedUv;
@@ -715,10 +752,6 @@ void applyLegacyShaderSurface(ModelMaterial &material, const QString &program) {
         }
         if (metal) applyLegacyMetalEmission(material, surface, parameters, sharedUv, firstChannel);
         surface.diffuseAlpha = interiorDual && mappedColor;
-    } else if (separateBadgeMasks || program == QStringLiteral("badge_clc_diffusemetallerpch1masknorm.shaderbin")) {
-        applyLegacyBadgeSurface(material, surface, parameters, normalStrength, separateBadgeMasks);
-    } else if (program == QStringLiteral("badge_ch1difnormglossao.shaderbin")) {
-        applyLegacyBadgeGlossSurface(material, surface, parameters, normalStrength);
     } else if (program == QStringLiteral("clc_metalch2normalch1mask.shaderbin")) {
         if (parameters.enabled(0x05A401E7)) {
             surface.diffuseMap = 0xCA4E3249;
@@ -784,8 +817,6 @@ void applyLegacyShaderSurface(ModelMaterial &material, const QString &program) {
         || program == QStringLiteral("w_int_simplediffuse.shaderbin")
         || program == QStringLiteral("ext_simplemetal.shaderbin")) {
         setLegacySpecular(material, parameters.color(kSimpleSpecularColor, kDielectric));
-    } else if (program == QStringLiteral("badge_simplemetal.shaderbin")) {
-        applyLegacySimpleBadgeSurface(material, surface, parameters, normalStrength);
     } else if (program == QStringLiteral("lod1interior.shaderbin")) {
         setMaterialColor(material, kWhite);
         surface.diffuseMap = kLegacyColorMap;
@@ -878,6 +909,19 @@ void applyCurrentShaderSurface(ModelMaterial &material, const QString &program) 
     material.roughnessShift = parameters.number(kRoughnessShift, material.roughnessShift);
 }
 
+void applyEarlyShaderOpacity(ModelMaterial &material, const QString &program) {
+    const MaterialParameters parameters(material);
+
+    if (program == QStringLiteral("carpaint_standard.shaderbin")) {
+        material.opacityTextureEnabled = parameters.enabled(kPaintOpacityEnabled);
+    } else if (program == QStringLiteral("m_ch2normglossalphaemissive.shaderbin")
+        || program == QStringLiteral("ch2diffnormglossalphaemissive.shaderbin")) {
+        material.opacityTextureEnabled = parameters.enabled(kSecondChannelOpacityEnabled);
+    } else if (program == QStringLiteral("m_ch1normglossalphaemissive.shaderbin")) {
+        material.opacityTextureEnabled = parameters.enabled(kFirstChannelOpacityEnabled);
+    }
+}
+
 void applyEffectiveParameters(ModelMaterial &material) {
     const auto key = [](const ModelMaterialParameter &parameter) {
         return (static_cast<quint64>(parameter.nameHash) << 8) | static_cast<quint8>(parameter.type);
@@ -905,10 +949,12 @@ void applyEffectiveParameters(ModelMaterial &material) {
     QString shaderPath = shader->toLower();
     shaderPath.replace(QLatin1Char('\\'), QLatin1Char('/'));
     const QString program = shaderPath.section(QLatin1Char('/'), -1);
-    if (material.legacyShaderBindings.value_or(false)) {
-        applyLegacyShaderSurface(material, program);
-    } else {
-        applyCurrentShaderSurface(material, program);
+    const bool earlyBindings = material.shaderBindingLayout == ShaderBindingLayout::EarlyLegacy;
+    const bool legacyBindings = material.shaderBindingLayout == ShaderBindingLayout::Legacy;
+    if (earlyBindings) applyEarlyShaderOpacity(material, program);
+    if (!(earlyBindings || legacyBindings) || !applyLegacyBadgeShader(material, program, earlyBindings)) {
+        if (legacyBindings) applyLegacyShaderSurface(material, program);
+        else applyCurrentShaderSurface(material, program);
     }
     if (program == QStringLiteral("glm_ch2_illuminatingglass_ch1mask.shaderbin")
         || program == QStringLiteral("glm_ch2bumpch1mask.shaderbin")
@@ -926,8 +972,9 @@ std::shared_ptr<ModelMaterial> decodeMaterialFromBundle(
     const ModelBundle &bundle, const QString &name) {
     auto material = std::make_shared<ModelMaterial>();
     material->name = name;
-    std::optional<bool> legacyShaderBindings;
+    std::optional<ShaderBindingLayout> bindingLayout;
     bool shaderBundle = false;
+    bool earlyTextureBindings = false;
     bool legacyVariants = false;
 
     for (const BundleBlobRecord &child : bundle.blobs) {
@@ -946,8 +993,10 @@ std::shared_ptr<ModelMaterial> decodeMaterialFromBundle(
         } else if (child.tag == bundle_tags::TextureParameterMapping) {
             appendShaderTextures(*material, child);
             shaderBundle = true;
+            earlyTextureBindings = child.versionMajor == 3 && child.versionMinor == 0;
         } else if (child.tag == bundle_tags::ShaderVersion) {
-            legacyShaderBindings = child.versionMajor == 1 && child.versionMinor == 1;
+            bindingLayout = child.versionMajor == 1 && child.versionMinor == 1
+                ? ShaderBindingLayout::Legacy : ShaderBindingLayout::Current;
         } else if (child.tag == bundle_tags::ShaderVariants) {
             legacyVariants = child.versionMajor == 1 && child.versionMinor == 3;
         }
@@ -963,8 +1012,11 @@ std::shared_ptr<ModelMaterial> decodeMaterialFromBundle(
         }
     }
     if (shaderBundle) {
-        if (!legacyShaderBindings && legacyVariants) legacyShaderBindings = true;
-        material->legacyShaderBindings = legacyShaderBindings;
+        if (!bindingLayout) {
+            if (earlyTextureBindings) bindingLayout = ShaderBindingLayout::EarlyLegacy;
+            else if (legacyVariants) bindingLayout = ShaderBindingLayout::Legacy;
+        }
+        material->shaderBindingLayout = bindingLayout;
         for (auto &parameter : material->parameters) parameter.shaderDefault = true;
     }
     applyEffectiveParameters(*material);
@@ -998,8 +1050,8 @@ std::shared_ptr<ModelMaterial> mergeModelMaterialDefaults(
     merged->linkedPaths.append(instance.linkedPaths);
     merged->parameters.reserve(defaults.parameters.size() + instance.parameters.size());
     merged->shaderTextures = instance.shaderTextures.empty() ? defaults.shaderTextures : instance.shaderTextures;
-    merged->legacyShaderBindings = instance.legacyShaderBindings
-        ? instance.legacyShaderBindings : defaults.legacyShaderBindings;
+    merged->shaderBindingLayout = instance.shaderBindingLayout
+        ? instance.shaderBindingLayout : defaults.shaderBindingLayout;
 
     merged->parameters.insert(merged->parameters.end(), defaults.parameters.begin(), defaults.parameters.end());
     merged->parameters.insert(merged->parameters.end(), instance.parameters.begin(), instance.parameters.end());

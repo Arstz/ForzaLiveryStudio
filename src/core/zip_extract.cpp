@@ -1,6 +1,7 @@
 #include "zip_extract.h"
 
 #include "binary_io.h"
+#include "game_paths.h"
 #include "xmem_lzx.h"
 
 #include <QDir>
@@ -47,8 +48,11 @@ int findEndOfCentralDirectory(const QByteArray &bytes) {
     return -1;
 }
 
-QString decodeEntryName(const QByteArray &raw, quint16 flags) {
-    return (flags & kFlagUtf8Name) != 0 ? QString::fromUtf8(raw) : QString::fromLatin1(raw);
+QString decodeEntryName(const QByteArray &raw, quint16 flags, bool obfuscatedNames) {
+    QString name = (flags & kFlagUtf8Name) != 0 ? QString::fromUtf8(raw) : QString::fromLatin1(raw);
+    name.replace(QLatin1Char('\\'), QLatin1Char('/'));
+
+    return obfuscatedNames ? decodeFh3AssetName(name) : name;
 }
 
 bool isSafeEntryPath(QString path) {
@@ -204,7 +208,7 @@ struct ZipCentralEntry {
     quint32 localOffset = 0;
 };
 
-std::optional<ZipCentralEntry> readCentralEntry(const QByteArray &central, qsizetype &pos) {
+std::optional<ZipCentralEntry> readCentralEntry(const QByteArray &central, qsizetype &pos, bool obfuscatedNames) {
     if (!hasBytes(central, pos, 46)
         || readLeU32(central, static_cast<int>(pos)) != kCentralDirectoryHeader) {
         return std::nullopt;
@@ -224,8 +228,7 @@ std::optional<ZipCentralEntry> readCentralEntry(const QByteArray &central, qsize
     entry.compressedSize = readLeU32(central, static_cast<int>(pos + 20));
     entry.uncompressedSize = readLeU32(central, static_cast<int>(pos + 24));
     entry.localOffset = readLeU32(central, static_cast<int>(pos + 42));
-    entry.name = decodeEntryName(central.mid(nameOffset, nameLength), entry.flags);
-    entry.name.replace(QLatin1Char('\\'), QLatin1Char('/'));
+    entry.name = decodeEntryName(central.mid(nameOffset, nameLength), entry.flags, obfuscatedNames);
     pos = nameOffset + nameLength + extraLength + commentLength;
 
     return entry;
@@ -242,6 +245,7 @@ bool extractZipArchive(const QString &zipPath, const QString &destinationDir, QS
         return false;
     }
     const QByteArray bytes = file.readAll();
+    const bool obfuscatedNames = hasFh3ObfuscatedNames(QFileInfo(zipPath).absolutePath());
 
     const int eocd = findEndOfCentralDirectory(bytes);
     if (eocd < 0 || !hasBytes(bytes, eocd, 22)) {
@@ -305,8 +309,7 @@ bool extractZipArchive(const QString &zipPath, const QString &destinationDir, QS
             return false;
         }
 
-        QString entryName = decodeEntryName(bytes.mid(nameOffset, nameLen), flags);
-        entryName.replace(QLatin1Char('\\'), QLatin1Char('/'));
+        const QString entryName = decodeEntryName(bytes.mid(nameOffset, nameLen), flags, obfuscatedNames);
         pos = nameOffset + nameLen + extraLen + commentLen;
 
         if (!isSafeEntryPath(entryName)) {
@@ -435,11 +438,12 @@ QHash<QString, QByteArray> readZipEntries(
         return {};
     }
     const QByteArray &central = directory->bytes;
+    const bool obfuscatedNames = hasFh3ObfuscatedNames(QFileInfo(zipPath).absolutePath());
     const quint16 entryCount = directory->entryCount;
     QHash<QString, QByteArray> result;
     qsizetype pos = 0;
     for (quint16 i = 0; i < entryCount; ++i) {
-        const auto entry = readCentralEntry(central, pos);
+        const auto entry = readCentralEntry(central, pos, obfuscatedNames);
         if (!entry) {
             break;
         }
@@ -521,12 +525,13 @@ QStringList listZipEntries(const QString &zipPath, QString *error) {
         return {};
     }
     const QByteArray &central = directory->bytes;
+    const bool obfuscatedNames = hasFh3ObfuscatedNames(QFileInfo(zipPath).absolutePath());
     const quint16 entryCount = directory->entryCount;
     QStringList names;
     names.reserve(entryCount);
     qsizetype pos = 0;
     for (quint16 i = 0; i < entryCount; ++i) {
-        const auto entry = readCentralEntry(central, pos);
+        const auto entry = readCentralEntry(central, pos, obfuscatedNames);
         if (!entry) {
             break;
         }

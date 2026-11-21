@@ -275,7 +275,7 @@ std::optional<ProjectedLiverySection> buildProjectedLiverySection(const fls::Pro
 QString findSharedCarAsset(const QString &sourcePath, const QString &relativePath) {
     QDir dir = QFileInfo(sourcePath).absoluteDir();
     for (int depth = 0; depth < 6; ++depth) {
-        const QString candidate = dir.filePath(relativePath);
+        const QString candidate = fls::gameAssetFilePath(dir, relativePath);
         if (QFileInfo::exists(candidate)) {
             return candidate;
         }
@@ -297,9 +297,9 @@ QString findMediaResource(const QString &sourcePath, const QString &relativePath
     QDir directory = QFileInfo(sourcePath).absoluteDir();
     do {
         if (directory.dirName().compare(QStringLiteral("media"), Qt::CaseInsensitive) == 0
-            || directory.exists(QStringLiteral("Cars"))
+            || QFileInfo(fls::gameAssetFilePath(directory, QStringLiteral("Cars"))).isDir()
             || directory.exists(QStringLiteral("pcfamily/Cars"))) {
-            const QString path = directory.filePath(relativePath);
+            const QString path = fls::gameAssetFilePath(directory, relativePath);
             return QFileInfo(path).isFile() ? path : QString();
         }
     } while (directory.cdUp());
@@ -1067,7 +1067,8 @@ void resolveModelMaterials(
                 }
                 if ((slot == NativeTextureSlot::Diffuse && !mesh.material->useDiffuseTexture.value_or(true))
                     || (slot == NativeTextureSlot::Alpha && !weave
-                        && !mesh.material->glassOpacity.useAlphaTexture.value_or(true))
+                        && (!mesh.material->opacityTextureEnabled
+                            || !mesh.material->glassOpacity.useAlphaTexture.value_or(true)))
                     || ((slot == NativeTextureSlot::Emissive || slot == NativeTextureSlot::EmissiveMask)
                         && !mesh.material->emissionEnabled.value_or(true))
                     || (slot == NativeTextureSlot::EmissiveMask && !mesh.material->emissionMaskEnabled.value_or(true))
@@ -1086,7 +1087,7 @@ void resolveModelMaterials(
         }
     }
 
-    const bool sourceIsArchive = sourcePath.endsWith(
+    const bool sourceIsArchive = fls::gameAssetFileName(QFileInfo(sourcePath)).endsWith(
         QStringLiteral(".zip"), Qt::CaseInsensitive);
     const QString sourceArchiveKey = sourceIsArchive
         ? assetFileIdentity(sourcePath)
@@ -1243,20 +1244,24 @@ std::shared_ptr<PreparedCar> prepareCar(
     if (cancelled && cancelled()) {
         return {};
     }
+    const QFileInfo source(path);
+    const QFileInfo assetName(fls::gameAssetFileName(source));
+    const QString modelGame = game.isEmpty() && fls::hasFh3ObfuscatedNames(source.absolutePath())
+        ? QStringLiteral("FH3") : game;
     std::shared_ptr<QTemporaryDir> extracted;
     bool extractionReused = false;
-    if (path.endsWith(QStringLiteral(".zip"), Qt::CaseInsensitive)) {
+    if (assetName.suffix().compare(QStringLiteral("zip"), Qt::CaseInsensitive) == 0) {
         extracted = fls::sharedZipExtraction(path, error, &extractionReused);
         if (!extracted) {
             return {};
         }
     }
-    const fls::CarAssetIndex assets(extracted ? extracted->path() : QFileInfo(path).absolutePath());
-    const QString loadPath = extracted ? assets.scene(QFileInfo(path).completeBaseName()) : path;
+    const fls::CarAssetIndex assets(extracted ? extracted->path() : source.absolutePath());
+    const QString loadPath = extracted ? assets.scene(assetName.completeBaseName()) : path;
     const QString resourceSource = gameResourceSource(path, gameFolder);
     if (loadPath.isEmpty()) {
         if (error != nullptr) {
-            *error = QStringLiteral("zip: no unique car scene found in %1").arg(QFileInfo(path).fileName());
+            *error = QStringLiteral("zip: no unique car scene found in %1").arg(assetName.fileName());
         }
         return {};
     }
@@ -1265,9 +1270,9 @@ std::shared_ptr<PreparedCar> prepareCar(
         timings->insert(QStringLiteral("extraction_reused"), extractionReused);
     }
 
-    const fls::WheelSizing wheelSizing =
-        wheelSizingForModelCode(QFileInfo(loadPath).completeBaseName(), game);
-    fls::CarModel model = loadPath.endsWith(QStringLiteral(".carbin"), Qt::CaseInsensitive)
+    const QFileInfo modelName(fls::gameAssetFileName(QFileInfo(loadPath)));
+    const fls::WheelSizing wheelSizing = wheelSizingForModelCode(modelName.completeBaseName(), modelGame);
+    fls::CarModel model = modelName.suffix().compare(QStringLiteral("carbin"), Qt::CaseInsensitive) == 0
         ? fls::loadCarBin(loadPath, assets, error, wheelSizing)
         : fls::loadModelBin(loadPath, error);
     if (model.meshes.empty()) {
@@ -1278,7 +1283,7 @@ std::shared_ptr<PreparedCar> prepareCar(
     checkpoint(QStringLiteral("tires_ms"));
     assignSharedSlotMaterials(model);
     resolveModelMaterials(model, path, QFileInfo(loadPath).absolutePath(), assets, resourceSource, loadCarTextures);
-    auto wheelPreview = prepareWheelPreview(model, resourceSource, game, wheelSizing);
+    auto wheelPreview = prepareWheelPreview(model, resourceSource, modelGame, wheelSizing);
     if (wheelPreview) {
         wheelPreview->loadCarTextures = loadCarTextures;
         auto front = buildWheelPreviewGeometry(*wheelPreview, true, wheelPreview->axles[0].rimId,

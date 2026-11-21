@@ -5,6 +5,9 @@
 #include <QStringList>
 #include <QSet>
 
+class QDir;
+class QFileInfo;
+
 namespace fls {
 
 class CarAssetIndex {
@@ -17,7 +20,13 @@ public:
 private:
     QString root_;
     QHash<QString, QStringList> pathsByName_;
+    bool obfuscatedNames_;
 };
+
+bool hasFh3ObfuscatedNames(const QString &directory);
+QString decodeFh3AssetName(const QString &name);
+QString gameAssetFileName(const QFileInfo &file);
+QString gameAssetFilePath(const QDir &directory, const QString &relativePath);
 
 QStringList carModelGames(const QString &preferredGame = {});
 QString gameMediaDir(const QString &gameFolder);

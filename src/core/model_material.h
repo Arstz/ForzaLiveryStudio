@@ -111,6 +111,12 @@ struct MaterialWeave {
     bool maskedLivery = false;
 };
 
+enum class ShaderBindingLayout {
+    EarlyLegacy,
+    Legacy,
+    Current,
+};
+
 struct ShaderTextureBinding {
     QUuid parameterId;
     quint32 nameHash = 0;
@@ -128,7 +134,7 @@ struct ModelMaterial {
     QStringList linkedPaths;
     std::vector<ModelMaterialParameter> parameters;
     std::vector<ShaderTextureBinding> shaderTextures;
-    std::optional<bool> legacyShaderBindings;
+    std::optional<ShaderBindingLayout> shaderBindingLayout;
     MaterialOpacity glassOpacity;
     std::optional<LegacyMaterialSurface> legacySurface;
     std::optional<MaterialWeave> weave;
@@ -143,6 +149,7 @@ struct ModelMaterial {
     std::optional<bool> emissionEnabled;
     std::optional<bool> emissionMaskEnabled;
     bool glass = false;
+    bool opacityTextureEnabled = true;
     bool usesTintedEmission = false;
     bool useGlassTintMask = false;
     bool useGlassTintForOpacity = false;

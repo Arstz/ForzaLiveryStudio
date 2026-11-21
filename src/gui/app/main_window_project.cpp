@@ -89,8 +89,9 @@ void MainWindow::loadCarModel(const QString &path, bool automatic, const QString
             if (!modelGame.isEmpty()) break;
         }
     }
-    canvasStatusBar_->showMessage(QStringLiteral("Loading car model: %1").arg(QFileInfo(path).fileName()));
-    carPreview_->loadCarAsync(path, [this, path, automatic, duration](bool loaded, const QString &error) {
+    const QString modelFileName = fls::gameAssetFileName(QFileInfo(path));
+    canvasStatusBar_->showMessage(QStringLiteral("Loading car model: %1").arg(modelFileName));
+    carPreview_->loadCarAsync(path, [this, modelFileName, automatic, duration](bool loaded, const QString &error) {
         if (headerMetadata_ != nullptr) {
             headerMetadata_->setTargetCarLabel(targetCarLabel());
         }
@@ -107,7 +108,7 @@ void MainWindow::loadCarModel(const QString &path, bool automatic, const QString
         updateCarUnwrapOverlay();
         canvasStatusBar_->showMessage(
             (automatic ? QStringLiteral("Auto-loaded car model: %1") : QStringLiteral("Loaded car model: %1"))
-                .arg(QFileInfo(path).fileName()), duration);
+                .arg(modelFileName), duration);
     }, modelGame);
 }
 

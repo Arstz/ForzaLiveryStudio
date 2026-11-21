@@ -139,6 +139,11 @@ Automatic model loading prefers the imported livery's game, then searches other
 configured games. The car registry provides availability, model names, and
 wheel sizing for each title.
 
+FH3 PC asset lookup recognizes the obfuscated media layout. It translates file
+and ZIP entry names at runtime using the
+[FH3 filename mapping](https://github.com/oxmaulmike2581/FH3DecryptNames/blob/master/FH3DecryptNames/Program.cs#L261).
+Archive extraction writes decoded names into the preview's temporary directory.
+
 Core decoders read `.modelbin` geometry and materials, assemble `.carbin` parts,
 and decode `.swatchbin` textures and livery masks from game archives. Model
 preparation, material resolution, and optional texture decoding run outside the
