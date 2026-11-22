@@ -199,7 +199,7 @@ void PartRadialSelector::paintEvent(QPaintEvent *) {
     const UiColors colors = uiColors(currentUiTheme());
     const QRectF outer(center_.x() - outerRadius_, center_.y() - outerRadius_,
         outerRadius_ * 2.0, outerRadius_ * 2.0);
-    const QString name = hoveredChoice_ >= 0 ? choices_[hoveredChoice_].name : title_;
+    QString name = title_;
     QColor shade = colors.main;
     QRectF label;
     QPainter painter(this);
@@ -208,6 +208,10 @@ void PartRadialSelector::paintEvent(QPaintEvent *) {
     const qreal tileExtent = outerRadius_ * kTileExtentRatio;
     const qreal sectorAngle = kFullTurn / count;
 
+    if (hoveredChoice_ >= 0) {
+        const auto &choice = choices_[hoveredChoice_];
+        name = choice.fullName.isEmpty() ? choice.name : choice.fullName;
+    }
     shade.setAlpha(kRadialShadeAlpha);
     painter.setRenderHints(QPainter::Antialiasing | QPainter::SmoothPixmapTransform);
     painter.fillRect(rect(), shade);

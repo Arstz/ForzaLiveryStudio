@@ -11,6 +11,7 @@ namespace gui {
 
 struct PartRadialChoice {
     QString name;
+    QString fullName;
     QImage preview;
     int optionId = -1;
     bool empty = false;

@@ -13,6 +13,7 @@
 #include <QOpenGLFramebufferObject>
 #include <QOpenGLExtraFunctions>
 #include <QPainter>
+#include <QRegularExpression>
 #include <QToolButton>
 
 #include <algorithm>
@@ -129,13 +130,8 @@ QString partModelKey(const fls::CarPartOption &option) {
     return paths.join(QLatin1Char('|'));
 }
 
-bool isWidebodyKit(const fls::CarPartOption &option) {
-    return option.partType == fls::car_part_types::CarBody && !option.stock;
-}
-
 QString partOptionName(const QString &mediaName, const QString &game, const fls::CarPartOption &option, int index,
                        const WheelPreviewState *wheels) {
-    if (isWidebodyKit(option)) return QStringLiteral("Widebody");
     if (wheels != nullptr && isWheelSelector(option.partType)) {
         const bool rim = isRimSelector(option.partType);
         const auto &styles = rim ? wheels->rims : wheels->tires;
@@ -176,6 +172,27 @@ QString partOptionName(const QString &mediaName, const QString &game, const fls:
     }
 
     return game.isEmpty() ? genericName : QStringLiteral("%1 - %2").arg(game, genericName);
+}
+
+QString bodyKitCaption(const QString &name, const QString &game) {
+    static const QRegularExpression kGamePrefix(
+        QStringLiteral(R"(^(?:Forza\s+(?:Horizon|Motorsport)(?:\s+\d+)?|(?:FH|FM)\d+)\b\s*(?:[-:]\s*)?)"),
+        QRegularExpression::CaseInsensitiveOption);
+    static const QRegularExpression kKitSuffix(
+        QStringLiteral(R"((?:^|[\s:-]+)(?:(wide[\s-]?body)(?:\s+wide[\s-]?body)*|body)(?:\s+kit)?$)"),
+        QRegularExpression::CaseInsensitiveOption);
+    static const QRegularExpression kGenericOption(QStringLiteral(R"(^Option\s+\d+$)"));
+    QString caption = name.trimmed();
+
+    caption.remove(kGamePrefix);
+    const auto suffix = kKitSuffix.match(caption);
+    if (suffix.hasMatch()) {
+        caption.truncate(suffix.capturedStart());
+        if (caption.isEmpty() && suffix.capturedLength(1) > 0) return QStringLiteral("Widebody");
+    }
+    if (!caption.isEmpty() && !kGenericOption.match(caption).hasMatch()) return caption;
+
+    return game.isEmpty() ? name : game;
 }
 
 QVector3D partAnchorPoint(const fls::ModelBounds &bounds, int partType, float clearance) {
@@ -475,14 +492,17 @@ void CarPreviewWidget::beginPartSelection(int partType, QAbstractButton *anchor)
     const auto options = availablePartOptions(partType);
     const auto previews = partOptionPreviews_.value(partType);
     QVector<PartRadialChoice> choices;
+    const bool bodySelector = partType == fls::car_part_types::CarBody;
 
     if (options.size() < 2 || modelLoadPending_ || modelUploadPending_) return;
     for (qsizetype index = 0; index < options.size(); ++index) {
         const auto &option = *options[index];
-        choices.push_back({partOptionName(model_.mediaName, loadedCarGame_, option, static_cast<int>(index), wheelPreview_.get()),
-            previews.value(option.id), option.id,
-            partType != fls::car_part_types::CarBody && option.modelPaths.isEmpty(),
-            isRimSelector(partType) || isWidebodyKit(option), previews.contains(option.id)});
+        const QString name = partOptionName(model_.mediaName, loadedCarGame_, option, static_cast<int>(index), wheelPreview_.get());
+        const bool bodyKit = bodySelector && !option.stock;
+
+        choices.push_back({bodyKit ? bodyKitCaption(name, loadedCarGame_) : name,
+            bodyKit ? name : QString{}, previews.value(option.id), option.id,
+            !bodySelector && option.modelPaths.isEmpty(), isRimSelector(partType) || bodyKit, previews.contains(option.id)});
     }
     partSelectorType_ = partType;
     anchor->setDown(false);

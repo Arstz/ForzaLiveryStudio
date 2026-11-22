@@ -9,6 +9,7 @@ Medium changes:
 Big changes:
     -Vulcan migration(?)
     -Proper 3D preview scene
+    -Load raster logos per game
 
 Manual tasks:
     -Create splash screen image
