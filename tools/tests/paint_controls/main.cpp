@@ -67,16 +67,18 @@ fls::CarMesh triangle(quint64 hash) {
     return mesh;
 }
 
-void loadTestCar(gui::CarPreviewWidget &preview) {
+void loadTestCar(gui::CarPreviewWidget &preview, const QString &path = qEnvironmentVariable("FLS_PAINT_TEST_MODEL")) {
     QEventLoop loop;
     bool loaded = false;
+    bool finished = false;
     QString error;
-    preview.loadCarAsync(qEnvironmentVariable("FLS_PAINT_TEST_MODEL"), [&](bool success, const QString &message) {
+    preview.loadCarAsync(path, [&](bool success, const QString &message) {
         loaded = success;
+        finished = true;
         error = message;
         loop.quit();
     });
-    loop.exec();
+    if (!finished) loop.exec();
     require(loaded, qPrintable(error));
     QStringList names;
     for (auto *combo : preview.findChildren<QComboBox *>()) {
@@ -149,6 +151,12 @@ void testSurfaceSlots() {
     front.sourceModelPath = "cars/_library/scene/wheels/test.modelbin";
     model.meshes.push_back(front);
     require(hashes(gui::carPaintSlots(model, paint)) == QSet<quint64>{kFrontWheelPaint[2]}, "wheel fallback aliases exposed as slots");
+    auto secondaryRim = triangle(kBodyPaint);
+    secondaryRim.materialName = "rim2";
+    secondaryRim.sourceModelPath = front.sourceModelPath;
+    model.meshes.push_back(secondaryRim);
+    require(hashes(gui::carPaintSlots(model, paint)) == QSet<quint64>{kFrontWheelPaint[2], kRims2},
+            "secondary rim used a body or primary-rim binding");
     paint.game = "FH5";
     require(hashes(gui::carPaintSlots(model, paint)) == QSet<quint64>{kRims}, "positional wheel slot lost its surface");
 }
@@ -341,6 +349,30 @@ void testManufacturerEditing() {
     closeColor(popup, true);
 }
 
+void testModelSwitch(const QString &first, const QString &second) {
+    using namespace fls::material_hashes::binding;
+    gui::EditorState state;
+    fls::Project project;
+    project.isLivery = true;
+    project.liveryPaint.game = QStringLiteral("FH5");
+    project.liveryPaint.setColorBgra(kBodyPaint, false, {60, 30, 90, 255});
+    project.liveryPaint.ensure(kHoodPaint).finish = 31;
+    state.setProject(std::move(project));
+    gui::CarPreviewWidget preview;
+    preview.setEditorState(&state);
+    preview.setProject(state.project());
+    loadTestCar(preview, first);
+    chooseMaterial(preview, 8);
+    const auto paint = state.project()->liveryPaint;
+    const auto history = state.undoStack_.size();
+    for (const QString &path : {second, first}) {
+        loadTestCar(preview, path);
+        const auto *combo = control<QComboBox>(preview, QStringLiteral("paintMaterial.Body"));
+        require(combo->currentData().toUInt() == 8 && state.project()->liveryPaint == paint
+            && state.undoStack_.size() == history, "model switch edited the livery paint or lost its selection");
+    }
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -354,6 +386,9 @@ int main(int argc, char **argv) {
         if (!qEnvironmentVariableIsEmpty("FLS_PAINT_TEST_MODEL")) {
             testPaintControls();
             testManufacturerEditing();
+        }
+        if (argc == 4 && app.arguments()[1] == QStringLiteral("--switch-models")) {
+            testModelSwitch(app.arguments()[2], app.arguments()[3]);
         }
         std::puts("Paint catalog, live controls, popup undo and cancellation checks passed");
         return 0;

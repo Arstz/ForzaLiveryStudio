@@ -12,8 +12,9 @@
 #include <QJsonArray>
 
 #include <algorithm>
-#include <iterator>
+#include <cmath>
 #include <memory>
+#include <stdexcept>
 #include <utility>
 
 namespace fls {
@@ -22,8 +23,105 @@ namespace {
 constexpr float kMetalFallbackMetallic = 0.9f;
 constexpr float kFlakeBaseMetallic = 0.45f;
 constexpr float kFlakeMetallicGain = 0.5f;
+constexpr int kSecondUvChannel = 1;
+constexpr quint32 kLegacyPaintColorEnabled = 4138700651;
+constexpr quint32 kLegacyPaintColorTiling = 822378793;
+constexpr quint32 kLegacyPaintColorRotation = 3501618446;
+constexpr quint32 kLegacyDetailTiling = 2916271230;
+constexpr quint32 kEarlyPaintColorTiling = 1369122465;
+constexpr quint32 kEarlyPaintDetailTiling = 2396575845;
+constexpr quint32 kEarlyPaintTintEnabled = 4125381471;
+constexpr quint32 kEarlyPearlTintTiling = 1976922207;
+constexpr quint32 kLegacyNormalTiling = 2485952580;
+constexpr quint32 kLegacyNormalStrength = 4005214566;
+constexpr quint32 kLegacyWeaveTint = 3878017450;
+constexpr quint32 kLegacyWeaveTintEnabled = 1312426078;
+constexpr quint32 kLegacyWeaveTintTiling = 1476456406;
+constexpr quint32 kLegacyWeaveBaseColor = 1940513503;
+constexpr quint32 kLegacyWeaveReflectance = 2475239088;
+constexpr quint32 kLegacyWeaveLocalAo = 1812199748;
+constexpr quint32 kLegacyPolishedReflectance = 530277512;
+constexpr quint32 kLegacyMetalReflectance = 2752865311;
+constexpr quint32 kLegacyMetalAlternateReflectance = 3611967824;
+constexpr quint32 kLegacyMetalGloss = 2580310449;
+constexpr quint32 kLegacyMetalAlternateGloss = 3601359974;
+constexpr quint32 kLegacyMetalMask = 1665309683;
+constexpr quint32 kLegacyMetalMaskTiling = 2164484293;
+constexpr quint32 kEarlyMetalMask = 2571783952;
+constexpr quint32 kEarlyMetalMaskTiling = 2263541979;
+constexpr quint32 kLegacyMetalGlossMaskEnabled = 1460211077;
+constexpr quint32 kLegacyMetalReflectanceMaskEnabled = 3124979876;
+constexpr quint32 kLegacyMetalReflectanceFromNormal = 2377392304;
+constexpr quint32 kLegacyMetalNormalStrength = 11643509;
+constexpr quint32 kLegacyMetalCoatGloss = 2122899069;
+constexpr quint32 kMirrorFinishNormal = 1085321393;
+constexpr quint32 kStandardNormalStrength = 3446342299;
+constexpr quint32 kStandardDetailNormalStrength = 3762475552;
+constexpr quint32 kStandardRoughnessShift = 1311252771;
+constexpr float kLegacyPaintColorRotationPivot = 0.04f;
+constexpr float kLegacyWeaveTintIntensity = 0.5f;
 
 using Cat = PaintFinishCategory;
+
+enum class FinishUvProfile {
+    Generic,
+    Standard,
+    Weave,
+    LegacyPaint,
+    LegacyWeave,
+    LegacyMetal,
+    LegacyPolishedMetal,
+    LegacyPearl,
+};
+
+const QString kMaterialSuffix = QStringLiteral(".materialbin");
+const QString kLegacyPaintMaterialsPrefix = QStringLiteral("painttypes/");
+const QString kTextureLibraryMarker = QStringLiteral("/_library/textures/");
+
+struct FinishMaterial {
+    QString name;
+    Cat category = Cat::Solid;
+    int colorCount = 1;
+};
+
+struct FinishTexturePaths {
+    QString pattern;
+    QString normal;
+    QString surface;
+    QString weaveMask;
+    bool mirrorNormal = false;
+};
+
+struct ResolvedPaintFinish {
+    std::shared_ptr<ModelMaterial> material;
+    FinishTexturePaths textures;
+    FinishUvProfile profile = FinishUvProfile::Generic;
+};
+
+QHash<int, FinishMaterial> finishMaterials(const QString &game) {
+    QHash<int, FinishMaterial> result;
+    const QString referenceGame = QStringLiteral("FH6");
+    const QJsonArray entries = gamePaintDatabase(game).value(QStringLiteral("finishes")).toArray();
+    for (const auto &value : entries) {
+        const QJsonObject entry = value.toObject();
+        const QString name = paintFinishMaterialName(entry);
+        const int code = entry.value(QStringLiteral("ID")).toInt();
+        const int colorCount = entry.value(QStringLiteral("NumInputColors")).toInt(1);
+        const PaintFinishInfo *info = findPaintFinish(matchingPaintFinish(code, game, referenceGame));
+        if (!name.isEmpty()) {
+            result.insert(code, {name, info != nullptr ? info->category : colorCount == 0 ? Cat::Pattern : Cat::Solid,
+                colorCount});
+        }
+    }
+    if (result.isEmpty()) {
+        for (const PaintFinishInfo &info : paintFinishTable()) {
+            result.insert(info.code, {info.materialBase, info.category,
+                info.category == Cat::Pattern ? 0 : info.category == Cat::TwoTone ? 2 : 1});
+        }
+    }
+
+    return result;
+}
 
 const ModelMaterialParameter *materialParameter(const ModelMaterial &material, quint32 hash) {
     const auto found = std::find_if(material.parameters.crbegin(), material.parameters.crend(), [hash](const auto &parameter) {
@@ -33,10 +131,16 @@ const ModelMaterialParameter *materialParameter(const ModelMaterial &material, q
     return found != material.parameters.crend() ? &*found : nullptr;
 }
 
-QString weaveMaskTexture(const ModelMaterial &material) {
-    const auto *parameter = materialParameter(material, material_hashes::parameter::kWeaveMask);
+QString finishTexture(const ModelMaterial &material, quint32 hash) {
+    const auto *parameter = materialParameter(material, hash);
 
     return parameter != nullptr && parameter->type == ModelMaterialParameterType::Texture2D ? parameter->texturePath : QString();
+}
+
+bool finishSwitch(const ModelMaterial &material, quint32 hash) {
+    const auto *parameter = materialParameter(material, hash);
+
+    return parameter != nullptr && parameter->type == ModelMaterialParameterType::Bool && parameter->boolean;
 }
 
 void applyWeaveTints(PaintFinishRender &render, const ModelMaterial &material) {
@@ -53,66 +157,88 @@ void applyWeaveTints(PaintFinishRender &render, const ModelMaterial &material) {
     }
 }
 
-void resolveWeaveDefaults(QHash<int, std::shared_ptr<ModelMaterial>> &materials, const QString &gameFolder) {
+QString normalizedAssetPath(QString path) {
+    path.replace(QLatin1Char('\\'), QLatin1Char('/'));
+
+    return path.toLower();
+}
+
+QString finishShaderPath(const ModelMaterial &material) {
+    for (auto link = material.linkedPaths.crbegin(); link != material.linkedPaths.crend(); ++link) {
+        if (link->endsWith(QStringLiteral(".shaderbin"), Qt::CaseInsensitive)) return normalizedAssetPath(*link);
+    }
+
+    return {};
+}
+
+FinishUvProfile finishUvProfile(const QString &shaderPath) {
+    const QString program = shaderPath.section(QLatin1Char('/'), -1);
+
+    if (program == QStringLiteral("car_standard_user.shaderbin")) return FinishUvProfile::Standard;
+    if (program == QStringLiteral("car_carbonfiber_user.shaderbin")) return FinishUvProfile::Weave;
+    if (program == QStringLiteral("carpaint_user.shaderbin")) return FinishUvProfile::LegacyPaint;
+    if (program == QStringLiteral("clc_metalch2normalch1mask.shaderbin")) return FinishUvProfile::LegacyWeave;
+    if (program == QStringLiteral("carpaint_user_metals.shaderbin")) return FinishUvProfile::LegacyMetal;
+    if (program == QStringLiteral("carpaint_user_hgm.shaderbin")) return FinishUvProfile::LegacyPolishedMetal;
+    if (program == QStringLiteral("carpaint_pearl.shaderbin")) return FinishUvProfile::LegacyPearl;
+
+    return FinishUvProfile::Generic;
+}
+
+std::shared_ptr<ModelMaterial> decodeFinishMaterial(const QByteArray &bytes);
+
+QHash<QString, std::shared_ptr<ModelMaterial>> loadFinishShaderDefaults(
+    const QHash<int, std::shared_ptr<ModelMaterial>> &materials, const QString &gameFolder) {
     struct ShaderSource {
         QString archive;
         QString entry;
     };
-    QHash<int, ShaderSource> sources;
+    QHash<QString, ShaderSource> sources;
     QHash<QString, QStringList> requests;
     QHash<QString, std::shared_ptr<ModelMaterial>> defaults;
 
-    for (auto material = materials.cbegin(); material != materials.cend(); ++material) {
-        if (weaveMaskTexture(*material.value()).isEmpty()) continue;
-        for (QString link : material.value()->linkedPaths) {
-            link.replace(QLatin1Char('\\'), QLatin1Char('/'));
-            const QString prefix = QStringLiteral("/_library/shaders/");
-            const int start = link.indexOf(prefix, 0, Qt::CaseInsensitive);
-            if (start < 0 || !link.endsWith(QStringLiteral(".shaderbin"), Qt::CaseInsensitive)) continue;
-            const QString relative = link.mid(start + prefix.size());
-            const int separator = relative.indexOf(QLatin1Char('/'));
+    const QDir cars(gameCarsDir(gameFolder));
+    const QDir media(gameMediaDir(gameFolder));
+    const QString prefix = QStringLiteral("/_library/shaders/");
+    for (const auto &material : materials) {
+        const QString path = finishShaderPath(*material);
+        if (sources.contains(path) || finishUvProfile(path) == FinishUvProfile::Generic) continue;
+        const qsizetype start = path.indexOf(prefix);
+        if (start < 0) continue;
+        QString entry = path.mid(start + prefix.size());
+        QString archive = gameAssetFilePath(media, QStringLiteral("_library/Shaders.zip"));
+        if (path.contains(QStringLiteral("/cars") + prefix)) {
+            const qsizetype separator = entry.indexOf(QLatin1Char('/'));
             if (separator < 0) continue;
-            const QString archive = gameAssetFilePath(QDir(gameCarsDir(gameFolder)),
-                QStringLiteral("_library/shaders/") + relative.left(separator) + QStringLiteral(".zip"));
-            const QString entry = relative.mid(separator + 1).toLower();
-            sources.insert(material.key(), {archive, entry});
-            if (!requests[archive].contains(entry)) requests[archive].push_back(entry);
-            break;
+            archive = gameAssetFilePath(cars, QStringLiteral("_library/shaders/") + entry.left(separator) + QStringLiteral(".zip"));
+            entry = entry.mid(separator + 1);
         }
+        sources.insert(path, {archive, entry});
+        requests[archive].push_back(entry);
     }
     for (auto request = requests.cbegin(); request != requests.cend(); ++request) {
         if (!QFileInfo::exists(request.key())) continue;
         const auto blobs = readZipEntries(request.key(), request.value());
         for (const QString &entry : request.value()) {
-            if (const auto decoded = decodeMaterialBundle(blobs.value(entry))) defaults.insert(request.key() + entry, decoded);
+            if (auto decoded = decodeFinishMaterial(blobs.value(entry))) defaults.insert(request.key() + entry, std::move(decoded));
         }
     }
+    QHash<QString, std::shared_ptr<ModelMaterial>> shaders;
     for (auto source = sources.cbegin(); source != sources.cend(); ++source) {
-        const auto materialDefaults = defaults.value(source->archive + source->entry);
-        if (materialDefaults) materials[source.key()] = mergeModelMaterialDefaults(*materialDefaults, *materials.value(source.key()));
+        if (auto decoded = defaults.value(source->archive + source->entry)) shaders.insert(source.key(), std::move(decoded));
     }
+
+    return shaders;
 }
 
-int finishColorCount(const PaintFinishInfo &info) {
-    static const QHash<int, int> counts = [] {
-        QHash<int, int> result;
-        const QJsonArray entries = gamePaintDatabase(QStringLiteral("FH6")).value(QStringLiteral("finishes")).toArray();
-        for (const auto &value : entries) {
-            const QJsonObject entry = value.toObject();
-            result.insert(entry.value(QStringLiteral("ID")).toInt(), entry.value(QStringLiteral("NumInputColors")).toInt(1));
-        }
+QString textureArchiveEntry(const QString &path) {
+    const qsizetype marker = path.indexOf(kTextureLibraryMarker);
 
-        return result;
-    }();
-
-    return counts.value(info.code, info.category == PaintFinishCategory::Pattern ? 0 : 1);
+    return marker >= 0 ? path.mid(marker + kTextureLibraryMarker.size()) : path;
 }
 
-QString textureLeaf(const QString &path) {
-    QString value = path;
-    value.replace(QLatin1Char('\\'), QLatin1Char('/'));
-
-    return value.mid(value.lastIndexOf(QLatin1Char('/')) + 1);
+bool isCarTexture(const QString &path) {
+    return !path.contains(kTextureLibraryMarker) || path.contains(QStringLiteral("/cars") + kTextureLibraryMarker);
 }
 
 bool isOpaqueWhite(const SwatchImage &image) {
@@ -121,12 +247,12 @@ bool isOpaqueWhite(const SwatchImage &image) {
                        [](uint8_t channel) { return channel == 255; });
 }
 
-PaintFinishRender renderFromMaterial(const PaintFinishInfo &info, const ModelMaterial &material) {
+PaintFinishRender renderFromMaterial(const FinishMaterial &info, const ModelMaterial &material) {
     PaintFinishRender render;
     render.valid = true;
     render.category = info.category;
-    render.usesSecondary = info.category == PaintFinishCategory::TwoTone && finishColorCount(info) > 1;
-    render.selfColored = finishColorCount(info) == 0;
+    render.usesSecondary = info.category == PaintFinishCategory::TwoTone && info.colorCount > 1;
+    render.selfColored = info.colorCount == 0;
     render.gloss = material.gloss;
     render.metallic = material.hasMetallic
         ? material.metallic
@@ -142,58 +268,267 @@ PaintFinishRender renderFromMaterial(const PaintFinishInfo &info, const ModelMat
     return render;
 }
 
-// Indexes every .swatchbin entry in the textures archive by its lower-cased leaf name.
-QHash<QString, QString> buildSwatchIndex(const QString &texturesArchive) {
-    QHash<QString, QString> index;
-    if (!QFileInfo::exists(texturesArchive)) {
-        return index;
-    }
-    const QStringList entries = listZipEntries(texturesArchive);
-    for (const QString &entry : entries) {
-        if (entry.endsWith(QStringLiteral(".swatchbin"), Qt::CaseInsensitive)) {
-            index.insert(textureLeaf(entry).toLower(), entry);
+QStringList paintArchives(const QString &primaryArchive) {
+    if (primaryArchive.isEmpty()) return {};
+    const QFileInfo primary(primaryArchive);
+    const QString priorityPrefix = QFileInfo(gameAssetFileName(primary)).completeBaseName().toLower()
+        + QStringLiteral("_pri_");
+    QStringList archives;
+
+    if (primary.isFile()) archives.push_back(primaryArchive);
+    for (const QFileInfo &file : primary.dir().entryInfoList(QDir::Files)) {
+        const QString name = gameAssetFileName(file).toLower();
+        if (name.startsWith(priorityPrefix) && name.endsWith(QStringLiteral(".zip"))) {
+            archives.push_back(file.absoluteFilePath());
         }
     }
 
-    return index;
+    return archives;
 }
 
-QHash<int, std::shared_ptr<ModelMaterial>> decodeMaterialsFromArchive(const QString &archivePath) {
-    const QString prefix = gamePaintMaterialsPrefix();
-    QStringList entries;
-    entries.reserve(paintFinishTable().size());
-    for (const PaintFinishInfo &info : paintFinishTable()) {
-        entries.push_back(prefix + info.materialBase + QStringLiteral(".materialbin"));
-    }
-    const QHash<QString, QByteArray> blobs = readZipEntries(archivePath, entries);
-    QHash<int, std::shared_ptr<ModelMaterial>> materials;
-    for (const PaintFinishInfo &info : paintFinishTable()) {
-        const QByteArray blob = blobs.value((prefix + info.materialBase + QStringLiteral(".materialbin")).toLower());
-        if (blob.isEmpty()) {
-            continue;
+QHash<QString, QByteArray> readPaintArchiveEntries(const QStringList &archives, QStringList entries) {
+    QHash<QString, QByteArray> result;
+    entries.removeDuplicates();
+    for (const QString &archive : archives) {
+        if (entries.isEmpty()) break;
+        auto blobs = readZipEntries(archive, entries);
+        if (blobs.isEmpty()) continue;
+        entries.removeIf([&](const QString &entry) { return blobs.contains(entry); });
+        for (auto it = blobs.begin(); it != blobs.end(); ++it) {
+            result.insert(it.key(), std::move(it.value()));
         }
-        if (const std::shared_ptr<ModelMaterial> material = decodeMaterialBundle(blob)) {
-            materials.insert(info.code, material);
+    }
+
+    return result;
+}
+
+std::shared_ptr<ModelMaterial> decodeFinishMaterial(const QByteArray &bytes) {
+    try {
+        return decodeMaterialBundle(bytes);
+    } catch (const std::runtime_error &) {
+        return {};
+    }
+}
+
+QHash<int, std::shared_ptr<ModelMaterial>> decodeFinishMaterials(
+    const QHash<int, FinishMaterial> &finishes, const QString &gameFolder, const QString &game) {
+    const QStringList archives = paintArchives(gamePaintMaterialsArchive(gameFolder));
+    const QString modernPrefix = gamePaintMaterialsPrefix();
+    const QStringList prefixes = game == QStringLiteral("FH6") || game == QStringLiteral("FM2023")
+        ? QStringList{modernPrefix, kLegacyPaintMaterialsPrefix}
+        : QStringList{kLegacyPaintMaterialsPrefix, modernPrefix};
+    QHash<int, std::shared_ptr<ModelMaterial>> materials;
+    if (!archives.isEmpty()) {
+        for (const QString &prefix : prefixes) {
+            QStringList entries;
+            for (auto it = finishes.cbegin(); it != finishes.cend(); ++it) {
+                if (!materials.contains(it.key())) entries.push_back(prefix + it->name + kMaterialSuffix);
+            }
+            const auto blobs = readPaintArchiveEntries(archives, std::move(entries));
+            for (auto it = finishes.cbegin(); it != finishes.cend(); ++it) {
+                if (!materials.contains(it.key())) {
+                    if (auto material = decodeFinishMaterial(blobs.value(prefix + it->name + kMaterialSuffix))) {
+                        materials.insert(it.key(), std::move(material));
+                    }
+                }
+            }
+        }
+    } else {
+        const QDir dir(gameFolder);
+        for (auto it = finishes.cbegin(); it != finishes.cend(); ++it) {
+            QFile file(dir.filePath(it->name + kMaterialSuffix));
+            if (!file.open(QIODevice::ReadOnly)) continue;
+            if (auto material = decodeFinishMaterial(file.readAll())) {
+                materials.insert(it.key(), std::move(material));
+            }
         }
     }
 
     return materials;
 }
 
-QHash<int, std::shared_ptr<ModelMaterial>> decodeMaterialsFromDirectory(const QString &directory) {
-    const QDir dir(directory);
-    QHash<int, std::shared_ptr<ModelMaterial>> materials;
-    for (const PaintFinishInfo &info : paintFinishTable()) {
-        QFile file(dir.filePath(info.materialBase + QStringLiteral(".materialbin")));
-        if (!file.open(QIODevice::ReadOnly)) {
-            continue;
-        }
-        if (const std::shared_ptr<ModelMaterial> material = decodeMaterialBundle(file.readAll())) {
-            materials.insert(info.code, material);
+FinishTexturePaths finishTexturePaths(
+    const ModelMaterial &material, const ModelMaterial &resolved, FinishUvProfile profile) {
+    constexpr quint32 kLegacyPaintColor = 3394122313;
+    constexpr quint32 kEarlyPaintColor = 692954876;
+    constexpr quint32 kLegacyFlakeTint = 3262721781;
+    constexpr quint32 kEarlyPearlTint = 1936471985;
+    constexpr quint32 kLegacyDetailNormal = 1071456347;
+    using namespace material_hashes::parameter;
+    FinishTexturePaths paths{material.patternTexture, material.detailNormalTexture, material.roughMetalAoTexture,
+                             finishTexture(material, kWeaveMask)};
+    const bool earlyBindings = resolved.shaderBindingLayout == ShaderBindingLayout::EarlyLegacy;
+
+    if (profile == FinishUvProfile::LegacyPaint) {
+        const bool mappedColor = finishSwitch(resolved, kLegacyPaintColorEnabled)
+            || (earlyBindings && finishSwitch(resolved, kEarlyPaintTintEnabled));
+        paths.pattern = mappedColor
+            ? finishTexture(resolved, earlyBindings ? kEarlyPaintColor : kLegacyPaintColor) : QString();
+    } else if (paths.pattern.isEmpty()) {
+        const quint32 tint = earlyBindings && profile == FinishUvProfile::LegacyPearl
+            ? kEarlyPearlTint : kLegacyFlakeTint;
+        paths.pattern = finishTexture(material, tint);
+        if (paths.pattern.isEmpty()) paths.pattern = finishTexture(material, kLegacyPaintColor);
+    }
+    if (paths.normal.isEmpty()) {
+        paths.normal = finishTexture(material, kMirrorFinishNormal);
+        paths.mirrorNormal = !paths.normal.isEmpty();
+    }
+    if (paths.normal.isEmpty()) paths.normal = finishTexture(material, kLegacyDetailNormal);
+    if (paths.normal.isEmpty()) paths.normal = finishTexture(material, kNormalTexture);
+    if (profile == FinishUvProfile::LegacyWeave && finishSwitch(resolved, kLegacyWeaveTintEnabled)) {
+        paths.pattern = finishTexture(resolved, kLegacyWeaveTint);
+    }
+    if (profile == FinishUvProfile::LegacyMetal) {
+        paths.pattern.clear();
+        if (finishSwitch(resolved, kLegacyMetalGlossMaskEnabled)
+            || finishSwitch(resolved, kLegacyMetalReflectanceMaskEnabled)) {
+            paths.surface = finishTexture(resolved, earlyBindings ? kEarlyMetalMask : kLegacyMetalMask);
         }
     }
 
-    return materials;
+    return paths;
+}
+
+float finishScalar(const ModelMaterial &material, quint32 hash, float fallback = 0.0f) {
+    const auto *parameter = materialParameter(material, hash);
+
+    return parameter != nullptr && parameter->type == ModelMaterialParameterType::Float && std::isfinite(parameter->scalar)
+        ? parameter->scalar : fallback;
+}
+
+std::array<float, 2> finishTiling(const ModelMaterial &material, quint32 hash, std::array<float, 2> fallback) {
+    const auto *parameter = materialParameter(material, hash);
+
+    return parameter != nullptr && parameter->type == ModelMaterialParameterType::Vector2
+        && std::isfinite(parameter->vector[0]) && std::isfinite(parameter->vector[1])
+        ? std::array{parameter->vector[0], parameter->vector[1]} : fallback;
+}
+
+void applyFinishUvMappings(PaintFinishRender &render, const ModelMaterial &material,
+                           FinishUvProfile profile, bool mirrorNormal) {
+    PaintFinishUvMapping mapping{{material.uTiling, material.vTiling}};
+    const bool earlyBindings = material.shaderBindingLayout == ShaderBindingLayout::EarlyLegacy;
+    const quint32 detailTiling = earlyBindings ? kEarlyPaintDetailTiling : kLegacyDetailTiling;
+
+    switch (profile) {
+    case FinishUvProfile::Standard:
+        mapping.channel = material.materialUvChannel >= 0 ? material.materialUvChannel : kSecondUvChannel;
+        mapping.rotationDegrees = material.uvOrientationDegrees;
+        render.patternUv = render.normalUv = render.surfaceUv = mapping;
+        if (mirrorNormal) {
+            render.normalUv = {{1.0f, 1.0f}, 0};
+        }
+        break;
+    case FinishUvProfile::Weave:
+        mapping.channel = kSecondUvChannel;
+        mapping.rotationDegrees = material.uvOrientationDegrees;
+        render.patternUv = render.normalUv = render.surfaceUv = mapping;
+        break;
+    case FinishUvProfile::LegacyPaint:
+        mapping.channel = kSecondUvChannel;
+        render.patternUv = {finishTiling(material, earlyBindings ? kEarlyPaintColorTiling : kLegacyPaintColorTiling,
+            mapping.tiling), mapping.channel,
+            finishScalar(material, kLegacyPaintColorRotation), kLegacyPaintColorRotationPivot};
+        render.normalUv = {finishTiling(material, detailTiling, mapping.tiling), mapping.channel};
+        render.surfaceUv = render.patternUv;
+        break;
+    case FinishUvProfile::LegacyWeave:
+        mapping.channel = kSecondUvChannel;
+        render.patternUv = {finishTiling(material, finishSwitch(material, kLegacyWeaveTintEnabled)
+            ? kLegacyWeaveTintTiling : kLegacyPaintColorTiling, mapping.tiling), mapping.channel};
+        render.normalUv = {finishTiling(material, kLegacyNormalTiling, mapping.tiling), mapping.channel};
+        render.surfaceUv = render.patternUv;
+        break;
+    case FinishUvProfile::LegacyMetal:
+        render.normalUv = {finishTiling(material, detailTiling, mapping.tiling), kSecondUvChannel};
+        render.surfaceUv = {finishTiling(material, earlyBindings ? kEarlyMetalMaskTiling : kLegacyMetalMaskTiling,
+            mapping.tiling), kSecondUvChannel};
+        break;
+    case FinishUvProfile::LegacyPolishedMetal:
+        break;
+    case FinishUvProfile::LegacyPearl:
+        render.normalUv = {finishTiling(material, detailTiling, mapping.tiling), kSecondUvChannel};
+        if (earlyBindings) {
+            render.patternUv = {finishTiling(material, kEarlyPearlTintTiling, mapping.tiling), kSecondUvChannel};
+        }
+        break;
+    case FinishUvProfile::Generic: {
+        const auto normalTiling = render.hasDetailNormal()
+            ? finishTiling(material, kLegacyNormalTiling, mapping.tiling) : mapping.tiling;
+        mapping.tiling = finishTiling(material, render.hasPattern() ? kLegacyPaintColorTiling : kLegacyDetailTiling, normalTiling);
+        render.patternUv = render.normalUv = render.surfaceUv = mapping;
+        break;
+    }
+    }
+}
+
+bool readFinishColor(const ModelMaterial &material, quint32 hash, std::array<float, 3> &color) {
+    const auto *parameter = materialParameter(material, hash);
+    if (parameter == nullptr || (parameter->type != ModelMaterialParameterType::Color
+        && parameter->type != ModelMaterialParameterType::Vector)) return false;
+    std::copy_n(parameter->vector.begin(), color.size(), color.begin());
+
+    return true;
+}
+
+void applyFinishSurface(PaintFinishRender &render, const ModelMaterial &material,
+                        FinishUvProfile profile, bool mirrorNormal) {
+    switch (profile) {
+    case FinishUvProfile::LegacyWeave: {
+        std::array<float, 3> reflectance;
+        if (readFinishColor(material, kLegacyWeaveReflectance, reflectance)) render.specularReflectance = reflectance;
+        render.selfColored = true;
+        render.hasMaterialColor = readFinishColor(material, kLegacyWeaveBaseColor, render.materialColor);
+        render.reflectanceFromNormalAlpha = finishSwitch(material, kLegacyWeaveLocalAo);
+        render.normalIntensity = finishScalar(material, kLegacyNormalStrength, render.normalIntensity);
+        render.patternCoverage = render.flakeAmount;
+        render.patternIntensity = kLegacyWeaveTintIntensity;
+        render.flakeAmount = 0.0f;
+        break;
+    }
+    case FinishUvProfile::LegacyPolishedMetal:
+        render.hasMaterialColor = readFinishColor(material, kLegacyPolishedReflectance, render.materialColor);
+        render.metallic = 1.0f;
+        break;
+    case FinishUvProfile::LegacyMetal:
+        render.hasMaterialColor = readFinishColor(material, kLegacyMetalReflectance, render.materialColor);
+        render.gloss = finishScalar(material, kLegacyMetalGloss, render.gloss);
+        render.clearCoatCoverage = 1.0f;
+        render.clearCoatRoughness = 1.0f - finishScalar(material, kLegacyMetalCoatGloss, render.gloss);
+        render.normalIntensity = finishScalar(material, kLegacyMetalNormalStrength, render.normalIntensity);
+        render.reflectanceFromNormalAlpha = finishSwitch(material, kLegacyMetalReflectanceFromNormal);
+        render.metallic = 1.0f;
+        render.flakeAmount = 0.0f;
+        if (render.hasRoughMetalAo()) {
+            PaintFinishMetalMask mask;
+            mask.glossRange = {render.gloss, finishScalar(material, kLegacyMetalAlternateGloss, render.gloss)};
+            mask.variesGloss = finishSwitch(material, kLegacyMetalGlossMaskEnabled);
+            mask.variesReflectance = finishSwitch(material, kLegacyMetalReflectanceMaskEnabled)
+                && readFinishColor(material, kLegacyMetalAlternateReflectance, mask.alternateColor);
+            render.metalMask = mask;
+        }
+        break;
+    case FinishUvProfile::Standard:
+        if (render.category == Cat::Metal) {
+            render.roughnessShift = std::clamp(finishScalar(material, kStandardRoughnessShift), -1.0f, 1.0f);
+            render.normalIntensity = finishScalar(material, mirrorNormal
+                ? kStandardNormalStrength : kStandardDetailNormalStrength, render.normalIntensity);
+            if (isOpaqueWhite(render.roughMetalAoImage)) {
+                render.gloss = std::max(0.0f, -render.roughnessShift);
+                render.metallic = 1.0f;
+            }
+        }
+        break;
+    case FinishUvProfile::LegacyPearl:
+        if (render.category == Cat::Metal) {
+            render.gloss = finishScalar(material, kLegacyMetalGloss, render.gloss);
+        }
+        break;
+    case FinishUvProfile::Generic:
+    case FinishUvProfile::Weave:
+        break;
+    }
 }
 
 QVector<PaintFinishInfo> buildTable() {
@@ -277,6 +612,7 @@ const PaintFinishInfo *findPaintFinish(int code) {
 
 void PaintFinishLibrary::clear() {
     folder_.clear();
+    game_.clear();
     byCode_.clear();
     loaded_ = false;
     ++generation_;
@@ -284,74 +620,70 @@ void PaintFinishLibrary::clear() {
 
 void PaintFinishLibrary::replace(PaintFinishLibrary library) {
     folder_ = std::move(library.folder_);
+    game_ = std::move(library.game_);
     loaded_ = library.loaded_;
     byCode_ = std::move(library.byCode_);
     ++generation_;
 }
 
-void PaintFinishLibrary::load(const QString &gameFolder) {
+void PaintFinishLibrary::load(const QString &gameFolder, const QString &game) {
     clear();
     folder_ = gameFolder;
+    game_ = game.isEmpty() ? QStringLiteral("FH6") : game;
 
-    const QString materialsArchive = gamePaintMaterialsArchive(gameFolder);
-    QHash<int, std::shared_ptr<ModelMaterial>> materials = QFileInfo::exists(materialsArchive)
-        ? decodeMaterialsFromArchive(materialsArchive)
-        : decodeMaterialsFromDirectory(gameFolder);
-    if (materials.isEmpty()) {
-        return;
-    }
-    resolveWeaveDefaults(materials, gameFolder);
+    if (gameFolder.isEmpty()) return;
+    const auto finishes = finishMaterials(game_);
+    const auto materials = decodeFinishMaterials(finishes, gameFolder, game_);
+    if (materials.isEmpty()) return;
+    const auto shaders = loadFinishShaderDefaults(materials, gameFolder);
 
-    const QString texturesArchive = gamePaintTexturesArchive(gameFolder);
-    const QHash<QString, QString> swatchIndex = buildSwatchIndex(texturesArchive);
-    const auto swatchPath = [&](const QString &reference) -> QString {
-        return reference.isEmpty() ? QString() : swatchIndex.value(textureLeaf(reference).toLower());
-    };
-
-    QStringList wanted;
-    for (const std::shared_ptr<ModelMaterial> &material : materials) {
-        for (const QString &reference :
-             {material->patternTexture, material->detailNormalTexture, material->roughMetalAoTexture, weaveMaskTexture(*material)}) {
-            const QString path = swatchPath(reference);
-            if (!path.isEmpty()) {
-                wanted.push_back(path);
-            }
+    QStringList wantedCarTextures;
+    QStringList wantedMediaTextures;
+    QHash<int, ResolvedPaintFinish> resolvedFinishes;
+    for (auto it = materials.cbegin(); it != materials.cend(); ++it) {
+        const ModelMaterial &material = *it.value();
+        const QString shaderPath = finishShaderPath(material);
+        const auto profile = finishUvProfile(shaderPath);
+        const auto defaults = shaders.value(shaderPath);
+        auto resolved = defaults ? mergeModelMaterialDefaults(*defaults, material) : it.value();
+        auto paths = finishTexturePaths(material, *resolved, profile);
+        for (QString *path : {&paths.pattern, &paths.normal, &paths.surface, &paths.weaveMask}) {
+            if (path->isEmpty()) continue;
+            *path = normalizedAssetPath(*path);
+            auto &wanted = isCarTexture(*path) ? wantedCarTextures : wantedMediaTextures;
+            wanted.push_back(textureArchiveEntry(*path));
         }
+        resolvedFinishes.insert(it.key(), {std::move(resolved), std::move(paths), profile});
     }
-    const QHash<QString, QByteArray> blobs =
-        wanted.isEmpty() ? QHash<QString, QByteArray>{} : readZipEntries(texturesArchive, wanted);
+    const QString mediaTextures = gameAssetFilePath(QDir(gameMediaDir(gameFolder)), QStringLiteral("_library/Textures.zip"));
+    const auto carBlobs = readPaintArchiveEntries(paintArchives(gamePaintTexturesArchive(gameFolder)), std::move(wantedCarTextures));
+    const auto mediaBlobs = readPaintArchiveEntries(paintArchives(mediaTextures), std::move(wantedMediaTextures));
     const auto swatchImages = [&](const QString &reference, SwatchImage &image, std::vector<SwatchImage> &mips) {
-        const QString path = swatchPath(reference);
-        const QByteArray blob = path.isEmpty() ? QByteArray{} : blobs.value(path.toLower());
-        auto images = blob.isEmpty() ? std::vector<SwatchImage>{} : decodeSwatchMipImages(blob);
+        if (reference.isEmpty()) return;
+        const auto &blobs = isCarTexture(reference) ? carBlobs : mediaBlobs;
+        auto images = decodeSwatchMipImages(blobs.value(textureArchiveEntry(reference)));
 
         if (images.empty()) return;
         image = std::move(images.front());
-        mips.assign(std::make_move_iterator(images.begin() + 1), std::make_move_iterator(images.end()));
+        images.erase(images.begin());
+        mips = std::move(images);
     };
 
-    for (const PaintFinishInfo &info : paintFinishTable()) {
-        const auto it = materials.constFind(info.code);
-        if (it == materials.constEnd()) {
-            continue;
-        }
+    for (auto it = materials.cbegin(); it != materials.cend(); ++it) {
         const ModelMaterial &material = *it.value();
-        PaintFinishRender render = renderFromMaterial(info, material);
-        swatchImages(material.patternTexture, render.patternImage, render.patternMips);
-        swatchImages(material.detailNormalTexture, render.detailNormalImage, render.detailNormalMips);
-        swatchImages(material.roughMetalAoTexture, render.roughMetalAoImage, render.roughMetalAoMips);
-        render.tiling = {material.uTiling, material.vTiling};
-        const QString weaveMask = weaveMaskTexture(material);
-        if (!weaveMask.isEmpty()) {
-            swatchImages(weaveMask, render.weaveMaskImage, render.weaveMaskMips);
-            applyWeaveTints(render, material);
+        const auto &resolved = resolvedFinishes[it.key()];
+        const auto &paths = resolved.textures;
+        const FinishMaterial &info = finishes[it.key()];
+        PaintFinishRender render = renderFromMaterial(info, paths.weaveMask.isEmpty() ? material : *resolved.material);
+        swatchImages(paths.pattern, render.patternImage, render.patternMips);
+        swatchImages(paths.normal, render.detailNormalImage, render.detailNormalMips);
+        swatchImages(paths.surface, render.roughMetalAoImage, render.roughMetalAoMips);
+        if (!paths.weaveMask.isEmpty()) {
+            swatchImages(paths.weaveMask, render.weaveMaskImage, render.weaveMaskMips);
+            applyWeaveTints(render, *resolved.material);
             render.selfColored = true;
-            render.uvChannel = 1;
             const auto scalar = [&](quint32 hash, float fallback) {
-                const auto *parameter = materialParameter(material, hash);
-
-                return parameter != nullptr && parameter->type == ModelMaterialParameterType::Float
-                    ? std::clamp(parameter->scalar, 0.0f, 1.0f) : fallback;
+                return std::clamp(finishScalar(*resolved.material, hash, fallback), 0.0f, 1.0f);
             };
             using namespace material_hashes::parameter;
             render.metallic = scalar(kWeaveMetalness, render.metallic);
@@ -359,16 +691,27 @@ void PaintFinishLibrary::load(const QString &gameFolder) {
             render.normalIntensity = scalar(kWeaveNormalIntensity, render.normalIntensity);
             render.anisotropy = scalar(kAnisotropy, render.anisotropy);
             render.clearCoatCoverage = scalar(kClearCoatCoverage, 1.0f);
-            render.clearCoatRoughness = scalar(kClearcoatRoughness, 1.0f - material.gloss);
-            render.uvOrientationDegrees = material.uvOrientationDegrees;
+            render.clearCoatRoughness = scalar(kClearcoatRoughness, 1.0f - resolved.material->gloss);
         }
-        if (isOpaqueWhite(render.roughMetalAoImage)) {
+        if (isOpaqueWhite(render.patternImage)) {
+            render.patternImage = {};
+            render.patternMips.clear();
+        }
+        applyFinishUvMappings(render, *resolved.material, resolved.profile, paths.mirrorNormal);
+        applyFinishSurface(render, *resolved.material, resolved.profile, paths.mirrorNormal);
+        if (!render.metalMask && isOpaqueWhite(render.roughMetalAoImage)) {
             render.roughMetalAoImage = {};
             render.roughMetalAoMips.clear();
         }
-        byCode_.insert(info.code, render);
+        byCode_.insert(it.key(), std::move(render));
     }
     loaded_ = !byCode_.isEmpty();
+}
+
+int PaintFinishLibrary::previewCode(quint32 code, const QString &paintGame) const {
+    const QString source = paintGame.isEmpty() ? QStringLiteral("FH6") : paintGame;
+
+    return source == game_ ? static_cast<int>(code) : matchingPaintFinish(code, source, game_);
 }
 
 const PaintFinishRender *PaintFinishLibrary::find(int code) const {

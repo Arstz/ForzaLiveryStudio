@@ -1,9 +1,10 @@
 Small changes:
     -Anull UV cache on manual model change
     -Improve PAINT menu design
+    -Change a car export blocker to a warning dialogue
 
 Medium changes:
-    -Filter parts by game version (Single/Multiple), hide/paint slots
+    -Unify file picker explorer
 
 Big changes:
     -Vulcan migration(?)

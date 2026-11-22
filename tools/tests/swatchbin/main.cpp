@@ -211,6 +211,8 @@ int main(int argc, char **argv) {
     try {
         checkImage(4, 4, true);
         checkImage(8, 4, false);
+        checkImage(2, 2, true);
+        checkImage(1, 1, false);
         checkBc4Image();
         checkSignedBlockChannels();
         checkDurangoBc4Mask(13, 25600);

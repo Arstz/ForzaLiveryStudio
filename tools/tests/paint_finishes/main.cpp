@@ -1,5 +1,6 @@
-#include "material_hashes.h"
 #include "car_scene.h"
+#include "game_paths.h"
+#include "material_hashes.h"
 #include "model_material.h"
 #include "paint_finish_catalog.h"
 #include "zip_extract.h"
@@ -444,10 +445,12 @@ void checkWeaveLibrary(const QString &folder) {
     require(library.loaded(), "finish library unavailable");
     for (int code : {6, 7, 8, 9}) {
         const auto *finish = library.find(code);
-        require(finish && finish->valid && finish->selfColored && finish->uvChannel == 1, "weave shader UV channel lost");
+        require(finish && finish->valid && finish->selfColored
+            && finish->patternUv.channel == 1 && finish->normalUv.channel == 1, "weave shader UV channel lost");
         require(finish->hasWeaveMask() && finish->hasDetailNormal(), "weave texture or normal unavailable");
         require(!finish->hasPattern(), "weave tints were baked into a color texture");
-        require(finish->tiling == std::array<float, 2>{32, 32}, "weave tiling lost");
+        require(finish->patternUv.tiling == std::array<float, 2>{32, 32}
+            && finish->normalUv.tiling == finish->patternUv.tiling, "authored weave tiling lost");
         const auto &pixels = finish->weaveMaskImage.rgba;
         quint8 minimumMask = 255;
         quint8 maximumMask = 0;
@@ -471,9 +474,113 @@ void checkWeaveLibrary(const QString &folder) {
         std::printf("finish %d: mask=%dx%d normal=%dx%d tiling=%.0fx%.0f mips=%zu metallic=%.1f UV=%d anisotropy=%.1f roughness=%.2f coat=%.1f\n",
                     code, finish->weaveMaskImage.width, finish->weaveMaskImage.height,
                     finish->detailNormalImage.width, finish->detailNormalImage.height,
-                    finish->tiling[0], finish->tiling[1], finish->weaveMaskMips.size() + 1, finish->metallic, finish->uvChannel, finish->anisotropy,
+                    finish->normalUv.tiling[0], finish->normalUv.tiling[1], finish->weaveMaskMips.size() + 1,
+                    finish->metallic, finish->normalUv.channel, finish->anisotropy,
                     1.0f - finish->gloss, finish->clearCoatRoughness);
     }
+    const auto *camo = library.find(60);
+    require(camo && camo->hasPattern() && camo->patternUv.channel == 1
+        && camo->patternUv.tiling == std::array<float, 2>{0.6f, 0.6f}
+        && camo->patternUv.rotationDegrees == 270.0f, "modern camouflage shader mapping lost");
+    const auto *chrome = library.find(12);
+    const auto *brushed = library.find(14);
+    require(chrome && chrome->hasMaterialColor && chrome->gloss == 1.0f
+        && chrome->normalUv.channel == 0, "modern chrome lost its polish or mirror normal UV");
+    require(brushed && brushed->hasDetailNormal() && brushed->normalUv.channel == 1
+        && std::abs(brushed->gloss - 0.6f) < 0.0001f, "modern brushed metal lost its roughness shift");
+}
+
+void checkLegacyCamouflage(const fls::PaintFinishLibrary &library) {
+    for (int code : {20, 21, 22, 23, 24, 25, 36, 37, 38, 39, 40, 41, 42, 43, 60, 61, 62, 63}) {
+        const auto *finish = library.find(library.previewCode(code, QStringLiteral("FH6")));
+        require(finish && finish->hasPattern() && !finish->patternMips.empty()
+            && finish->patternUv.channel == 1, "legacy camouflage lost its texture or UV channel");
+    }
+    const auto *camo = library.find(60);
+    require(camo && camo->hasPattern() && camo->patternUv.channel == 1
+        && camo->patternUv.tiling == std::array<float, 2>{0.6f, 0.6f}
+        && camo->patternUv.rotationDegrees == 277.0f && camo->patternUv.rotationPivot == 0.04f,
+        "legacy camouflage shader mapping lost");
+    require(camo->hasDetailNormal() && camo->normalUv.channel == 1
+        && camo->normalUv.tiling == std::array<float, 2>{20, 20}
+        && camo->normalUv.rotationDegrees == 0.0f, "legacy flake normal mapping lost");
+}
+
+void checkEarlyFinishLibrary(const QString &folder) {
+    for (const QString &source : {folder, fls::gameMediaDir(folder)}) {
+        fls::PaintFinishLibrary library;
+        library.load(source, QStringLiteral("FH3"));
+        checkLegacyCamouflage(library);
+        const auto *gloss = library.find(1);
+        const auto *wood = library.find(53);
+        const auto *kevlar = library.find(8);
+        const auto *pearl = library.find(67);
+        const auto *damascus = library.find(66);
+        require(gloss && !gloss->hasPattern(), "early Gloss loaded a disabled color map");
+        require(wood && wood->hasPattern() && wood->selfColored, "early wood lost its color map");
+        require(kevlar && kevlar->hasPattern() && kevlar->hasDetailNormal()
+            && kevlar->patternUv.tiling == std::array<float, 2>{70, 70}
+            && kevlar->patternUv.tiling == kevlar->normalUv.tiling,
+            "early Kevlar lost its tint map or mapping");
+        require(pearl && pearl->hasPattern() && pearl->patternUv.tiling == std::array<float, 2>{1.3f, 1.4f},
+                "early pearl lost its tint map or mapping");
+        require(damascus && damascus->metalMask && damascus->metalMask->variesGloss
+            && damascus->surfaceUv.tiling == std::array<float, 2>{0.6f, 0.6f},
+            "early Damascus lost its gloss map or mapping");
+    }
+}
+
+void checkLegacyFinishLibrary(const QString &folder, const QString &game) {
+    fls::PaintFinishLibrary library;
+    library.load(folder, game);
+    for (int code : {1, 2, 3, 4}) {
+        const auto *finish = library.find(library.previewCode(code, QStringLiteral("FH6")));
+        require(finish && finish->valid && !finish->hasPattern() && finish->patternMips.empty(),
+                "legacy solid paint loaded a disabled color map");
+    }
+    const auto *wood = library.find(53);
+    require(wood && wood->hasPattern() && wood->selfColored, "legacy wood lost its enabled color map");
+    checkLegacyCamouflage(library);
+    for (int code : {6, 7, 8, 9}) {
+        const auto *finish = library.find(code);
+        require(finish && finish->hasDetailNormal() && finish->normalUv.channel == 1
+            && finish->normalUv.tiling == std::array<float, 2>{55, 55}, "legacy weave shader mapping lost");
+        require(finish->specularReflectance == std::array<float, 3>{0.1f, 0.1f, 0.1f}
+            && finish->selfColored && finish->flakeAmount == 0.0f, "legacy weave lost its reflectance");
+        require(finish->hasPattern() == (code >= 8) && (code < 8 || finish->patternUv.tiling == finish->normalUv.tiling),
+            "legacy Kevlar lost its shader-default tint texture");
+    }
+    const auto *gold = library.find(13);
+    const auto *brushed = library.find(26);
+    const auto *polished = library.find(27);
+    const auto *semiGloss = library.find(28);
+    const auto *damascus = library.find(66);
+    const auto *galvanized = library.find(68);
+    require(gold && gold->hasMaterialColor && gold->materialColor[0] > gold->materialColor[1]
+        && gold->materialColor[1] > gold->materialColor[2], "legacy gold lost its shader-default reflectance");
+    require(brushed && polished && semiGloss && brushed->gloss > semiGloss->gloss && polished->gloss > brushed->gloss
+        && brushed->hasMaterialColor && polished->materialColor == brushed->materialColor,
+        "legacy brass finish variants lost their shared reflectance or different gloss");
+    require(damascus && damascus->metalMask && damascus->metalMask->variesGloss
+        && damascus->surfaceUv.tiling == std::array<float, 2>{0.6f, 0.6f},
+        "legacy Damascus lost its material gloss map");
+    require(galvanized && galvanized->metalMask && galvanized->metalMask->variesGloss
+        && galvanized->metalMask->variesReflectance && galvanized->surfaceUv.tiling == std::array<float, 2>{1.3f, 1.3f},
+        "legacy galvanized steel lost its gloss and reflectance map");
+}
+
+void checkCrossGameFinishCodes() {
+    fls::PaintFinishLibrary current;
+    fls::PaintFinishLibrary legacy;
+    current.load({}, QStringLiteral("FH6"));
+    legacy.load({}, QStringLiteral("FH5"));
+    const unsigned generation = current.generation();
+    current.replace(std::move(legacy));
+    require(current.generation() != generation && current.previewCode(8, QStringLiteral("FH6")) == 8
+        && current.previewCode(31, QStringLiteral("FH6")) == 31,
+        "target library replacement lost equivalent finishes");
+    require(current.previewCode(72, QStringLiteral("FH6")) < 0 && current.previewCode(72, QStringLiteral("FH5")) == 72,
+        "a target finish reused an unrelated source code");
 }
 
 void checkAuthoredTangents(const QString &archive) {
@@ -509,8 +616,17 @@ int main(int argc, char **argv) {
         checkLampGlassOpacityFallback();
         checkLegacyShaderMappings();
         checkStandardShaderMappings();
-        if (argc >= 2) checkWeaveLibrary(QString::fromLocal8Bit(argv[1]));
-        if (argc >= 3) checkAuthoredTangents(QString::fromLocal8Bit(argv[2]));
+        checkCrossGameFinishCodes();
+        const QStringList args = app.arguments();
+        if (args.size() == 3 && args[1] == QStringLiteral("--legacy-library")) {
+            checkLegacyFinishLibrary(args[2], QStringLiteral("FH5"));
+        } else if (args.size() == 4 && args[1] == QStringLiteral("--older-libraries")) {
+            checkEarlyFinishLibrary(args[2]);
+            checkLegacyFinishLibrary(args[3], QStringLiteral("FH4"));
+        } else {
+            if (args.size() >= 2) checkWeaveLibrary(args[1]);
+            if (args.size() >= 3) checkAuthoredTangents(args[2]);
+        }
         std::puts("Paint finish checks passed");
         return 0;
     } catch (const std::exception &error) {

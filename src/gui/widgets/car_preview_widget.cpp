@@ -307,6 +307,30 @@ QString findMediaResource(const QString &sourcePath, const QString &relativePath
     return {};
 }
 
+struct CarGameSource {
+    QString game;
+    QString folder;
+};
+
+CarGameSource carGameSource(const QString &path, const QString &game) {
+    const QString archive = findMediaResource(path, QStringLiteral("_library/Textures.zip"));
+    if (!archive.isEmpty()) {
+        QDir media = QFileInfo(archive).absoluteDir();
+        if (media.cdUp()) {
+            if (!game.isEmpty()) return {game, media.absolutePath()};
+            if (fls::hasFh3ObfuscatedNames(media.absolutePath())) return {QStringLiteral("FH3"), media.absolutePath()};
+            QDir install = media;
+            if (install.cdUp()) {
+                if (install.exists(QStringLiteral("forzahorizon6.exe"))) return {QStringLiteral("FH6"), media.absolutePath()};
+                if (install.exists(QStringLiteral("ForzaHorizon5.exe"))) return {QStringLiteral("FH5"), media.absolutePath()};
+                if (install.exists(QStringLiteral("ForzaHorizon4.exe"))) return {QStringLiteral("FH4"), media.absolutePath()};
+            }
+        }
+    }
+
+    return {game, game.isEmpty() ? QString() : loadBehaviorSettings().gameFolders.value(game)};
+}
+
 QString gameResourceSource(const QString &sourcePath, const QString &gameFolder) {
     const QStringList directories = fls::gameCarsDirs(gameFolder);
     const QString absoluteSource = QFileInfo(sourcePath).absoluteFilePath();
@@ -1244,6 +1268,7 @@ void loadManufacturerLiveries(fls::ManufacturerColorPalette &palette, fls::CarMo
 
 struct PreparedCar {
     fls::CarModel model;
+    std::optional<fls::PaintFinishLibrary> paintFinishes;
     std::shared_ptr<WheelPreviewState> wheels;
     fls::LiveryMaskSet liveryMasks;
     fls::ManufacturerColorPalette manufacturerColors;
@@ -1541,17 +1566,19 @@ CarPreviewWidget::~CarPreviewWidget() {
 }
 
 void CarPreviewWidget::loadCarAsync(const QString &path, CarLoadCallback callback, const QString &game) {
+    const auto source = carGameSource(path, game);
     const bool loadCarTextures = loadCarTextures_;
-    const QString gameFolder = game.isEmpty() ? QString() : loadBehaviorSettings().gameFolders.value(game);
+    const bool replacePaintFinishes = source.folder != paintFinishes_.folder()
+        || (!source.folder.isEmpty() && (source.game != paintFinishes_.game() || !paintFinishes_.loaded()));
     const QString key = assetFileIdentity(path) + QLatin1Char('|') + QString::number(loadCarTextures)
-        + QLatin1Char('|') + game + QLatin1Char('|') + gameFolder;
+        + QLatin1Char('|') + source.game + QLatin1Char('|') + source.folder;
     if (modelLoadPending_ && pendingCarKey_ == key) {
         if (callback) {
             carLoadCallbacks_.push_back(std::move(callback));
         }
         return;
     }
-    if (!modelLoadPending_ && hasModel() && loadedCarKey_ == key) {
+    if (!modelLoadPending_ && hasModel() && loadedCarKey_ == key && !replacePaintFinishes) {
         if (callback) {
             callback(true, {});
         }
@@ -1572,20 +1599,27 @@ void CarPreviewWidget::loadCarAsync(const QString &path, CarLoadCallback callbac
     updateModelStatus();
     QPointer<CarPreviewWidget> guard(this);
     QThreadPool::globalInstance()->start(
-        [guard, path, key, game, gameFolder, loadCarTextures, generation, cancellation, started = carLoadTimer_]() mutable {
+        [guard, path, key, source, loadCarTextures, replacePaintFinishes,
+         generation, cancellation, started = carLoadTimer_]() mutable {
             QString error;
             QJsonObject timings;
             const auto cancelled = [cancellation]() { return cancellation->load(std::memory_order_relaxed); };
             timings.insert(QStringLiteral("worker_start_ms"), started.nsecsElapsed() / 1000000.0);
             std::shared_ptr<PreparedCar> prepared =
-                prepareCar(path, loadCarTextures, &error, &timings, cancelled, game, gameFolder);
+                prepareCar(path, loadCarTextures, &error, &timings, cancelled, source.game, source.folder);
+            if (prepared && replacePaintFinishes && !cancelled()) {
+                const qint64 finishStart = started.nsecsElapsed();
+                prepared->paintFinishes.emplace();
+                if (!source.folder.isEmpty()) prepared->paintFinishes->load(source.folder, source.game);
+                timings.insert(QStringLiteral("paint_finishes_ms"), (started.nsecsElapsed() - finishStart) / 1000000.0);
+            }
             timings.insert(QStringLiteral("cpu_ready_ms"), started.nsecsElapsed() / 1000000.0);
             if (!guard || cancelled()) {
                 return;
             }
             QMetaObject::invokeMethod(
                 guard,
-                [guard, key, game, prepared = std::move(prepared), error = std::move(error),
+                [guard, key, source, prepared = std::move(prepared), error = std::move(error),
                  generation, timings = std::move(timings)]() mutable {
                     if (!guard || guard->carLoadGeneration_ != generation) {
                         return;
@@ -1608,6 +1642,9 @@ void CarPreviewWidget::loadCarAsync(const QString &path, CarLoadCallback callbac
                         return;
                     }
 
+                    if (prepared->paintFinishes) {
+                        guard->paintFinishes_.replace(std::move(*prepared->paintFinishes));
+                    }
                     guard->model_ = std::move(prepared->model);
                     guard->wheelPreview_ = std::move(prepared->wheels);
                     guard->wheelPreviewBakeState_.reset();
@@ -1615,7 +1652,7 @@ void CarPreviewWidget::loadCarAsync(const QString &path, CarLoadCallback callbac
                     guard->manufacturerColors_ = std::move(prepared->manufacturerColors);
                     guard->extractedCarDir_ = std::move(prepared->extractedCarDir);
                     guard->loadedCarPath_ = std::move(prepared->loadedCarPath);
-                    guard->loadedCarGame_ = game;
+                    guard->loadedCarGame_ = source.game;
                     guard->loadedCarKey_ = key;
                     guard->liveryMasks_ = std::move(prepared->liveryMasks);
                     guard->carUnwrapOverlaySets_ = std::move(
@@ -2399,39 +2436,6 @@ void CarPreviewWidget::paintEvent(QPaintEvent *event) {
         updateModelStatus();
     }
     layoutPartControls();
-}
-
-void CarPreviewWidget::setGameFolder(const QString &folder) {
-    if (folder == gameFolder_) {
-        return;
-    }
-    gameFolder_ = folder;
-    const quint64 generation = ++paintFinishLoadGeneration_;
-    if (folder.isEmpty()) {
-        paintFinishes_.clear();
-        invalidatePartPreviews();
-        update();
-        return;
-    }
-    QPointer<CarPreviewWidget> guard(this);
-    QThreadPool::globalInstance()->start([guard, folder, generation]() {
-        auto library = std::make_shared<fls::PaintFinishLibrary>();
-        library->load(folder);
-        if (!guard) {
-            return;
-        }
-        QMetaObject::invokeMethod(
-            guard,
-            [guard, library = std::move(library), generation]() mutable {
-                if (!guard || guard->paintFinishLoadGeneration_ != generation) {
-                    return;
-                }
-                guard->paintFinishes_.replace(std::move(*library));
-                guard->invalidatePartPreviews();
-                guard->update();
-            },
-            Qt::QueuedConnection);
-    });
 }
 
 void CarPreviewWidget::setLoadCarTextures(bool enabled) {

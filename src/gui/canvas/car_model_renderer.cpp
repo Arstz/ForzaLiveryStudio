@@ -30,9 +30,8 @@ namespace gui {
 namespace {
 
 constexpr double kUnwrapPathScale = 1024.0;
-constexpr float kWeavePreviewTilingScale = 2.0f;
 constexpr int kBaseVertexComponents = 8;
-constexpr int kMaterialVertexComponents = 28;
+constexpr int kMaterialVertexComponents = 30;
 using UnwrapCoveragePaths = std::array<Clipper2Lib::Paths64, fls::kLiverySideCount>;
 
 struct UnwrapTimings {
@@ -102,15 +101,15 @@ void uploadCarMeshGeometry(BufferSet &buffers, QOpenGLShaderProgram &program,
         program.enableAttributeArray(3);
         program.setAttributeBuffer(3, GL_FLOAT, 8 * sizeof(float), 2, stride);
         program.enableAttributeArray(4);
-        program.setAttributeBuffer(4, GL_FLOAT, 10 * sizeof(float), 2, stride);
+        program.setAttributeBuffer(4, GL_FLOAT, 10 * sizeof(float), 4, stride);
         program.enableAttributeArray(6);
-        program.setAttributeBuffer(6, GL_FLOAT, 12 * sizeof(float), 4, stride);
+        program.setAttributeBuffer(6, GL_FLOAT, 14 * sizeof(float), 4, stride);
         program.enableAttributeArray(7);
-        program.setAttributeBuffer(7, GL_FLOAT, 16 * sizeof(float), 4, stride);
+        program.setAttributeBuffer(7, GL_FLOAT, 18 * sizeof(float), 4, stride);
         program.enableAttributeArray(8);
-        program.setAttributeBuffer(8, GL_FLOAT, 20 * sizeof(float), 4, stride);
+        program.setAttributeBuffer(8, GL_FLOAT, 22 * sizeof(float), 4, stride);
         program.enableAttributeArray(9);
-        program.setAttributeBuffer(9, GL_FLOAT, 24 * sizeof(float), 4, stride);
+        program.setAttributeBuffer(9, GL_FLOAT, 26 * sizeof(float), 4, stride);
     }
     buffers.vao.release();
     buffers.vbo.release();
@@ -122,7 +121,7 @@ layout(location = 0) in vec3 in_position;
 layout(location = 1) in vec3 in_normal;
 layout(location = 2) in vec2 in_uv;
 layout(location = 3) in vec2 in_material_uv;
-layout(location = 4) in vec2 in_finish_uv;
+layout(location = 4) in vec4 in_finish_uv;
 layout(location = 6) in vec4 in_finish_tangent;
 layout(location = 7) in vec4 in_normal_alpha_uv;
 layout(location = 8) in vec4 in_emission_uv;
@@ -135,7 +134,7 @@ out vec3 v_normal;
 out vec3 v_world;
 out vec2 v_uv;
 out vec2 v_material_uv;
-out vec2 v_finish_uv;
+out vec4 v_finish_uv;
 out vec4 v_finish_tangent;
 out vec4 v_normal_alpha_uv;
 out vec4 v_emission_uv;
@@ -162,7 +161,7 @@ in vec3 v_normal;
 in vec3 v_world;
 in vec2 v_uv;
 in vec2 v_material_uv;
-in vec2 v_finish_uv;
+in vec4 v_finish_uv;
 in vec4 v_finish_tangent;
 in vec4 v_normal_alpha_uv;
 in vec4 v_emission_uv;
@@ -233,8 +232,17 @@ uniform int has_finish_pattern;
 uniform int has_finish_normal;
 uniform int has_finish_surface;
 uniform int finish_self_colored;
-uniform vec2 finish_tiling;
-uniform int finish_own_uv;
+uniform vec2 finish_pattern_amount;
+uniform float finish_roughness_shift;
+uniform int finish_metal_mask_mode;
+uniform vec2 finish_gloss_range;
+uniform vec3 finish_alternate_color;
+uniform vec4 finish_specular_reflectance;
+uniform int finish_reflectance_from_normal_alpha;
+uniform ivec3 finish_uv_channels;
+uniform vec4 finish_pattern_uv;
+uniform vec4 finish_normal_uv;
+uniform vec4 finish_surface_uv;
 uniform float finish_anisotropy;
 uniform float finish_normal_intensity;
 uniform sampler2D weave_mask;
@@ -242,7 +250,6 @@ uniform int has_weave_mask;
 uniform int native_weave_mode;
 uniform vec3 weave_color_tint_a;
 uniform vec3 weave_color_tint_b;
-uniform float finish_uv_rotation;
 uniform float finish_flake;
 uniform float clear_coat_roughness;
 uniform float clear_coat_intensity;
@@ -374,6 +381,16 @@ float cutoutOpacity(float coverage)
 
 const int GLOSS_REFLECTANCE_MODE = 4;
 
+vec2 mappedFinishUv(int channel, vec4 mapping, vec2 fallbackUv)
+{
+    vec2 uv = channel < 0 ? fallbackUv : channel == 0 ? v_finish_uv.xy : v_finish_uv.zw;
+    vec2 centered = uv - vec2(mapping.w);
+    float cosine = cos(mapping.z);
+    float sine = sin(mapping.z);
+    vec2 rotated = vec2(cosine * centered.x - sine * centered.y, sine * centered.x + cosine * centered.y);
+    return (rotated + vec2(mapping.w)) * mapping.xy;
+}
+
 vec3 finishBaseColor(vec2 uv, vec3 paint)
 {
     if (native_weave_mode != 0) {
@@ -389,14 +406,19 @@ vec3 finishBaseColor(vec2 uv, vec3 paint)
         return color;
     }
     if (has_weave_mask == 1) {
-        float weave = texture(weave_mask, uv * finish_tiling).r;
+        float weave = texture(weave_mask, mappedFinishUv(finish_uv_channels.x, finish_pattern_uv, uv)).r;
         return mix(weave_color_tint_a, weave_color_tint_b, weave);
+    }
+    if (has_finish_surface == 1 && (finish_metal_mask_mode & 2) != 0) {
+        vec2 maskUv = mappedFinishUv(finish_uv_channels.z, finish_surface_uv, uv);
+        paint = mix(paint, finish_alternate_color, texture(finish_surface, maskUv).r);
     }
     if (has_finish_pattern == 0) {
         return paint;
     }
-    vec3 pattern = texture(finish_pattern, uv * finish_tiling).rgb;
-    return finish_self_colored == 1 ? pattern : paint * pattern;
+    vec3 pattern = texture(finish_pattern, mappedFinishUv(finish_uv_channels.x, finish_pattern_uv, uv)).rgb
+        * finish_pattern_amount.y;
+    return mix(paint, finish_self_colored == 1 ? pattern : paint * pattern, finish_pattern_amount.x);
 }
 
 mat3 authoredTangentFrame(vec3 normal, vec3 position, vec2 uv, vec4 authored)
@@ -406,6 +428,13 @@ mat3 authoredTangentFrame(vec3 normal, vec3 position, vec2 uv, vec4 authored)
     tangent = normalize(tangent);
     vec3 bitangent = normalize(cross(normal, tangent)) * (authored.w < 0.0 ? -1.0 : 1.0);
     return mat3(tangent, bitangent, normal);
+}
+
+mat3 finishTangentFrame(vec3 normal, vec2 uv, int channel, float rotation)
+{
+    return channel == 1 && rotation == 0.0
+        ? authoredTangentFrame(normal, v_world, uv, v_finish_tangent)
+        : materialTangentFrame(normal, v_world, uv);
 }
 
 vec3 mappedNormal(sampler2D normalTexture, vec2 uv, float intensity)
@@ -488,10 +517,11 @@ void main()
     }
     vec2 materialUv = v_material_uv;
     vec2 normalUv = v_normal_alpha_uv.xy;
+    bool usesModelFinishUv = any(greaterThanEqual(finish_uv_channels, ivec3(0)));
     vec3 viewDir = normalize(eye_position - v_world);
     vec3 l = normalize(vec3(0.4, 0.8, 0.6));
     float lightVisibility = 1.0;
-    if (has_native_normal == 1 && finish_own_uv == 0) {
+    if (has_native_normal == 1 && !usesModelFinishUv) {
         mat3 frame = materialTangentFrame(n, v_world, normalUv);
         if (tire_height_channel >= 0) {
             normalUv = tireReliefUv(normalUv, frame, viewDir, l, lightVisibility);
@@ -569,13 +599,8 @@ void main()
     } else if (outputAlpha < 0.02) {
         discard;
     }
-    vec2 finishUv = finish_own_uv == 1 ? v_finish_uv : materialUv;
-    if (finish_own_uv == 1) {
-        float cosine = cos(finish_uv_rotation);
-        float sine = sin(finish_uv_rotation);
-        finishUv = vec2(cosine * finishUv.x - sine * finishUv.y, sine * finishUv.x + cosine * finishUv.y);
-    }
-    vec3 albedo = finishBaseColor(finishUv, surfacePaint);
+    vec2 finishFallbackUv = materialUv;
+    vec3 albedo = finishBaseColor(finishFallbackUv, surfacePaint);
     if (has_livery == 1 && side_count > 0) {
         if (use_direct_uv == 1) {
             vec2 atlasUv = v_uv * direct_uv_scale;
@@ -627,9 +652,11 @@ void main()
                 out_color = vec4(sideColor(coveredSide), 1.0);
                 return;
             }
-            if (coveredSide >= 0 && finish_own_uv == 0) {
-                finishUv = paintUv;
-                albedo = finishBaseColor(paintUv, surfacePaint);
+            if (coveredSide >= 0) {
+                finishFallbackUv = paintUv;
+                if (finish_uv_channels.x < 0 || ((finish_metal_mask_mode & 2) != 0 && finish_uv_channels.z < 0)) {
+                    albedo = finishBaseColor(paintUv, surfacePaint);
+                }
             }
             if (coverage > 0.5) {
                 vec4 paint = texture(livery_tex, paintUv);
@@ -695,9 +722,11 @@ void main()
             out_color = vec4(sideColor(bestSide), 1.0);
             return;
         }
-        if (bestSide >= 0 && finish_own_uv == 0) {
-            finishUv = bestUv;
-            albedo = finishBaseColor(bestUv, surfacePaint);
+        if (bestSide >= 0) {
+            finishFallbackUv = bestUv;
+            if (finish_uv_channels.x < 0 || ((finish_metal_mask_mode & 2) != 0 && finish_uv_channels.z < 0)) {
+                albedo = finishBaseColor(bestUv, surfacePaint);
+            }
         }
         if (bestCoverage > 0.5) {
             vec4 paint = texture(livery_tex, bestUv);
@@ -715,7 +744,7 @@ R"(
         float occlusion = texture(native_surface, v_glass_tint_surface_uv.xy).r;
         if ((native_occlusion_channels & 1) != 0) surfaceAo = occlusion;
         if ((native_occlusion_channels & 2) != 0) specularAo = occlusion;
-    } else if (has_native_surface == 1 && finish_own_uv == 0) {
+    } else if (has_native_surface == 1 && !usesModelFinishUv) {
         vec2 surfaceUv = tire_height_channel >= 0 && has_native_normal == 1
             ? materialUv : v_glass_tint_surface_uv.zw;
         vec3 packedSurface = texture(native_surface, surfaceUv).rgb;
@@ -734,24 +763,30 @@ R"(
         if (native_metal_blend_mode == 3) {
             surfaceGloss = mix(native_outer_metal_surface.w, surfaceGloss, outerMetalMask);
         }
-    } else if (has_native_gloss == 1 && finish_own_uv == 0) {
+    } else if (has_native_gloss == 1 && !usesModelFinishUv) {
         float variation = texture(native_gloss, v_glass_tint_surface_uv.zw).r;
         surfaceGloss = mix(native_gloss_range.x, native_gloss_range.y, variation);
     }
     vec3 coatNormal = n;
-    vec2 finishTiledUv = finishUv * finish_tiling;
+    float finishReflectanceWeight = 1.0;
     {
         if (has_finish_surface == 1) {
-            vec3 packedFinish = texture(finish_surface, finishTiledUv).rgb;
-            surfaceGloss = 1.0 - packedFinish.r;
-            surfaceMetallic = packedFinish.g;
-            surfaceAo = packedFinish.b;
+            vec2 uv = mappedFinishUv(finish_uv_channels.z, finish_surface_uv, finishFallbackUv);
+            vec3 packedFinish = texture(finish_surface, uv).rgb;
+            if (finish_metal_mask_mode == 0) {
+                float adjustedRoughness = mix(packedFinish.r, step(0.0, finish_roughness_shift), abs(finish_roughness_shift));
+                surfaceGloss = 1.0 - adjustedRoughness;
+                surfaceMetallic = packedFinish.g;
+                surfaceAo = packedFinish.b;
+            } else if ((finish_metal_mask_mode & 1) != 0) {
+                surfaceGloss = mix(finish_gloss_range.x, finish_gloss_range.y, packedFinish.r);
+            }
         }
         if (has_finish_normal == 1) {
-            mat3 frame = finish_own_uv == 1
-                ? authoredTangentFrame(n, v_world, finishTiledUv, v_finish_tangent)
-                : materialTangentFrame(n, v_world, finishTiledUv);
-            n = normalize(frame * mappedNormal(finish_normal, finishTiledUv, max(finish_normal_intensity, 0.0)));
+            vec2 uv = mappedFinishUv(finish_uv_channels.y, finish_normal_uv, finishFallbackUv);
+            mat3 frame = finishTangentFrame(n, uv, finish_uv_channels.y, finish_normal_uv.z);
+            n = normalize(frame * mappedNormal(finish_normal, uv, max(finish_normal_intensity, 0.0)));
+            if (finish_reflectance_from_normal_alpha != 0) finishReflectanceWeight = texture(finish_normal, uv).a;
         }
     }
     vec4 nativeEmission = has_native_emissive == 1
@@ -760,6 +795,7 @@ R"(
     vec3 v = viewDir;
     float NdotV = max(dot(n, v), 0.0);
     vec3 F0 = mix(vec3(0.04), albedo, surfaceMetallic);
+    F0 = mix(F0, finish_specular_reflectance.rgb, finish_specular_reflectance.a) * finishReflectanceWeight;
     if (native_metal_blend_mode != 0) {
         vec3 reflectance = native_masked_reflectance;
         float reflectanceWeight = metalMask;
@@ -782,8 +818,9 @@ R"(
     float G = geometrySmith(n, v, l, roughness);
     vec3 environmentNormal = n;
     if (finish_anisotropy > 0.0 && has_weave_mask == 1) {
-        float mask = texture(weave_mask, finishTiledUv).r;
-        mat3 frame = authoredTangentFrame(coatNormal, v_world, finishTiledUv, v_finish_tangent);
+        vec2 uv = mappedFinishUv(finish_uv_channels.x, finish_pattern_uv, finishFallbackUv);
+        float mask = texture(weave_mask, uv).r;
+        mat3 frame = finishTangentFrame(coatNormal, uv, finish_uv_channels.x, finish_pattern_uv.z);
         vec3 tangent = frame[0] * (1.0 - mask) + frame[1] * mask;
         tangent -= n * dot(n, tangent);
         if (dot(tangent, tangent) < 0.000001) {
@@ -865,8 +902,22 @@ bool usesLegacyMetalBlend(const fls::CarMesh &mesh) {
     return mesh.material && mesh.material->legacySurface && mesh.material->legacySurface->metalBlend;
 }
 
+bool isWheelPaintBinding(quint64 hash) {
+    using namespace fls::material_hashes::binding;
+    using fls::material_hashes::contains;
+    return contains(kFrontWheelPaint, hash) || contains(kRearWheelPaint, hash)
+        || contains(kWheelPaintGroups, hash);
+}
+
+bool isWheelModelMesh(const fls::CarMesh &mesh) {
+    QString path = mesh.sourceModelPath;
+    path.replace(QLatin1Char('\\'), QLatin1Char('/'));
+    return path.contains(QStringLiteral("/wheels/"), Qt::CaseInsensitive);
+}
+
 bool isBodyPaintMesh(const fls::CarMesh &mesh) {
     return !usesLegacyMetalBlend(mesh) && !usesManufacturerLivery(mesh)
+        && !isWheelPaintBinding(mesh.paintMaterialHash) && !isWheelModelMesh(mesh)
         && (isBodyPaintMaterial(mesh.materialName)
         || fls::material_hashes::contains(
             fls::material_hashes::binding::kDefaultCarPaintGroups,
@@ -1257,8 +1308,17 @@ void CarModelRenderer::initialize() {
     hasFinishNormalLocation_ = program_.uniformLocation("has_finish_normal");
     hasFinishSurfaceLocation_ = program_.uniformLocation("has_finish_surface");
     finishSelfColoredLocation_ = program_.uniformLocation("finish_self_colored");
-    finishTilingLocation_ = program_.uniformLocation("finish_tiling");
-    finishOwnUvLocation_ = program_.uniformLocation("finish_own_uv");
+    finishPatternAmountLocation_ = program_.uniformLocation("finish_pattern_amount");
+    finishRoughnessShiftLocation_ = program_.uniformLocation("finish_roughness_shift");
+    finishMetalMaskModeLocation_ = program_.uniformLocation("finish_metal_mask_mode");
+    finishGlossRangeLocation_ = program_.uniformLocation("finish_gloss_range");
+    finishAlternateColorLocation_ = program_.uniformLocation("finish_alternate_color");
+    finishSpecularReflectanceLocation_ = program_.uniformLocation("finish_specular_reflectance");
+    finishReflectanceFromNormalAlphaLocation_ = program_.uniformLocation("finish_reflectance_from_normal_alpha");
+    finishUvChannelsLocation_ = program_.uniformLocation("finish_uv_channels");
+    finishPatternUvLocation_ = program_.uniformLocation("finish_pattern_uv");
+    finishNormalUvLocation_ = program_.uniformLocation("finish_normal_uv");
+    finishSurfaceUvLocation_ = program_.uniformLocation("finish_surface_uv");
     finishAnisotropyLocation_ = program_.uniformLocation("finish_anisotropy");
     finishNormalIntensityLocation_ = program_.uniformLocation("finish_normal_intensity");
     weaveMaskLocation_ = program_.uniformLocation("weave_mask");
@@ -1266,7 +1326,6 @@ void CarModelRenderer::initialize() {
     nativeWeaveModeLocation_ = program_.uniformLocation("native_weave_mode");
     weaveColorTintALocation_ = program_.uniformLocation("weave_color_tint_a");
     weaveColorTintBLocation_ = program_.uniformLocation("weave_color_tint_b");
-    finishUvRotationLocation_ = program_.uniformLocation("finish_uv_rotation");
     finishFlakeLocation_ = program_.uniformLocation("finish_flake");
     clearCoatRoughnessLocation_ = program_.uniformLocation("clear_coat_roughness");
     clearCoatIntensityLocation_ = program_.uniformLocation("clear_coat_intensity");
@@ -1541,9 +1600,10 @@ QString paintMaterialToken(QString value) {
 }
 
 bool isWheelPaintMesh(const fls::CarMesh &mesh) {
-    QString path = mesh.sourceModelPath;
-    path.replace(QLatin1Char('\\'), QLatin1Char('/'));
-    if (!path.contains(QStringLiteral("/wheels/"), Qt::CaseInsensitive)) {
+    if (isWheelPaintBinding(mesh.paintMaterialHash)) {
+        return true;
+    }
+    if (!isWheelModelMesh(mesh)) {
         return false;
     }
     const QString material = paintMaterialToken(mesh.materialName);
@@ -1615,7 +1675,8 @@ std::vector<quint64> paintMaterialHashes(const fls::CarMesh &mesh, bool cockpitO
     if (cockpitOnly || usesLegacyMetalBlend(mesh) || isBrakeRotorMesh(mesh) || usesManufacturerLivery(mesh)) {
         return {};
     }
-    const quint64 semanticHash = fallbackPaintHash(mesh);
+    using namespace fls::material_hashes::binding;
+    using fls::material_hashes::contains;
     std::vector<quint64> hashes;
     const auto append = [&hashes](quint64 hash) {
         if (hash != 0 && std::find(hashes.cbegin(), hashes.cend(), hash) == hashes.cend()) {
@@ -1623,32 +1684,31 @@ std::vector<quint64> paintMaterialHashes(const fls::CarMesh &mesh, bool cockpitO
         }
     };
     if (!isWheelPaintMesh(mesh)) {
-        if (mesh.paintMaterialHash != fls::material_hashes::binding::kBodyPaint
-            && fls::material_hashes::contains(fls::material_hashes::binding::kLiveryMaterials, mesh.paintMaterialHash)) {
+        const quint64 semanticHash = fallbackPaintHash(mesh);
+        if (isWheelModelMesh(mesh) && (contains(kDefaultCarPaintGroups, mesh.paintMaterialHash)
+            || contains(kDefaultCarPaintGroups, semanticHash))) {
+            return {};
+        }
+        if (mesh.paintMaterialHash != kBodyPaint && contains(kLiveryMaterials, mesh.paintMaterialHash)) {
             append(mesh.paintMaterialHash);
         }
         append(semanticHash != 0 ? semanticHash : mesh.paintMaterialHash);
         return hashes;
     }
 
-    using namespace fls::material_hashes::binding;
-    const auto &axleHashes = isFrontWheelPaintMesh(mesh)
-        ? kFrontWheelPaint
-        : kRearWheelPaint;
-    if (fls::material_hashes::contains(kFrontWheelPaint, mesh.paintMaterialHash)
-        || fls::material_hashes::contains(kRearWheelPaint, mesh.paintMaterialHash)
-        || (mesh.paintMaterialHash != kRims && fls::material_hashes::contains(kWheelPaintGroups, mesh.paintMaterialHash))) {
+    if (mesh.paintMaterialHash != kRims && isWheelPaintBinding(mesh.paintMaterialHash)) {
         append(mesh.paintMaterialHash);
     }
-    append(axleHashes.front());
     const QString material = paintMaterialToken(mesh.materialName);
+    if (material == QStringLiteral("rim") && hashes.empty()) {
+        append(isFrontWheelPaintMesh(mesh) ? kFrontWheelPaint.front() : kRearWheelPaint.front());
+    }
     if (material == QStringLiteral("rim2")) append(kRims2);
     if (material == QStringLiteral("rim3")) append(kRims3);
     if (material == QStringLiteral("inner_rim")) append(kRimsInner);
     if (material == QStringLiteral("lip")) append(kRimsLip);
     if (material == QStringLiteral("detail")) append(kWheel1);
     if (material == QStringLiteral("detail2")) append(kWheel2);
-    append(semanticHash != 0 ? semanticHash : mesh.paintMaterialHash);
     append(kRims);
     return hashes;
 }
@@ -1666,6 +1726,8 @@ std::optional<fls::LiveryPaintMaterial> resolvePaint(
     const fls::LiveryPaintMaterial *fallback = nullptr;
     const fls::LiveryPaintMaterial *colorSource = nullptr;
     const fls::LiveryPaintMaterial *finishSource = nullptr;
+    const bool wheelPaint = !hashes.empty() && isWheelPaintBinding(hashes.front());
+
     for (quint64 hash : hashes) {
         const fls::LiveryPaintMaterial *paint = paintState->find(hash);
         if (paint == nullptr) {
@@ -1674,7 +1736,11 @@ std::optional<fls::LiveryPaintMaterial> resolvePaint(
         if (fallback == nullptr) {
             fallback = paint;
         }
-        if (colorSource == nullptr && hasSelectedPaint(*paint)) {
+        const bool hasColor = hasSelectedPaint(*paint);
+        if (wheelPaint && (hasColor || paint->finish != 0)) {
+            return *paint;
+        }
+        if (colorSource == nullptr && hasColor) {
             colorSource = paint;
         }
         if (finishSource == nullptr && paint->finish != 0) {
@@ -3159,15 +3225,11 @@ void CarModelRenderer::uploadModel(const fls::CarModel &model, int lodIndex,
             ? materialData->surfaceUv.value_or(materialMapping) : materialMapping;
         const MeshTextureCoordinates surfaceUv(mesh, legacySurface && materialData->glossTexture
             ? legacySurface->glossUv : surfaceMapping);
-        const int finishUvChannel = mesh.uvChannels.size() > 1 && mesh.uvChannels[1].size() == mesh.positions.size() ? 1 : 0;
-        const auto *finishUv = mesh.uvChannels.size() > static_cast<size_t>(finishUvChannel)
-            && mesh.uvChannels[finishUvChannel].size() == mesh.positions.size() ? &mesh.uvChannels[finishUvChannel] : nullptr;
-        const auto &finishUvTransform = mesh.texCoordTransforms[finishUvChannel];
-        const auto tangentsFor = [&](int channel) -> const std::vector<fls::ModelVec4> * {
-            return mesh.tangentChannels.size() > static_cast<size_t>(channel)
-                && mesh.tangentChannels[channel].size() == mesh.positions.size() ? &mesh.tangentChannels[channel] : nullptr;
-        };
-        const auto *finishTangents = tangentsFor(finishUvChannel);
+        const fls::MaterialUvMapping secondChannel{.channel = 1};
+        const MeshTextureCoordinates finishFirstUv(mesh, firstChannel);
+        const MeshTextureCoordinates finishSecondUv(mesh, secondChannel);
+        const auto *finishTangents = mesh.tangentChannels.size() > 1
+            && mesh.tangentChannels[1].size() == mesh.positions.size() ? &mesh.tangentChannels[1] : nullptr;
 
         std::vector<float> interleaved;
         interleaved.reserve(mesh.positions.size() * kMaterialVertexComponents);
@@ -3188,13 +3250,8 @@ void CarModelRenderer::uploadModel(const fls::CarModel &model, int lodIndex,
                 interleaved.push_back(0.0f);
             }
             materialUv.append(interleaved, i);
-            if (finishUv != nullptr) {
-                interleaved.push_back((*finishUv)[i].u * finishUvTransform.scaleU + finishUvTransform.offsetU);
-                interleaved.push_back((1.0f - (*finishUv)[i].v) * finishUvTransform.scaleV + finishUvTransform.offsetV);
-            } else {
-                interleaved.push_back(0.0f);
-                interleaved.push_back(0.0f);
-            }
+            finishFirstUv.append(interleaved, i);
+            finishSecondUv.append(interleaved, i);
             const auto tangent = finishTangents != nullptr ? (*finishTangents)[i] : fls::ModelVec4{};
             interleaved.insert(interleaved.end(), {tangent.x, tangent.y, tangent.z, tangent.w});
             normalUv.append(interleaved, i);
@@ -3214,6 +3271,8 @@ void CarModelRenderer::uploadModel(const fls::CarModel &model, int lodIndex,
         buffers->partOptionIds = mesh.partOptionIds;
         buffers->indexCount = static_cast<int>(mesh.indices.size());
         buffers->hasDirectLiveryUv = directLiveryUv;
+        buffers->finishUvChannels = (finishFirstUv.valid() ? 1 << firstChannel.channel : 0)
+            | (finishSecondUv.valid() ? 1 << secondChannel.channel : 0);
         buffers->bodyPaint = isBodyPaintMesh(mesh)
             && !cockpitOnly && !brakeRotor;
         buffers->windowGlass = windowGlass;
@@ -3631,9 +3690,11 @@ void applyPaintFinish(const fls::LiveryPaintMaterial &paint, const fls::PaintFin
         primary = primary * (1.0f - tint) + secondary * tint;
         secondaryMix = std::clamp(finish->flakeAmount * kFlakeSecondaryMix, 0.0f, kFlakeSecondaryMixMax);
     }
-    if (finish->hasMaterialColor && finish->selfColored) {
-        primary = QVector3D(finish->materialColor[0], finish->materialColor[1], finish->materialColor[2]);
-        secondary = primary;
+    if (finish->hasMaterialColor && (finish->selfColored || finish->category == fls::PaintFinishCategory::Metal)) {
+        const QVector3D color = displayColor(finish->materialColor);
+        const bool tintMetal = !finish->selfColored && paint.primary.enabled;
+        primary = tintMetal ? primary * color : color;
+        secondary = tintMetal && paint.secondary.enabled ? secondary * color : primary;
     }
 }
 
@@ -3740,7 +3801,9 @@ void CarModelRenderer::render(
     // triangle winding, so front faces are clockwise on screen.
     functions->glFrontFace(GL_CW);
 
-    if (paintFinishes != nullptr
+    if (paintFinishes == nullptr && paintFinishTracked_) {
+        clearPaintFinishTextures();
+    } else if (paintFinishes != nullptr
         && (!paintFinishTracked_ || paintFinishes->generation() != paintFinishGeneration_)) {
         clearPaintFinishTextures();
         paintFinishGeneration_ = paintFinishes->generation();
@@ -3784,6 +3847,8 @@ void CarModelRenderer::render(
     const bool positionalPaint = paintState != nullptr
         && (!paintState->positionalSource.isEmpty()
             || (!paintState->game.isEmpty() && paintState->game != QStringLiteral("FH6")));
+    const QString referenceGame = QStringLiteral("FH6");
+    const QString paintGame = paintState != nullptr && !paintState->game.isEmpty() ? paintState->game : referenceGame;
     bool liveryCustomPainted = false;
     QVector3D liveryPrimaryColor = fallbackColor;
     struct PaintedPanel {
@@ -3874,13 +3939,14 @@ void CarModelRenderer::render(
                 && (positionalPaint || !paint->primary.enabled)
             ? manufacturerColors->find(paint->manufacturerSelector)
             : nullptr;
+        const bool hasSelectedFinish = paint != nullptr && paint->finish != 0;
         const int effectiveFinishCode = mesh.windowGlass
             || (positionalPaint && paint != nullptr && paint->manufacturerSelector != 0xffffffffu) ? 0
-            : paint != nullptr && paint->finish != 0
+            : hasSelectedFinish
                 ? static_cast<int>(paint->finish)
                 : !mesh.paintMaterialHashes.empty() && !mesh.authoredPaintSurface ? 1 : 0;
-        const int previewFinishCode = effectiveFinishCode != 0 && positionalPaint
-            ? fls::matchingPaintFinish(effectiveFinishCode, paintState->game, QStringLiteral("FH6"))
+        const int previewFinishCode = effectiveFinishCode > 0 && hasSelectedFinish && paintFinishes != nullptr
+            ? paintFinishes->previewCode(effectiveFinishCode, paintGame)
             : effectiveFinishCode;
         const fls::PaintFinishRender *finish = previewFinishCode > 0
             && paintFinishes != nullptr
@@ -3919,7 +3985,9 @@ void CarModelRenderer::render(
         if (effectiveFinishCode != 0) {
             fls::LiveryPaintMaterial effectivePaint = paint != nullptr
                 ? *paint : fls::LiveryPaintMaterial{};
-            effectivePaint.finish = static_cast<quint32>(previewFinishCode > 0 ? previewFinishCode : effectiveFinishCode);
+            const int fallbackCode = finish == nullptr && hasSelectedFinish && paintGame != referenceGame
+                ? fls::matchingPaintFinish(effectiveFinishCode, paintGame, referenceGame) : effectiveFinishCode;
+            effectivePaint.finish = previewFinishCode < 0 ? 0 : static_cast<quint32>(std::max(fallbackCode, 0));
             applyPaintFinish(
                 effectivePaint, finish, primary, secondary, secondaryMix, gloss, metallic);
         }
@@ -3997,8 +4065,9 @@ void CarModelRenderer::render(
         program_.setUniformValue(glassTintTextureLocation_, kGlassTintUnit);
         program_.setUniformValue(glassTintModeLocation_, mesh.glassTintMode);
         program_.setUniformValue(glassTintMultiplierLocation_, mesh.glassTintMultiplier);
+        functions->glActiveTexture(GL_TEXTURE7);
         const FinishTextureEntry *finishTextures =
-            (finish != nullptr && finish->valid) ? ensurePaintFinishTextures(effectiveFinishCode, *finish)
+            (finish != nullptr && finish->valid) ? ensurePaintFinishTextures(previewFinishCode, *finish)
                                                  : nullptr;
         bindMaterialTexture(7, finishTextures != nullptr ? finishTextures->pattern : 0,
                             finishPatternLocation_, hasFinishPatternLocation_);
@@ -4020,16 +4089,42 @@ void CarModelRenderer::render(
             : finish != nullptr ? displayColor(finish->weaveColorTintA) : QVector3D());
         program_.setUniformValue(weaveColorTintBLocation_, nativeWeaveMode != 0 ? mesh.weaveTintB
             : finish != nullptr ? displayColor(finish->weaveColorTintB) : QVector3D());
-        program_.setUniformValue(finishUvRotationLocation_, finish != nullptr ? qDegreesToRadians(finish->uvOrientationDegrees) : 0.0f);
         program_.setUniformValue(finishSelfColoredLocation_,
                                  (finish != nullptr && finish->selfColored) ? 1 : 0);
-        QVector2D finishTiling = finish != nullptr
-            ? QVector2D(finish->tiling[0], finish->tiling[1]) : QVector2D(1.0f, 1.0f);
-        if (finish != nullptr && finish->hasWeaveMask()) {
-            finishTiling *= kWeavePreviewTilingScale;
+        program_.setUniformValue(finishPatternAmountLocation_, finish != nullptr
+            ? QVector2D(finish->patternCoverage, finish->patternIntensity) : QVector2D(1.0f, 1.0f));
+        program_.setUniformValue(finishRoughnessShiftLocation_, finish != nullptr ? finish->roughnessShift : 0.0f);
+        const auto *mask = finish != nullptr && finish->metalMask ? &*finish->metalMask : nullptr;
+        const int maskMode = mask != nullptr ? (mask->variesGloss ? 1 : 0) | (mask->variesReflectance ? 2 : 0) : 0;
+        program_.setUniformValue(finishMetalMaskModeLocation_, maskMode);
+        const auto *specular = finish != nullptr && finish->specularReflectance ? &*finish->specularReflectance : nullptr;
+        program_.setUniformValue(finishSpecularReflectanceLocation_,
+            specular != nullptr ? QVector4D((*specular)[0], (*specular)[1], (*specular)[2], 1.0f) : QVector4D());
+        program_.setUniformValue(finishReflectanceFromNormalAlphaLocation_,
+            finish != nullptr && finish->reflectanceFromNormalAlpha ? 1 : 0);
+        if (mask != nullptr) {
+            QVector3D alternateColor = displayColor(mask->alternateColor);
+            if (!finish->selfColored && paint != nullptr && paint->primary.enabled) {
+                alternateColor *= decodedColor(paint->primary);
+            }
+            program_.setUniformValue(finishGlossRangeLocation_, QVector2D(mask->glossRange[0], mask->glossRange[1]));
+            program_.setUniformValue(finishAlternateColorLocation_, alternateColor);
         }
-        program_.setUniformValue(finishTilingLocation_, finishTiling);
-        program_.setUniformValue(finishOwnUvLocation_, finish != nullptr && finish->uvChannel >= 0 ? 1 : 0);
+        if (finish != nullptr) {
+            const auto bindFinishUv = [&](int location, const fls::PaintFinishUvMapping &mapping) {
+                program_.setUniformValue(location, QVector4D(mapping.tiling[0], mapping.tiling[1],
+                    qDegreesToRadians(mapping.rotationDegrees), mapping.rotationPivot));
+
+                return mapping.channel >= 0 && (mesh.finishUvChannels & (1 << mapping.channel)) != 0
+                    ? mapping.channel : -1;
+            };
+            const int patternChannel = bindFinishUv(finishPatternUvLocation_, finish->patternUv);
+            const int normalChannel = bindFinishUv(finishNormalUvLocation_, finish->normalUv);
+            const int surfaceChannel = bindFinishUv(finishSurfaceUvLocation_, finish->surfaceUv);
+            functions->glUniform3i(finishUvChannelsLocation_, patternChannel, normalChannel, surfaceChannel);
+        } else {
+            functions->glUniform3i(finishUvChannelsLocation_, -1, -1, -1);
+        }
         program_.setUniformValue(finishAnisotropyLocation_, finish != nullptr ? finish->anisotropy : 0.0f);
         program_.setUniformValue(finishNormalIntensityLocation_, finish != nullptr ? finish->normalIntensity : 1.0f);
         program_.setUniformValue(
@@ -4119,6 +4214,8 @@ void CarModelRenderer::render(
         program_.setUniformValue(hasFinishPatternLocation_, 0);
         program_.setUniformValue(hasFinishNormalLocation_, 0);
         program_.setUniformValue(hasFinishSurfaceLocation_, 0);
+        program_.setUniformValue(finishMetalMaskModeLocation_, 0);
+        functions->glUniform3i(finishUvChannelsLocation_, -1, -1, -1);
         for (const auto &mesh : wireframeMeshes_) {
             if (!partVisible(mesh->carPartType, mesh->stockPart, mesh->partOptionIds)) {
                 continue;

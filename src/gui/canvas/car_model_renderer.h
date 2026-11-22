@@ -79,6 +79,7 @@ private:
         int indexCount = 0;
         bool applyLivery = false;
         bool hasDirectLiveryUv = false;
+        int finishUvChannels = 0;
         bool bodyPaint = false;
         bool windowGlass = false;
         int allowedSides = 0;
@@ -263,8 +264,17 @@ private:
     int hasFinishNormalLocation_ = -1;
     int hasFinishSurfaceLocation_ = -1;
     int finishSelfColoredLocation_ = -1;
-    int finishTilingLocation_ = -1;
-    int finishOwnUvLocation_ = -1;
+    int finishPatternAmountLocation_ = -1;
+    int finishRoughnessShiftLocation_ = -1;
+    int finishMetalMaskModeLocation_ = -1;
+    int finishGlossRangeLocation_ = -1;
+    int finishAlternateColorLocation_ = -1;
+    int finishSpecularReflectanceLocation_ = -1;
+    int finishReflectanceFromNormalAlphaLocation_ = -1;
+    int finishUvChannelsLocation_ = -1;
+    int finishPatternUvLocation_ = -1;
+    int finishNormalUvLocation_ = -1;
+    int finishSurfaceUvLocation_ = -1;
     int finishAnisotropyLocation_ = -1;
     int finishNormalIntensityLocation_ = -1;
     int weaveMaskLocation_ = -1;
@@ -272,7 +282,6 @@ private:
     int nativeWeaveModeLocation_ = -1;
     int weaveColorTintALocation_ = -1;
     int weaveColorTintBLocation_ = -1;
-    int finishUvRotationLocation_ = -1;
     int finishFlakeLocation_ = -1;
     int clearCoatRoughnessLocation_ = -1;
     int clearCoatIntensityLocation_ = -1;

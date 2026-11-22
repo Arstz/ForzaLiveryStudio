@@ -157,7 +157,8 @@ QString gameMediaDir(const QString &gameFolder) {
         return QString();
     }
     const QDir root(gameFolder);
-    if (root.exists(QStringLiteral("Cars")) || root.exists(QStringLiteral("pcfamily/Cars"))) {
+    if (QFileInfo(gameAssetFilePath(root, QStringLiteral("Cars"))).isDir()
+        || QFileInfo(gameAssetFilePath(root, QStringLiteral("pcfamily/Cars"))).isDir()) {
         return root.absolutePath();
     }
     if (root.exists(QStringLiteral("media"))) {

@@ -381,7 +381,6 @@ void MainWindow::setupDocks() {
 
     carPreview_ = new CarPreviewWidget(this);
     carPreview_->setLoadCarTextures(behaviorSettings.loadCarTextures);
-    carPreview_->setGameFolder(behaviorSettings.gameFolders.value(QStringLiteral("FH6")));
     carPreview_->setEditorState(state_);
     carPreview_->setProject(project());
     connect(carPreview_, &CarPreviewWidget::unwrapOverlayChanged,
@@ -1073,7 +1072,6 @@ void MainWindow::applyBehaviorSettings(const BehaviorSettings &settings, bool sa
     if (carPreview_ != nullptr) {
         carPreview_->setLiveryTextureScale(settings.liveryTextureScale);
         carPreview_->setLoadCarTextures(settings.loadCarTextures);
-        carPreview_->setGameFolder(settings.gameFolders.value(QStringLiteral("FH6")));
     }
     applyToolbarStyle(settings.verticalToolbar);
     configureAutosaveTimer(settings);

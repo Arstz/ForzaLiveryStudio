@@ -68,7 +68,6 @@ public:
     int liveryTextureScale() const;
     void setLiveryTextureScale(int scale);
     void setLoadCarTextures(bool enabled);
-    void setGameFolder(const QString &folder);
     void cycleLod();
     void cycleDebugMode();
 
@@ -169,8 +168,6 @@ private:
     CarModelRenderer wheelRenderer_;
     std::shared_ptr<WheelPreviewState> wheelPreview_;
     fls::PaintFinishLibrary paintFinishes_;
-    QString gameFolder_;
-    quint64 paintFinishLoadGeneration_ = 0;
     bool geometryLoaded_ = false;
 
     fls::Project *project_ = nullptr;

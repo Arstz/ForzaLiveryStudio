@@ -41,24 +41,6 @@ QJsonObject loadPaintDatabase() {
     throw std::runtime_error("paint_colors.json was not found");
 }
 
-QString finishMaterial(const QJsonObject &finish) {
-    const QString suffix = QStringLiteral(".materialbin");
-    QString path = finish.value(QStringLiteral("Material")).toString();
-    if (path.isEmpty()) {
-        path = finish.value(QStringLiteral("MaterialPath")).toString();
-    }
-    path.replace(QLatin1Char('\\'), QLatin1Char('/'));
-    QString material = path.mid(path.lastIndexOf(QLatin1Char('/')) + 1).toLower();
-    if (material.endsWith(suffix)) {
-        material.chop(suffix.size());
-    }
-    if (material == QStringLiteral("metalflakelarge")) {
-        material = QStringLiteral("metallicpaint");
-    }
-
-    return material;
-}
-
 const QJsonObject &paintDatabase() {
     static const QJsonObject games = loadPaintDatabase();
 
@@ -74,7 +56,10 @@ const QHash<QString, FinishIndex> &finishIndices() {
             const QJsonArray finishes = game.value().toObject().value(QStringLiteral("finishes")).toArray();
             for (const QJsonValue &value : finishes) {
                 const QJsonObject finish = value.toObject();
-                const QString material = finishMaterial(finish);
+                QString material = paintFinishMaterialName(finish);
+                if (material == QStringLiteral("metalflakelarge")) {
+                    material = QStringLiteral("metallicpaint");
+                }
                 const int code = finish.value(QStringLiteral("ID")).toInt();
                 index.materials.insert(static_cast<quint32>(code), material);
                 index.codes.insert(material, code);
@@ -92,6 +77,21 @@ const QHash<QString, FinishIndex> &finishIndices() {
 
 QJsonObject gamePaintDatabase(const QString &game) {
     return paintDatabase().value(game.isEmpty() ? QStringLiteral("FH6") : game).toObject();
+}
+
+QString paintFinishMaterialName(const QJsonObject &finish) {
+    const QString suffix = QStringLiteral(".materialbin");
+    QString path = finish.value(QStringLiteral("Material")).toString();
+    if (path.isEmpty()) {
+        path = finish.value(QStringLiteral("MaterialPath")).toString();
+    }
+    path.replace(QLatin1Char('\\'), QLatin1Char('/'));
+    QString material = path.mid(path.lastIndexOf(QLatin1Char('/')) + 1).toLower();
+    if (material.endsWith(suffix)) {
+        material.chop(suffix.size());
+    }
+
+    return material;
 }
 
 int matchingPaintFinish(quint32 code, const QString &sourceGame, const QString &targetGame) {

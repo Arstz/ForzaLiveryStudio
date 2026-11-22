@@ -166,7 +166,6 @@ void MainWindow::maybeAutoLoadCarForProject(bool replaceLoadedModel, bool offerG
                 if (!picked.isEmpty()) {
                     settings.gameFolders.insert(game, picked);
                     saveBehaviorSettings(settings);
-                    carPreview_->setGameFolder(settings.gameFolders.value(QStringLiteral("FH6")));
                     sources = registry.findModels(carId, settings.gameFolders, preferredGame);
                 }
             }

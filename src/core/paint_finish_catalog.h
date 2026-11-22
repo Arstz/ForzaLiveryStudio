@@ -7,6 +7,7 @@
 #include <QVector>
 
 #include <array>
+#include <optional>
 
 namespace fls {
 
@@ -30,6 +31,20 @@ struct PaintFinishInfo {
 const QVector<PaintFinishInfo> &paintFinishTable();
 const PaintFinishInfo *findPaintFinish(int code);
 
+struct PaintFinishUvMapping {
+    std::array<float, 2> tiling = {1.0f, 1.0f};
+    int channel = -1;
+    float rotationDegrees = 0.0f;
+    float rotationPivot = 0.0f;
+};
+
+struct PaintFinishMetalMask {
+    std::array<float, 2> glossRange = {0.0f, 1.0f};
+    std::array<float, 3> alternateColor = {};
+    bool variesGloss = false;
+    bool variesReflectance = false;
+};
+
 // Render parameters resolved from a finish's decoded .materialbin.
 struct PaintFinishRender {
     bool valid = false;
@@ -37,11 +52,15 @@ struct PaintFinishRender {
     bool usesSecondary = false;
     bool selfColored = false;
     bool hasMaterialColor = false;
+    bool reflectanceFromNormalAlpha = false;
     float gloss = 0.45f;
     float metallic = 0.0f;
     float flakeAmount = 0.0f;
     float anisotropy = 0.0f;
     float normalIntensity = 1.0f;
+    float roughnessShift = 0.0f;
+    float patternCoverage = 1.0f;
+    float patternIntensity = 1.0f;
     float clearCoatCoverage = -1.0f;
     float clearCoatRoughness = 0.0f;
     std::array<float, 3> materialColor = {0.5f, 0.5f, 0.5f};
@@ -55,9 +74,11 @@ struct PaintFinishRender {
     std::vector<SwatchImage> weaveMaskMips;
     std::array<float, 3> weaveColorTintA = {};
     std::array<float, 3> weaveColorTintB = {};
-    std::array<float, 2> tiling = {1.0f, 1.0f};
-    float uvOrientationDegrees = 0.0f;
-    int uvChannel = -1;
+    PaintFinishUvMapping patternUv;
+    PaintFinishUvMapping normalUv;
+    PaintFinishUvMapping surfaceUv;
+    std::optional<PaintFinishMetalMask> metalMask;
+    std::optional<std::array<float, 3>> specularReflectance;
 
     bool hasPattern() const { return patternImage.valid(); }
     bool hasDetailNormal() const { return detailNormalImage.valid(); }
@@ -70,17 +91,20 @@ struct PaintFinishRender {
 // paint materials archive; a loose folder of .materialbin files is also accepted.
 class PaintFinishLibrary {
 public:
-    void load(const QString &gameFolder);
+    void load(const QString &gameFolder, const QString &game = {});
     void clear();
     void replace(PaintFinishLibrary library);
     bool loaded() const { return loaded_; }
     QString folder() const { return folder_; }
+    QString game() const { return game_; }
     // Bumped on every load/clear so cached GPU uploads can detect a reload.
     unsigned generation() const { return generation_; }
+    int previewCode(quint32 code, const QString &paintGame) const;
     const PaintFinishRender *find(int code) const;
 
 private:
     QString folder_;
+    QString game_;
     bool loaded_ = false;
     unsigned generation_ = 0;
     QHash<int, PaintFinishRender> byCode_;

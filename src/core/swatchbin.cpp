@@ -318,7 +318,6 @@ struct Bc7Decoder {
     Microsoft::WRL::ComPtr<ID3D11DeviceContext> context;
     Microsoft::WRL::ComPtr<ID3D11VertexShader> vs;
     Microsoft::WRL::ComPtr<ID3D11PixelShader> ps;
-    Microsoft::WRL::ComPtr<ID3D11SamplerState> sampler;
 
     bool initialize(QString *error) {
         using Microsoft::WRL::ComPtr;
@@ -346,24 +345,15 @@ struct Bc7Decoder {
         }
 
         static constexpr char kVs[] = R"(
-    struct VSOut {
-        float4 pos : SV_POSITION;
-        float2 uv : TEXCOORD0;
-    };
-    VSOut main(uint id : SV_VertexID) {
+    float4 main(uint id : SV_VertexID) : SV_POSITION {
         float2 pos[3] = { float2(-1.0, -1.0), float2(-1.0, 3.0), float2(3.0, -1.0) };
-        float2 uv[3] = { float2(0.0, 1.0), float2(0.0, -1.0), float2(2.0, 1.0) };
-        VSOut o;
-        o.pos = float4(pos[id], 0.0, 1.0);
-        o.uv = uv[id];
-        return o;
+        return float4(pos[id], 0.0, 1.0);
     }
     )";
         static constexpr char kPs[] = R"(
     Texture2D tex0 : register(t0);
-    SamplerState samp0 : register(s0);
-    float4 main(float4 pos : SV_POSITION, float2 uv : TEXCOORD0) : SV_Target {
-        return tex0.SampleLevel(samp0, uv, 0.0);
+    float4 main(float4 pos : SV_POSITION) : SV_Target {
+        return tex0.Load(int3(int2(pos.xy), 0));
     }
     )";
 
@@ -394,25 +384,14 @@ struct Bc7Decoder {
             return false;
         }
 
-        D3D11_SAMPLER_DESC samplerDesc{};
-        samplerDesc.Filter = D3D11_FILTER_MIN_MAG_MIP_POINT;
-        samplerDesc.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP;
-        samplerDesc.AddressV = D3D11_TEXTURE_ADDRESS_CLAMP;
-        samplerDesc.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
-        samplerDesc.MaxLOD = D3D11_FLOAT32_MAX;
-        hr = device->CreateSamplerState(&samplerDesc, &sampler);
-        if (FAILED(hr)) {
-            setError(error, hresultString("CreateSamplerState", hr));
-            return false;
-        }
-
         return true;
     }
 };
 
 SwatchImage decodeBc7Surface(const QByteArray &data, int width, int height, QString *error) {
-    const int blocksWide = (width + 3) / 4;
-    const int blocksHigh = (height + 3) / 4;
+    constexpr int kBlockExtent = 4;
+    const int blocksWide = (width - 1) / kBlockExtent + 1;
+    const int blocksHigh = (height - 1) / kBlockExtent + 1;
     const qint64 needed = static_cast<qint64>(blocksWide) * blocksHigh * 16;
     if (data.size() < needed) {
         setError(error, QStringLiteral("swatchbin BC7 data truncated"));
@@ -434,12 +413,11 @@ SwatchImage decodeBc7Surface(const QByteArray &data, int width, int height, QStr
     const auto &context = decoder->context;
     const auto &vs = decoder->vs;
     const auto &ps = decoder->ps;
-    const auto &sampler = decoder->sampler;
     HRESULT hr = S_OK;
 
     D3D11_TEXTURE2D_DESC srcDesc{};
-    srcDesc.Width = static_cast<UINT>(width);
-    srcDesc.Height = static_cast<UINT>(height);
+    srcDesc.Width = static_cast<UINT>(blocksWide) * kBlockExtent;
+    srcDesc.Height = static_cast<UINT>(blocksHigh) * kBlockExtent;
     srcDesc.MipLevels = 1;
     srcDesc.ArraySize = 1;
     srcDesc.Format = DXGI_FORMAT_BC7_UNORM;
@@ -501,9 +479,7 @@ SwatchImage decodeBc7Surface(const QByteArray &data, int width, int height, QStr
     context->VSSetShader(vs.Get(), nullptr, 0);
     context->PSSetShader(ps.Get(), nullptr, 0);
     ID3D11ShaderResourceView *srvs[] = {srv.Get()};
-    ID3D11SamplerState *samplers[] = {sampler.Get()};
     context->PSSetShaderResources(0, 1, srvs);
-    context->PSSetSamplers(0, 1, samplers);
     context->Draw(3, 0);
     context->ClearState();
 

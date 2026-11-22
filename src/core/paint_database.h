@@ -7,6 +7,7 @@
 namespace fls {
 
 QJsonObject gamePaintDatabase(const QString &game);
+QString paintFinishMaterialName(const QJsonObject &finish);
 int matchingPaintFinish(quint32 code, const QString &sourceGame, const QString &targetGame);
 quint32 exportedPaintFinish(quint32 code, const QString &sourceGame, const QString &targetGame);
 
