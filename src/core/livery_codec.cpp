@@ -7,6 +7,7 @@
 #include "layer.h"
 #include "matrix_math.h"
 #include "positional_paint.h"
+#include "shape_registry.h"
 #include "vinyl_decoder.h"
 #include "xbox360_vinyl.h"
 
@@ -746,30 +747,13 @@ QByteArray sourceEmptySlot(const SourceLivery *source, int slot) {
     return defaultEmptySlot(slot);
 }
 
-quint16 liveryLogoId(const scene::Shape &logo) {
-    constexpr quint32 kLogoIdMask = 0x7fffu;
-    constexpr quint16 kLogoIdFlag = 0x8000u;
-    if (!logo.raster || logo.rasterId == 0 || logo.rasterId > kLogoIdMask) {
-        throw std::runtime_error("livery logo has an invalid raster identifier");
-    }
-
-    return static_cast<quint16>(kLogoIdFlag | logo.rasterId);
-}
-
 bool appendLiveryArtworkRecord(QByteArray &out, const LiveryEntry &entry, double offsetX,
                                double offsetY, quint8 lead, bool bare,
                                const Matrix3 &worldAdjustment) {
     if (entry.shape == nullptr) {
         throw std::runtime_error("livery artwork entry has no layer");
     }
-    auto shape = detail::vinylShapePlacement(*entry.shape, worldAdjustment);
-    if (entry.kind == LiveryEntry::Logo) {
-        shape.shapeId = liveryLogoId(*entry.shape);
-    } else if (entry.kind != LiveryEntry::Shape) {
-        throw std::runtime_error("livery group reached the artwork encoder");
-    } else if (entry.shape->raster) {
-        throw std::runtime_error("livery logo reached the vector shape encoder");
-    }
+    const auto shape = detail::vinylShapePlacement(*entry.shape, worldAdjustment);
     detail::appendVinylShapeRecord(out, shape, offsetX, offsetY, 0x02,
         bare ? std::nullopt : std::optional<quint8>{lead});
 
@@ -1391,7 +1375,8 @@ QByteArray buildLiveryGyvl(const Project &project,
 }
 
 QByteArray buildLiveryGyvlForSectionCount(const Project &project, int sectionCount,
-                                        std::array<int, kLiverySectionCount> *outSectionCounts) {
+                                        std::array<int, kLiverySectionCount> *outSectionCounts,
+                                        bool keepIncompatibleShapes) {
     if (sectionCount <= 0 || sectionCount > kLiverySectionCount) {
         throw std::runtime_error("invalid livery export section count");
     }
@@ -1422,6 +1407,13 @@ QByteArray buildLiveryGyvlForSectionCount(const Project &project, int sectionCou
             throw std::runtime_error("native export could not reconstruct its artwork sections");
         }
         const QVector<SourceShapeView> actual = sourceSectionShapes(sections[slot]);
+        constexpr quint16 kLogoFlag = 32768;
+        if (keepIncompatibleShapes) {
+            expected.removeIf([](const scene::Shape *shape) {
+                return !shape->isRaster() && (shape->shapeId & kLogoFlag) == 0
+                    && !detail::isKnownShapeId(detail::canonicalShapeId(shape->shapeId));
+            });
+        }
         if (actual.size() != expected.size()) {
             throw std::runtime_error(QStringLiteral(
                 "native export could not retain its artwork count in %1: expected %2, decoded %3")
@@ -1432,8 +1424,11 @@ QByteArray buildLiveryGyvlForSectionCount(const Project &project, int sectionCou
         for (int index = 0; index < actual.size(); ++index) {
             const SourceShapeView &encoded = actual[index];
             const scene::Shape &shape = *expected[index];
-            if (encoded.raster != shape.raster || encoded.rasterId != shape.rasterId
-                || (!shape.raster && encoded.shapeId != shape.shapeId)
+            const quint16 wireId = detail::vinylShapePlacement(shape).shapeId;
+            const bool raster = (wireId & kLogoFlag) != 0;
+            if (encoded.raster != raster
+                || (raster ? encoded.rasterId != (wireId & (kLogoFlag - 1))
+                    : encoded.shapeId != detail::canonicalShapeId(wireId))
                 || encoded.color != shape.color
                 || !matrixClose(detail::multiply(canvas, encoded.worldMatrix), shape.worldMatrix())) {
                 throw std::runtime_error("native export could not retain its artwork transforms or colors");

@@ -3,7 +3,6 @@
 #include "binary_io.h"
 #include "layer.h"
 #include "matrix_math.h"
-#include "shape_registry.h"
 
 #include <algorithm>
 #include <stdexcept>
@@ -14,6 +13,17 @@ namespace {
 constexpr int kPrefixBytes = 29;
 constexpr int kGenerationOffset = 12;
 constexpr int kTransformOffset = 13;
+constexpr quint16 kLogoFlag = 32768;
+constexpr quint16 kLogoIdMask = kLogoFlag - 1;
+
+quint16 artworkShapeId(const scene::Shape &shape) {
+    if (!shape.isRaster()) return shape.shapeId;
+    if (shape.rasterId == 0 || shape.rasterId > kLogoIdMask) {
+        throw std::runtime_error("logo has an invalid raster identifier");
+    }
+
+    return static_cast<quint16>(kLogoFlag | shape.rasterId);
+}
 
 } // namespace
 
@@ -24,7 +34,7 @@ VinylShapePlacement vinylShapePlacement(
     const scene::Transform2D world = decomposeTransform2D(worldMatrix);
     VinylShapePlacement out;
     out.color = shape.color;
-    out.shapeId = shape.shapeId;
+    out.shapeId = artworkShapeId(shape);
     out.mask = shape.mask;
     out.rotation = world.rotation;
     out.x = world.x;
@@ -62,9 +72,8 @@ QVector<QPointF> vinylShapeCorners(const VinylShapePlacement &shape, const QPoin
 void appendVinylShapeRecord(QByteArray &out, const VinylShapePlacement &shape,
                             double offsetX, double offsetY, quint8 shapeMarker,
                             std::optional<quint8> state) {
-    if (isXbox360ExclusiveShapeId(shape.shapeId)) {
-        throw std::runtime_error(QStringLiteral("Xbox 360 shape %1 is unavailable in this export format.")
-            .arg(xbox360ExclusiveShapeModelName(shape.shapeId)).toStdString());
+    if (shape.shapeId == 0) {
+        throw std::runtime_error("an artwork layer has an invalid vinyl ID");
     }
     if (state) {
         out.append(static_cast<char>(*state));

@@ -17,6 +17,8 @@
 #include <QPushButton>
 #include <QSettings>
 #include <QSignalBlocker>
+#include <QStyle>
+#include <QStyleOptionComboBox>
 #include <QVariant>
 #include <QVBoxLayout>
 
@@ -47,8 +49,10 @@ constexpr int kDialogWidth = 640;
 constexpr int kDialogHeight = 400;
 constexpr int kLayoutMargin = kUiMargin;
 constexpr int kLayoutSpacing = kUiSpacing;
+constexpr int kComboLabelInset = 2;
 constexpr char kGeometrySettingsKey[] = "export/dialogGeometry";
 constexpr char kDescriptorSettingsKey[] = "export/wgsDescriptor";
+const QString kDiscardChoiceText = QStringLiteral("Discard");
 
 struct ExportContainerOption {
     ExportContainerFormat format;
@@ -62,13 +66,41 @@ constexpr ExportContainerOption kContainerOptions[] = {
     {ExportContainerFormat::Xbox360SignedFile, "Xbox 360 encrypted file"},
 };
 
+void sizeWarningChoice(QComboBox &choice) {
+    QStyleOptionComboBox option;
+
+    choice.ensurePolished();
+    option.initFrom(&choice);
+    const QRect labelRect = choice.style()->subControlRect(
+        QStyle::CC_ComboBox, &option, QStyle::SC_ComboBoxEditField, &choice);
+    const int horizontalInsets = option.rect.width() - labelRect.width();
+    const int labelWidth = choice.fontMetrics().horizontalAdvance(kDiscardChoiceText);
+    choice.setFixedWidth(labelWidth + kComboLabelInset + horizontalInsets);
+}
+
+struct ExportWarningRow {
+    QWidget *row = nullptr;
+    QLabel *label = nullptr;
+    QComboBox *choice = nullptr;
+
+    bool keepsWarning() const {
+        return !row->isHidden() && choice->currentData().toBool();
+    }
+
+    void update(const QString &text, bool visible) const {
+        label->setText(text);
+        choice->setAccessibleName(text);
+        label->setVisible(visible);
+        row->setVisible(visible);
+    }
+};
+
 class ExportAssetDialog final : public QDialog {
 public:
     ExportAssetDialog(QWidget *parent, const QString &startDirectory,
-                      const QString &projectName, bool livery, int carId, quint64 maskedLayerCount,
-                      const std::function<quint64(ExportGameVersion)> &incompatibleLayerCount)
-        : QDialog(parent), pgsDirectory_(startDirectory), livery_(livery), carId_(carId),
-          maskedLayerCount_(maskedLayerCount), incompatibleLayerCount_(incompatibleLayerCount) {
+                      const QString &projectName, bool livery, int carId,
+                      const std::function<fls::ExportLayerWarnings(ExportGameVersion)> &layerWarnings)
+        : QDialog(parent), pgsDirectory_(startDirectory), layerWarnings_(layerWarnings), livery_(livery), carId_(carId) {
         setWindowTitle(QStringLiteral("Export"));
         setModal(true);
         resize(kDialogWidth, kDialogHeight);
@@ -164,21 +196,10 @@ public:
         hint_->setWordWrap(true);
         hint_->setTextInteractionFlags(Qt::TextSelectableByMouse);
         layout->addWidget(hint_);
-        maskWarning_ = new QLabel(QStringLiteral("Project contains %1 masked layers, will be discarded")
-            .arg(maskedLayerCount_), this);
-        maskWarning_->setObjectName(QStringLiteral("exportMaskWarning"));
-        maskWarning_->setTextFormat(Qt::PlainText);
-        maskWarning_->setWordWrap(true);
-        maskWarning_->setTextInteractionFlags(Qt::TextSelectableByMouse);
-        setUiState(maskWarning_, QStringLiteral("warning"));
-        layout->addWidget(maskWarning_);
-        shapeWarning_ = new QLabel(this);
-        shapeWarning_->setObjectName(QStringLiteral("exportShapeWarning"));
-        shapeWarning_->setTextFormat(Qt::PlainText);
-        shapeWarning_->setWordWrap(true);
-        shapeWarning_->setTextInteractionFlags(Qt::TextSelectableByMouse);
-        setUiState(shapeWarning_, QStringLiteral("warning"));
-        layout->addWidget(shapeWarning_);
+        carWarning_ = addWarningRow(layout, QStringLiteral("exportCarWarning"), true);
+        maskWarning_ = addWarningRow(layout, QStringLiteral("exportMaskWarning"));
+        logoWarning_ = addWarningRow(layout, QStringLiteral("exportLogoWarning"));
+        shapeWarning_ = addWarningRow(layout, QStringLiteral("exportShapeWarning"));
         buttons_ = new QDialogButtonBox(QDialogButtonBox::Save | QDialogButtonBox::Cancel, this);
         buttons_->button(QDialogButtonBox::Save)->setText(QStringLiteral("Export"));
         layout->addWidget(buttons_);
@@ -218,11 +239,65 @@ public:
         selected.gameVersion = static_cast<ExportGameVersion>(gameVersion_->currentData().toInt());
         selected.containerFormat = selectedFormat();
         selected.wgsTarget = wgsTarget_;
+        selected.layerChoices = {maskWarning_.keepsWarning(), logoWarning_.keepsWarning(),
+                                 shapeWarning_.keepsWarning()};
 
         return selected;
     }
 
 private:
+    ExportWarningRow addWarningRow(QVBoxLayout *layout, const QString &name, bool keepOnly = false) {
+        ExportWarningRow warning;
+        warning.row = new QWidget(this);
+        auto *rowLayout = new QHBoxLayout(warning.row);
+        rowLayout->setContentsMargins(0, 0, 0, 0);
+        rowLayout->setSpacing(kLayoutSpacing);
+        warning.label = new QLabel(warning.row);
+        warning.label->setObjectName(name);
+        warning.label->setTextFormat(Qt::PlainText);
+        warning.label->setWordWrap(true);
+        setUiState(warning.label, QStringLiteral("warning"));
+        warning.choice = new QComboBox(warning.row);
+        warning.choice->setProperty("uiCompactDropDown", true);
+        warning.choice->setObjectName(name + QStringLiteral("Choice"));
+        if (!keepOnly) {
+            warning.choice->addItem(kDiscardChoiceText, false);
+        }
+        warning.choice->addItem(QStringLiteral("Keep"), true);
+        sizeWarningChoice(*warning.choice);
+        rowLayout->addWidget(warning.label, 1);
+        rowLayout->addWidget(warning.choice);
+        layout->addWidget(warning.row);
+        connect(warning.choice, &QComboBox::currentIndexChanged, this, [this]() { updateExportButtonText(); });
+
+        return warning;
+    }
+
+    void updateWarnings(ExportGameVersion game) {
+        const auto warnings = layerWarnings_ ? layerWarnings_(game) : fls::ExportLayerWarnings{};
+        const QString name = gameVersion_->currentText();
+        const bool carWarning = livery_ && (carId_ != 0 || game != ExportGameVersion::Motorsport2)
+            && !sharedCarRegistry().isSupported(carId_, fls::exportGameCode(game));
+
+        carWarning_.update(QStringLiteral("Car model is not supported in %1").arg(name), carWarning);
+        maskWarning_.update(QStringLiteral("Masks are not supported in %1 (%2 layers)").arg(name).arg(warnings.masks),
+                            warnings.masks > 0);
+        maskWarning_.choice->setToolTip(fls::isXbox360ExportGame(game)
+            ? QStringLiteral("Keep exports these layers as ordinary vinyl.") : QString());
+        logoWarning_.update(QStringLiteral("Incompatible logos for %1 (%2 layers)").arg(name).arg(warnings.logos),
+                            warnings.logos > 0);
+        shapeWarning_.update(QStringLiteral("Incompatible shapes for %1 (%2 layers)").arg(name).arg(warnings.shapes),
+                             warnings.shapes > 0);
+        updateExportButtonText();
+    }
+
+    void updateExportButtonText() {
+        const bool keepsWarning = carWarning_.keepsWarning() || maskWarning_.keepsWarning()
+            || logoWarning_.keepsWarning() || shapeWarning_.keepsWarning();
+        buttons_->button(QDialogButtonBox::Save)->setText(keepsWarning
+            ? QStringLiteral("Export anyway (I know what I am doing)") : QStringLiteral("Export"));
+    }
+
     ExportContainerFormat selectedFormat() const {
         return static_cast<ExportContainerFormat>(containerFormat_->currentData().toInt());
     }
@@ -246,23 +321,13 @@ private:
         if (previousIndex >= 0) {
             containerFormat_->setCurrentIndex(previousIndex);
         }
+        updateWarnings(game);
         updateFormat();
     }
 
     void updateFormat() {
         const auto game = static_cast<ExportGameVersion>(gameVersion_->currentData().toInt());
-        const quint64 incompatibleCount = incompatibleLayerCount_ ? incompatibleLayerCount_(game) : 0;
         const bool xbox360 = fls::isXbox360ExportGame(game);
-
-        maskWarning_->setVisible(maskedLayerCount_ > 0 && !fls::exportGameSupportsMasks(game));
-        if (incompatibleCount > 0) {
-            shapeWarning_->setText(incompatibleCount == 1
-                ? QStringLiteral("One layer uses a shape unavailable in %1 and will be omitted.")
-                    .arg(gameVersion_->currentText())
-                : QStringLiteral("%1 layers use shapes unavailable in %2 and will be omitted.")
-                    .arg(incompatibleCount).arg(gameVersion_->currentText()));
-        }
-        shapeWarning_->setVisible(incompatibleCount > 0);
         const bool wgs = wgsSelected();
         if (wgs != wgsActive_) {
             const QSignalBlocker blocker(directoryEdit_);
@@ -314,8 +379,6 @@ private:
         const auto game = static_cast<ExportGameVersion>(gameVersion_->currentData().toInt());
         const bool unsupportedFormat = containerFormat_->currentIndex() < 0
             || !supportsExportContainer(game, selectedFormat());
-        const bool unsupported = livery_ && game != ExportGameVersion::Motorsport2
-            && !sharedCarRegistry().isSupported(carId_, fls::exportGameCode(game));
 
         wgsTarget_.reset();
         if (unsupportedFormat) {
@@ -324,20 +387,7 @@ private:
             buttons_->button(QDialogButtonBox::Save)->setEnabled(false);
             return;
         }
-        setUiState(hint_, unsupported ? QStringLiteral("error") : QString());
-        if (unsupported) {
-            profileEdit_->clear();
-            containerNameEdit_->clear();
-            if (wgsSelected()) {
-                const QSignalBlocker blocker(directoryEdit_);
-                directoryEdit_->clear();
-            }
-            buttons_->button(QDialogButtonBox::Save)->setEnabled(false);
-            hint_->setText(carId_ == 0
-                ? QStringLiteral("Choose a target car before exporting.")
-                : QStringLiteral("Model not supported in %1.").arg(gameVersion_->currentText()));
-            return;
-        }
+        setUiState(hint_, QString());
         if (wgsSelected()) {
             profileEdit_->clear();
             containerNameEdit_->clear();
@@ -380,8 +430,10 @@ private:
     QComboBox *gameVersion_ = nullptr;
     QComboBox *containerFormat_ = nullptr;
     QLabel *hint_ = nullptr;
-    QLabel *maskWarning_ = nullptr;
-    QLabel *shapeWarning_ = nullptr;
+    ExportWarningRow carWarning_;
+    ExportWarningRow maskWarning_;
+    ExportWarningRow logoWarning_;
+    ExportWarningRow shapeWarning_;
     QLabel *folderHint_ = nullptr;
     QPushButton *browse_ = nullptr;
     QGroupBox *wgsOptions_ = nullptr;
@@ -389,21 +441,18 @@ private:
     QDialogButtonBox *buttons_ = nullptr;
     QString pgsDirectory_;
     std::optional<fls::WgsExportTarget> wgsTarget_;
+    std::function<fls::ExportLayerWarnings(ExportGameVersion)> layerWarnings_;
     bool livery_ = false;
     bool wgsActive_ = false;
     int carId_ = 0;
-    quint64 maskedLayerCount_ = 0;
-    std::function<quint64(ExportGameVersion)> incompatibleLayerCount_;
 };
 
 } // namespace
 
 std::optional<ExportAssetSelection> showExportAssetDialog(
     QWidget *parent, const QString &startDirectory, const QString &projectName, bool livery,
-    int carId, quint64 maskedLayerCount,
-    const std::function<quint64(ExportGameVersion)> &incompatibleLayerCount) {
-    ExportAssetDialog dialog(parent, startDirectory, projectName, livery, carId, maskedLayerCount,
-                             incompatibleLayerCount);
+    int carId, const std::function<fls::ExportLayerWarnings(ExportGameVersion)> &layerWarnings) {
+    ExportAssetDialog dialog(parent, startDirectory, projectName, livery, carId, layerWarnings);
     if (dialog.exec() != QDialog::Accepted) {
         return std::nullopt;
     }

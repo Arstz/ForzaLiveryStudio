@@ -39,7 +39,6 @@ constexpr int kSectionLimit = 1000;
 constexpr int kSpoilerLimit = 100;
 constexpr int kSpoilerSlot = kBodyLiverySectionCount - 1;
 constexpr int kProfileIdSize = 8;
-constexpr quint16 kDecalFlag = 32768;
 constexpr int kGroupMaskFlag = 64;
 constexpr char kMotorsport2LiveryMagic[] = "lvry";
 constexpr quint32 kMotorsport2Version = 7;
@@ -243,12 +242,6 @@ QByteArray exportPaint(const Project &project, const QByteArray &source, VinylFo
     return paint;
 }
 
-bool xbox360ShapeId(quint16 id) {
-    const int row = id % 100;
-
-    return (id >= 101 && id <= 2240 && row >= 1 && row <= 40) || (id & kDecalFlag);
-}
-
 void appendShapeFloat(QByteArray &bytes, double value) {
     const float encoded = static_cast<float>(value);
     if (!std::isfinite(encoded)) {
@@ -269,7 +262,7 @@ void appendMotorsport2Scalar(QByteArray &bytes, double value) {
 void appendShape(QByteArray &bytes, const scene::Shape &shape, const Matrix3 &adjustment,
                  VinylFormat format) {
     const VinylShapePlacement placement = vinylShapePlacement(shape, adjustment);
-    if (shape.raster || !xbox360ShapeId(placement.shapeId)) {
+    if (placement.shapeId == 0) {
         throw std::runtime_error("an artwork layer has no Xbox 360 vinyl ID");
     }
     appendBeU16(bytes, placement.shapeId);

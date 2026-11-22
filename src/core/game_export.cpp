@@ -7,6 +7,7 @@
 #include "matrix_math.h"
 #include "project_codec.h"
 #include "positional_paint.h"
+#include "raster_decals.h"
 #include "shape_registry.h"
 #include "xbox360_vinyl.h"
 
@@ -22,6 +23,7 @@
 #include <limits>
 #include <numeric>
 #include <stdexcept>
+#include <utility>
 
 namespace fls {
 namespace {
@@ -266,8 +268,16 @@ bool containsArtwork(const scene::Layer &layer) {
     return false;
 }
 
+bool isExtendedLiverySection(const scene::Layer &layer) {
+    if (layer.kind() != scene::LayerKind::Group) return false;
+    const auto &group = static_cast<const scene::Group &>(layer);
+
+    return group.isLiverySection && group.liverySectionSlot >= kBodyLiverySectionCount
+        && group.liverySectionSlot < kFH6SectionCount;
+}
+
 bool incompatibleExportShape(const scene::Shape &shape, ExportGameVersion game) {
-    if (shape.raster) {
+    if (shape.isRaster() || (shape.shapeId & kXbox360DecalFlag) != 0) {
         return false;
     }
     const quint16 id = detail::canonicalShapeId(shape.shapeId);
@@ -276,28 +286,44 @@ bool incompatibleExportShape(const scene::Shape &shape, ExportGameVersion game) 
         const bool early = game == ExportGameVersion::Motorsport2 || game == ExportGameVersion::Motorsport3;
         const quint16 last = early ? kEarlyXbox360LastShapeId : kLaterXbox360LastShapeId;
 
-        return (id & kXbox360DecalFlag) == 0
-            && !detail::isXbox360ExclusiveShapeId(id) && (!known || id > last);
+        return !detail::isXbox360ExclusiveShapeId(id) && (!known || id > last);
     }
 
     return !known || (game == ExportGameVersion::Motorsport2023 && id == kEnglishMtCentShapeId);
 }
 
-quint64 incompatibleLayerCount(const scene::Layer &layer, ExportGameVersion game) {
-    if (!layer.visible) {
-        return 0;
+struct ExportLogoCatalog {
+    QString sourceGame;
+    QString targetGame;
+    bool livery = false;
+
+    bool incompatible(const scene::Shape &shape) const {
+        const bool raster = shape.isRaster();
+        if (!raster && (shape.shapeId & kXbox360DecalFlag) == 0) return false;
+        if (!livery) return true;
+        const auto &pack = sharedRasterDecals();
+        const quint32 id = raster ? shape.rasterId : (shape.shapeId & ~kXbox360DecalFlag);
+        const quint32 target = pack.textureKey(id, targetGame);
+        const quint32 source = pack.textureKey(id, raster ? shape.rasterGame : sourceGame);
+
+        return target == 0 || source != target;
     }
+};
+
+template<typename Visit>
+void visitExportLayers(const scene::Layer &layer, bool inheritedMask, const Visit &visit,
+                       bool includeHiddenShapes = false) {
     if (layer.kind() == scene::LayerKind::Shape) {
-        return incompatibleExportShape(static_cast<const scene::Shape &>(layer), game) ? 1 : 0;
-    }
-    quint64 count = 0;
-    if (layer.kind() == scene::LayerKind::Group) {
-        for (const auto &child : static_cast<const scene::Group &>(layer).children) {
-            count += incompatibleLayerCount(*child, game);
+        if (!layer.visible && !includeHiddenShapes) return;
+        const auto &shape = static_cast<const scene::Shape &>(layer);
+        visit(shape, inheritedMask || shape.mask);
+    } else if (layer.visible && layer.kind() == scene::LayerKind::Group) {
+        const auto &group = static_cast<const scene::Group &>(layer);
+        const bool masked = inheritedMask || (group.flags & kMaskFlag) != 0;
+        for (const auto &child : group.children) {
+            visitExportLayers(*child, masked, visit, includeHiddenShapes);
         }
     }
-
-    return count;
 }
 
 void collapseSingleArtworkChild(scene::Group &parent, int index, scene::Group &group) {
@@ -320,23 +346,27 @@ void collapseSingleArtworkChild(scene::Group &parent, int index, scene::Group &g
     }
 }
 
-bool discardIncompatibleLayers(scene::Group &group, ExportGameVersion game, bool collapseSingletons) {
+template<typename Discard>
+bool discardExportLayers(scene::Group &group, const Discard &discard, bool collapseSingletons,
+                         bool inheritedMask = false) {
     bool discarded = false;
+    const bool masked = inheritedMask || (group.flags & kMaskFlag) != 0;
     for (int index = static_cast<int>(group.children.size()) - 1; index >= 0; --index) {
         auto &child = *group.children[index];
         if (child.kind() == scene::LayerKind::Shape) {
-            if (incompatibleExportShape(static_cast<const scene::Shape &>(child), game)) {
+            const auto &shape = static_cast<const scene::Shape &>(child);
+            if (discard(shape, masked || shape.mask)) {
                 group.takeAt(index);
                 discarded = true;
             }
         } else if (child.kind() == scene::LayerKind::Group) {
             auto &childGroup = static_cast<scene::Group &>(child);
-            if (discardIncompatibleLayers(childGroup, game, collapseSingletons)) {
+            if (discardExportLayers(childGroup, discard, collapseSingletons, masked)) {
                 discarded = true;
                 if (!childGroup.isLiverySection) {
                     if (!containsArtwork(childGroup)) {
                         group.takeAt(index);
-                    } else if (collapseSingletons) {
+                    } else if (collapseSingletons && (childGroup.flags & kMaskFlag) == 0) {
                         collapseSingleArtworkChild(group, index, childGroup);
                     }
                 }
@@ -347,63 +377,30 @@ bool discardIncompatibleLayers(scene::Group &group, ExportGameVersion game, bool
     return discarded;
 }
 
-quint64 maskedLayerCount(const scene::Layer &layer, bool inheritedMask) {
-    if (!layer.visible) {
-        return 0;
-    }
-    if (layer.kind() == scene::LayerKind::Shape) {
-        return inheritedMask || static_cast<const scene::Shape &>(layer).mask ? 1 : 0;
-    }
-    quint64 count = 0;
-    if (layer.kind() == scene::LayerKind::Group) {
-        const auto &group = static_cast<const scene::Group &>(layer);
-        const bool masked = inheritedMask || (group.flags & kMaskFlag) != 0;
-
-        for (const auto &child : group.children) {
-            count += maskedLayerCount(*child, masked);
-        }
-    }
-
-    return count;
-}
-
-void discardMaskedLayers(scene::Group &group, bool inheritedMask = false) {
-    auto &children = group.children;
-    const bool masked = inheritedMask || (group.flags & kMaskFlag) != 0;
-
-    children.erase(std::remove_if(children.begin(), children.end(), [masked](const auto &child) {
-        if (child->kind() == scene::LayerKind::Shape) {
-            return masked || static_cast<const scene::Shape &>(*child).mask;
-        }
+bool clearExportMasks(scene::Group &group) {
+    bool changed = (group.flags & kMaskFlag) != 0;
+    group.flags &= ~kMaskFlag;
+    for (auto &child : group.children) {
         if (child->kind() == scene::LayerKind::Group) {
-            auto &childGroup = static_cast<scene::Group &>(*child);
-            discardMaskedLayers(childGroup, masked);
-
-            return !childGroup.isLiverySection && !containsArtwork(childGroup);
+            changed |= clearExportMasks(static_cast<scene::Group &>(*child));
+        } else if (child->kind() == scene::LayerKind::Shape) {
+            auto &shape = static_cast<scene::Shape &>(*child);
+            changed |= std::exchange(shape.mask, false);
         }
+    }
 
-        return false;
-    }), children.end());
+    return changed;
 }
 
-Project nativeArtworkProject(const Project &project, const ExportProfile &profile, ExportGameVersion game) {
+Project nativeArtworkProject(const Project &project, const ExportProfile &profile) {
     Project artwork = project;
     std::array<bool, 11> sections{};
     if (artwork.root == nullptr) {
         return artwork;
     }
     prepareNativeArtworkLayers(*artwork.root);
-    if (!exportGameSupportsMasks(game)) {
-        discardMaskedLayers(*artwork.root);
-    }
-    discardIncompatibleExportLayers(artwork, game);
     auto &children = artwork.root->children;
-    children.erase(std::remove_if(children.begin(), children.end(), [](const auto &child) {
-        return child->kind() == scene::LayerKind::Group
-            && static_cast<const scene::Group &>(*child).isLiverySection
-            && static_cast<const scene::Group &>(*child).liverySectionSlot >= kBodyLiverySectionCount
-            && static_cast<const scene::Group &>(*child).liverySectionSlot < kFH6SectionCount;
-    }), children.end());
+    std::erase_if(children, [](const auto &child) { return isExtendedLiverySection(*child); });
     if (profile.headerVersion <= 1 || (!artwork.liverySource.isEmpty()
         && parseInflatedLiveryPayload(artwork.liverySource).legacyRecords)) {
         artwork.liverySource.clear();
@@ -521,19 +518,19 @@ QByteArray earlyArtwork(const Project &project, const ExportProfile &profile,
     return artwork;
 }
 
-QByteArray nativeArtwork(const Project &project, const ExportProfile &profile, ExportGameVersion game,
-                         std::array<int, 11> &counts) {
-    const Project artworkProject = nativeArtworkProject(project, profile, game);
+QByteArray nativeArtwork(const Project &project, const ExportProfile &profile,
+                         std::array<int, 11> &counts, bool keepIncompatibleShapes) {
+    const Project artworkProject = nativeArtworkProject(project, profile);
     if (profile.liveryVersion <= kLastEarlyLiveryVersion) {
         return earlyArtwork(artworkProject, profile, counts);
     }
 
-    return buildLiveryGyvlForSectionCount(artworkProject, profile.sectionCount, &counts);
+    return buildLiveryGyvlForSectionCount(artworkProject, profile.sectionCount, &counts, keepIncompatibleShapes);
 }
 
 QByteArray nativeLiveryPayload(const Project &project, ExportGameVersion game,
                               const QByteArray &creatorTag,
-                              std::array<int, 11> &counts) {
+                              std::array<int, 11> &counts, bool keepIncompatibleShapes) {
     if (!project.isLivery) {
         throw std::runtime_error("not a livery project");
     }
@@ -542,7 +539,7 @@ QByteArray nativeLiveryPayload(const Project &project, ExportGameVersion game,
     const bool early = profile.liveryVersion <= kLastEarlyLiveryVersion;
     const bool tagged = profile.liveryVersion != 2;
     const QByteArray paint = encodePositionalPaint(project, profile.paintRecordCount, exportGameCode(game));
-    const QByteArray artwork = nativeArtwork(project, profile, game, counts);
+    const QByteArray artwork = nativeArtwork(project, profile, counts, keepIncompatibleShapes);
     QByteArray payload("vlrc", 4);
     QByteArray sourceEntries;
     const QByteArray &source = project.liverySource;
@@ -655,9 +652,6 @@ quint64 visibleShapeCount(const scene::Layer &layer) {
         return 0;
     }
     if (layer.kind() == scene::LayerKind::Shape) {
-        if (static_cast<const scene::Shape &>(layer).raster) {
-            throw std::runtime_error("logo layers can only be exported from livery projects");
-        }
         return 1;
     }
     quint64 count = 0;
@@ -701,60 +695,109 @@ bool exportGameSupportsMasks(ExportGameVersion game) {
 }
 
 quint64 exportMaskedLayerCount(const Project &project) {
-    return project.root ? maskedLayerCount(*project.root, false) : 0;
+    quint64 count = 0;
+    if (project.root) {
+        visitExportLayers(*project.root, false, [&count](const scene::Shape &, bool masked) { count += masked; });
+    }
+
+    return count;
 }
 
 quint64 exportIncompatibleLayerCount(const Project &project, ExportGameVersion game) {
-    return project.root ? incompatibleLayerCount(*project.root, game) : 0;
-}
-
-void discardIncompatibleExportLayers(Project &project, ExportGameVersion game) {
+    quint64 count = 0;
     if (project.root) {
-        const bool collapseSingletons = !project.isLivery && !isXbox360ExportGame(game)
-            && (game == ExportGameVersion::Horizon6 || exportProfile(game).groupGeneration == GroupRecordGeneration::Current);
-        discardIncompatibleLayers(*project.root, game, collapseSingletons);
+        visitExportLayers(*project.root, false, [&](const scene::Shape &shape, bool) {
+            count += incompatibleExportShape(shape, game);
+        });
     }
+
+    return count;
 }
 
-QByteArray encodeGameLiveryPayload(const Project &project, ExportGameVersion game) {
+ExportLayerWarnings exportLayerWarnings(const Project &project, ExportGameVersion game) {
+    const ExportLogoCatalog logos{project.liveryPaint.game, exportGameCode(game), project.isLivery};
+    ExportLayerWarnings warnings;
+    const bool unsupportedMasks = !exportGameSupportsMasks(game);
+    const bool includeHiddenShapes = project.isLivery && game == ExportGameVersion::Horizon6;
+    const bool bodySectionsOnly = project.isLivery && game != ExportGameVersion::Horizon6;
+    if (project.root && project.root->visible) {
+        const bool rootMasked = (project.root->flags & kMaskFlag) != 0;
+        const auto count = [&](const scene::Shape &shape, bool masked) {
+            warnings.masks += unsupportedMasks && masked;
+            warnings.logos += logos.incompatible(shape);
+            warnings.shapes += incompatibleExportShape(shape, game);
+        };
+        for (const auto &child : project.root->children) {
+            if (!bodySectionsOnly || !isExtendedLiverySection(*child)) {
+                visitExportLayers(*child, rootMasked, count, includeHiddenShapes);
+            }
+        }
+    }
+
+    return warnings;
+}
+
+bool prepareExportLayers(Project &project, ExportGameVersion game, const ExportLayerChoices &choices) {
+    if (!project.root) return false;
+    const ExportLogoCatalog logos{project.liveryPaint.game, exportGameCode(game), project.isLivery};
+    const bool xbox360 = isXbox360ExportGame(game);
+    const bool collapseSingletons = !project.isLivery && !xbox360
+        && (game == ExportGameVersion::Horizon6 || exportProfile(game).groupGeneration == GroupRecordGeneration::Current);
+    bool changed = false;
+
+    if (!exportGameSupportsMasks(game)) {
+        if (!choices.keepMasks) {
+            changed |= discardExportLayers(*project.root, [](const scene::Shape &, bool masked) { return masked; }, false);
+        } else if (xbox360) {
+            changed |= clearExportMasks(*project.root);
+        }
+    }
+    if (!choices.keepLogos || !choices.keepShapes) {
+        changed |= discardExportLayers(*project.root, [&](const scene::Shape &shape, bool) {
+            return (!choices.keepLogos && logos.incompatible(shape))
+                || (!choices.keepShapes && incompatibleExportShape(shape, game));
+        }, collapseSingletons);
+    }
+
+    return changed;
+}
+
+QByteArray encodeGameLiveryPayload(const Project &project, ExportGameVersion game, const ExportLayerChoices &choices) {
+    Project artwork = project;
+    prepareExportLayers(artwork, game, choices);
     if (isXbox360ExportGame(game)) {
         if (!project.isLivery) {
             throw std::runtime_error("not a livery project");
         }
 
-        Project artwork = project;
-        discardIncompatibleExportLayers(artwork, game);
-
         return detail::encodeXbox360Vinyl(artwork, game, destinationCreatorTag(project, QString()));
     }
     if (game == ExportGameVersion::Horizon6) {
-        Project artwork = project;
-        discardIncompatibleExportLayers(artwork, game);
-
         return encodeCLiveryPayload(artwork);
     }
     std::array<int, 11> counts{};
 
-    return nativeLiveryPayload(project, game, destinationCreatorTag(project, QString()), counts);
+    return nativeLiveryPayload(artwork, game, destinationCreatorTag(project, QString()), counts, choices.keepShapes);
 }
 
-void exportGameLivery(const Project &project, const QString &outputFolder, ExportGameVersion game) {
+void exportGameLivery(const Project &project, const QString &outputFolder, ExportGameVersion game,
+                      const ExportLayerChoices &choices) {
     if (isXbox360ExportGame(game)) {
         if (!project.isLivery || outputFolder.isEmpty()) {
             throw std::runtime_error("Xbox 360 livery export requires a livery project and destination");
         }
-        exportXbox360Asset(project, QDir(outputFolder).filePath(QStringLiteral("Livery.liv")), game);
+        exportXbox360Asset(project, QDir(outputFolder).filePath(QStringLiteral("Livery.liv")), game, nullptr, choices);
         return;
     }
+    Project artwork = project;
+    prepareExportLayers(artwork, game, choices);
     if (game == ExportGameVersion::Horizon6) {
-        Project artwork = project;
-        discardIncompatibleExportLayers(artwork, game);
         exportCLivery(artwork, outputFolder);
         return;
     }
     std::array<int, 11> counts{};
     const QByteArray creatorTag = destinationCreatorTag(project, outputFolder);
-    const QByteArray payload = nativeLiveryPayload(project, game, creatorTag, counts);
+    const QByteArray payload = nativeLiveryPayload(artwork, game, creatorTag, counts, choices.keepShapes);
     const quint32 shapeCount = static_cast<quint32>(std::accumulate(counts.begin(), counts.end(), 0));
     const QByteArray header = nativeHeader(project, game, shapeCount, creatorTag, outputFolder);
     QByteArray wrapped;
@@ -773,35 +816,30 @@ void exportGameLivery(const Project &project, const QString &outputFolder, Expor
 }
 
 void exportGameGroup(const Project &project, const QString &outputFolder,
-                    ExportGameVersion game, const SpriteSizeFn &spriteSize) {
+                    ExportGameVersion game, const SpriteSizeFn &spriteSize, const ExportLayerChoices &choices) {
     if (isXbox360ExportGame(game)) {
         if (project.isLivery || outputFolder.isEmpty()) {
             throw std::runtime_error("Xbox 360 vinyl group export requires a group project and destination");
         }
         const QString name = QStringLiteral("VinylGroup") + xbox360ExportExtension(game, Xbox360FileKind::Group);
-        exportXbox360Asset(project, QDir(outputFolder).filePath(name), game);
+        exportXbox360Asset(project, QDir(outputFolder).filePath(name), game, nullptr, choices);
         return;
     }
+    Project artwork = project;
+    prepareExportLayers(artwork, game, choices);
     if (game == ExportGameVersion::Horizon6) {
-        Project artwork = project;
-        discardIncompatibleExportLayers(artwork, game);
         exportNestedProjectFolder(artwork, outputFolder, project.name, spriteSize);
         return;
     }
     if (project.isLivery || project.root == nullptr) {
         throw std::runtime_error("not a group project");
     }
-    Project nativeProject = project;
-    if (!exportGameSupportsMasks(game)) {
-        discardMaskedLayers(*nativeProject.root);
-    }
-    discardIncompatibleExportLayers(nativeProject, game);
-    const quint64 count = visibleShapeCount(*nativeProject.root);
+    const quint64 count = visibleShapeCount(*artwork.root);
     if (count > std::numeric_limits<quint32>::max()) {
         throw std::runtime_error("too many group shapes for header metadata");
     }
-    nativeProject.sourceDecPrefix.clear();
-    const QByteArray payload = buildNestedPayload(nativeProject, spriteSize,
+    artwork.sourceDecPrefix.clear();
+    const QByteArray payload = buildNestedPayload(artwork, spriteSize,
                                                  exportProfile(game).groupGeneration);
     const QByteArray header = nativeHeader(project, game, static_cast<quint32>(count),
                                            destinationCreatorTag(project, outputFolder), outputFolder);
@@ -816,13 +854,13 @@ void exportGameGroup(const Project &project, const QString &outputFolder,
 }
 
 void exportXbox360Asset(const Project &project, const QString &path, ExportGameVersion game,
-                        const Xbox360Credentials *credentials) {
+                        const Xbox360Credentials *credentials, const ExportLayerChoices &choices) {
     const Xbox360FileKind kind = project.isLivery ? Xbox360FileKind::Livery : Xbox360FileKind::Group;
     if (!isXbox360ExportGame(game) || !path.endsWith(xbox360ExportExtension(game, kind), Qt::CaseInsensitive)) {
         throw std::runtime_error("invalid Xbox 360 export game or file extension");
     }
     Project artwork = project;
-    discardIncompatibleExportLayers(artwork, game);
+    prepareExportLayers(artwork, game, choices);
     QByteArray plain = detail::encodeXbox360Vinyl(artwork, game, destinationCreatorTag(project, QString()));
     if (credentials != nullptr) {
         plain = encryptXbox360Asset(plain, game, kind, *credentials);

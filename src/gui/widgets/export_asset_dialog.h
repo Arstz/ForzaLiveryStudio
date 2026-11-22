@@ -24,6 +24,7 @@ enum class ExportContainerFormat {
 struct ExportAssetSelection {
     QString directory;
     std::optional<fls::WgsExportTarget> wgsTarget;
+    fls::ExportLayerChoices layerChoices;
     ExportGameVersion gameVersion = ExportGameVersion::Horizon6;
     ExportContainerFormat containerFormat = ExportContainerFormat::PgsFolder;
 };
@@ -32,7 +33,6 @@ bool supportsExportContainer(ExportGameVersion game, ExportContainerFormat forma
 
 std::optional<ExportAssetSelection> showExportAssetDialog(
     QWidget *parent, const QString &startDirectory, const QString &projectName, bool livery,
-    int carId = 0, quint64 maskedLayerCount = 0,
-    const std::function<quint64(ExportGameVersion)> &incompatibleLayerCount = {});
+    int carId = 0, const std::function<fls::ExportLayerWarnings(ExportGameVersion)> &layerWarnings = {});
 
 } // namespace gui

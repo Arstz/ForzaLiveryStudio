@@ -47,7 +47,10 @@ void testMaskWarning(const QString &directory, bool livery, quint64 maskCount) {
                 combo->setCurrentIndex(combo->findData(static_cast<int>(game)));
                 const bool expected = maskCount > 0 && !fls::exportGameSupportsMasks(game);
                 checked &= warning->isHidden() == !expected;
-                checked &= warning->text() == QString("Project contains %1 masked layers, will be discarded").arg(maskCount);
+                if (expected) {
+                    checked &= warning->text() == QString("Masks are not supported in %1 (%2 layers)")
+                        .arg(combo->currentText()).arg(maskCount);
+                }
                 checked &= warning->property("uiState").toString() == "warning";
                 checked &= dialog->findChild<QDialogButtonBox *>()->button(QDialogButtonBox::Save)->isEnabled();
             }
@@ -55,7 +58,9 @@ void testMaskWarning(const QString &directory, bool livery, quint64 maskCount) {
         }
         dialog->reject();
     });
-    gui::showExportAssetDialog(nullptr, directory, "Mask test", livery, 1069, maskCount);
+    gui::showExportAssetDialog(nullptr, directory, "Mask test", livery, 1069, [maskCount](auto game) {
+        return fls::ExportLayerWarnings{fls::exportGameSupportsMasks(game) ? 0 : maskCount};
+    });
     require(checked, "mask warning visibility, count, color, or export availability");
 }
 
@@ -142,9 +147,9 @@ void testShapeWarning(const QString &directory) {
             }
             checked = warning->isHidden();
             combo->setCurrentIndex(combo->findData(static_cast<int>(Game::Motorsport3)));
-            checked &= !warning->isHidden() && warning->text().startsWith("2 layers");
+            checked &= !warning->isHidden() && warning->text().endsWith("(2 layers)");
             combo->setCurrentIndex(combo->findData(static_cast<int>(Game::Motorsport4)));
-            checked &= !warning->isHidden() && warning->text().startsWith("One layer");
+            checked &= !warning->isHidden() && warning->text().endsWith("(1 layers)");
             checked &= dialog->findChild<QDialogButtonBox *>()->button(QDialogButtonBox::Save)->isEnabled();
             combo->setCurrentIndex(combo->findData(static_cast<int>(Game::Horizon6)));
             checked &= warning->isHidden();
@@ -152,9 +157,69 @@ void testShapeWarning(const QString &directory) {
         }
         dialog->reject();
     });
-    gui::showExportAssetDialog(nullptr, directory, "Shape test", false, 0, 0,
-        [&project](Game game) { return fls::exportIncompatibleLayerCount(project, game); });
+    gui::showExportAssetDialog(nullptr, directory, "Shape test", false, 0,
+        [&project](Game game) { return fls::exportLayerWarnings(project, game); });
     require(checked, "shape warning responds to the selected game");
+}
+
+void testWarningChoices(const QString &directory) {
+    using Game = fls::ExportGameVersion;
+    bool checked = false;
+    QTimer::singleShot(0, [&checked]() {
+        auto *dialog = qobject_cast<QDialog *>(QApplication::activeModalWidget());
+        if (!dialog) return;
+        auto *car = dialog->findChild<QLabel *>("exportCarWarning");
+        auto *carChoice = dialog->findChild<QComboBox *>("exportCarWarningChoice");
+        auto *maskChoice = dialog->findChild<QComboBox *>("exportMaskWarningChoice");
+        auto *logoChoice = dialog->findChild<QComboBox *>("exportLogoWarningChoice");
+        auto *shapeChoice = dialog->findChild<QComboBox *>("exportShapeWarningChoice");
+        auto *button = dialog->findChild<QDialogButtonBox *>()->button(QDialogButtonBox::Save);
+        for (auto *combo : dialog->findChildren<QComboBox *>()) {
+            if (combo->findText("Forza Horizon 6") < 0) continue;
+            const QString anyway = "Export anyway (I know what I am doing)";
+            if (!car || !carChoice || !maskChoice || !logoChoice || !shapeChoice) break;
+            checked = car->isHidden() && button->text() == "Export";
+            combo->setCurrentIndex(combo->findData(static_cast<int>(Game::Horizon2)));
+            checked &= button->isEnabled() && !maskChoice->parentWidget()->isHidden()
+                && !logoChoice->parentWidget()->isHidden() && !shapeChoice->parentWidget()->isHidden();
+            checked &= maskChoice->currentText() == "Discard" && logoChoice->currentText() == "Discard"
+                && shapeChoice->currentText() == "Discard";
+            maskChoice->setCurrentIndex(maskChoice->findText("Keep"));
+            checked &= button->text() == anyway;
+            maskChoice->setCurrentIndex(maskChoice->findText("Discard"));
+            logoChoice->setCurrentIndex(logoChoice->findText("Keep"));
+            checked &= button->text() == anyway;
+            combo->setCurrentIndex(combo->findData(static_cast<int>(Game::Horizon6)));
+            checked &= logoChoice->parentWidget()->isHidden() && button->text() == "Export";
+            combo->setCurrentIndex(combo->findData(static_cast<int>(Game::Horizon2)));
+            shapeChoice->setCurrentIndex(shapeChoice->findText("Discard"));
+            if (!button->isEnabled()) break;
+            button->click();
+            return;
+        }
+        dialog->reject();
+    });
+    const auto selected = gui::showExportAssetDialog(nullptr, directory, "Warnings", true, 1069, [](Game game) {
+        return game == Game::Horizon2 ? fls::ExportLayerWarnings{2, 3, 4} : fls::ExportLayerWarnings{};
+    });
+    require(checked && selected && selected->layerChoices.keepLogos
+        && !selected->layerChoices.keepMasks && !selected->layerChoices.keepShapes, "independent warning choices");
+
+    bool acceptedUnsupportedCar = false;
+    QTimer::singleShot(0, [&acceptedUnsupportedCar]() {
+        auto *dialog = qobject_cast<QDialog *>(QApplication::activeModalWidget());
+        if (!dialog) return;
+        const auto *car = dialog->findChild<QLabel *>("exportCarWarning");
+        const auto *choice = dialog->findChild<QComboBox *>("exportCarWarningChoice");
+        auto *button = dialog->findChild<QDialogButtonBox *>()->button(QDialogButtonBox::Save);
+        acceptedUnsupportedCar = car && !car->isHidden() && choice && choice->currentText() == "Keep"
+            && choice->count() == 1 && button->isEnabled()
+            && button->text() == "Export anyway (I know what I am doing)";
+        button->click();
+        if (!acceptedUnsupportedCar) dialog->reject();
+    });
+    const auto unsupported = gui::showExportAssetDialog(nullptr, directory, "Car test", true, 999999);
+    require(acceptedUnsupportedCar && unsupported, "car warning must not block export");
 }
 
 } // namespace
@@ -176,6 +241,7 @@ int main(int argc, char *argv[]) {
             testMaskWarning(output.path(), livery, 0);
         }
         testShapeWarning(output.path());
+        testWarningChoices(output.path());
         qInfo() << "FH5 export target selection passed for groups and liveries";
         return 0;
     } catch (const std::exception &error) {

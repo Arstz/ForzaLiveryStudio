@@ -44,8 +44,8 @@ bool placementAt(const QByteArray &data, int pos, int size) {
 
 class RecordReader {
 public:
-    RecordReader(const QByteArray &data, bool legacy, quint8 terminator = 0)
-        : data_(data), marker_(legacy ? 1 : 2), terminator_(terminator) {}
+    RecordReader(const QByteArray &data, bool legacy, quint8 terminator = 0, bool allowUnknownIds = false)
+        : data_(data), marker_(legacy ? 1 : 2), terminator_(terminator), allowUnknownIds_(allowUnknownIds) {}
 
     std::optional<VinylPhysicalGroup> childBlock(int pos) {
         return counted(pos, 0);
@@ -113,7 +113,7 @@ private:
                     continue;
                 }
                 const quint16 id = readLeU16(data_, start + lead);
-                if (id == 0 || (!isKnownShapeId(canonicalShapeId(id)) && id < 32768)) {
+                if (id == 0 || (!allowUnknownIds_ && !isKnownShapeId(canonicalShapeId(id)) && id < 32768)) {
                     continue;
                 }
                 const int fields = start + lead + 2;
@@ -290,6 +290,7 @@ private:
     QHash<int, std::optional<VinylPhysicalGroup>> cache_;
     quint8 marker_;
     quint8 terminator_;
+    bool allowUnknownIds_;
 };
 
 } // namespace
@@ -443,7 +444,11 @@ QByteArray writeVinylBoundary(const VinylBoundary &boundary) {
 }
 
 VinylRecordStream readVinylRecordStream(const QByteArray &data, bool legacy) {
-    return RecordReader(data, legacy).read();
+    const auto stream = RecordReader(data, legacy).read();
+    if (stream.complete) return stream;
+    const auto withUnknownIds = RecordReader(data, legacy, 0, true).read();
+
+    return withUnknownIds.complete ? withUnknownIds : stream;
 }
 
 VinylRecordStream readStandaloneVinylRecords(const QByteArray &data) {

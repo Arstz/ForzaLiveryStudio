@@ -114,7 +114,8 @@ private:
     void updateCarUnwrapOverlay();
     void exportDialog();
     void exportProjectSvgDialog();
-    bool exportFolderImpl(const QString &folder, fls::ExportGameVersion game, QString *error,
+    bool exportFolderImpl(const QString &folder, fls::ExportGameVersion game,
+                          const fls::ExportLayerChoices &choices, QString *error,
                           const fls::WgsExportTarget *wgsTarget = nullptr);
     void setTargetCarDialog();
     void newProjectDialog();

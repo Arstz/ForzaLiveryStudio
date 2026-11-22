@@ -88,6 +88,47 @@ int shapeCount(const fls::scene::Layer &layer) {
     return count;
 }
 
+void testExportWarningChoices() {
+    using Game = fls::ExportGameVersion;
+    for (const auto game : {Game::Horizon6, Game::Horizon2, Game::Horizon4, Game::Motorsport2023,
+                             Game::Motorsport4, Game::Motorsport2}) {
+        auto project = makeLivery(1);
+        auto &section = static_cast<fls::scene::Group &>(*project.root->children.front());
+        auto mask = makeShape(1);
+        mask->mask = true;
+        section.append(std::move(mask));
+        auto logo = makeShape(2);
+        logo->setRasterShape(32767, 256, 256, "FH6");
+        section.append(std::move(logo));
+        auto shape = makeShape(3);
+        shape->setVectorShape(fls::isXbox360ExportGame(game) ? 2633 : 1001);
+        section.append(std::move(shape));
+        auto hidden = makeShape(4);
+        hidden->setRasterShape(32767);
+        auto hiddenGroup = std::make_unique<fls::scene::Group>();
+        hiddenGroup->visible = false;
+        hiddenGroup->append(std::move(hidden));
+        section.append(std::move(hiddenGroup));
+
+        const auto warnings = fls::exportLayerWarnings(project, game);
+        const bool masksUnsupported = !fls::exportGameSupportsMasks(game);
+        const QString context = fls::exportGameCode(game);
+        require(warnings.logos == 1 && warnings.shapes == 1 && warnings.masks == quint64(masksUnsupported),
+                context + " warning counts");
+        const auto count = [&](fls::ExportLayerChoices choices) {
+            const auto raw = fls::encodeGameLiveryPayload(project, game, choices);
+            const auto parsed = fls::isXbox360ExportGame(game)
+                ? fls::parseLiveryAsset(raw) : fls::parseInflatedLiveryPayload(raw);
+            return parsed.sectionCounts.value(0);
+        };
+        require(count({false, false, false}) == (masksUnsupported ? 1 : 2), context + " discard warnings");
+        require(count({false, true, false}) == (masksUnsupported ? 2 : 3), context + " keep warned logo");
+        require(count({true, true, true}) == 4, context + " keep all warned layers");
+        require(shapeCount(*project.root) == 5 && fls::exportMaskedLayerCount(project) == 1,
+                context + " export choices must not mutate the project");
+    }
+}
+
 void collectShapes(const fls::scene::Layer &layer, QVector<const fls::scene::Shape *> &shapes) {
     if (layer.kind() == fls::scene::LayerKind::Shape) {
         shapes.append(static_cast<const fls::scene::Shape *>(&layer));
@@ -1324,6 +1365,7 @@ int main(int argc, char *argv[]) {
         testDiscardedMasks(temporary.path());
         qInfo() << "Testing destination shape compatibility";
         testIncompatibleShapes(temporary.path());
+        testExportWarningChoices();
         qInfo() << "Testing sparse sections, bounds, and blocks";
         testBoundsAndBlocks(temporary.path());
         if (app.arguments().size() == 3 && app.arguments()[1] == QStringLiteral("--samples")) {

@@ -208,34 +208,6 @@ fls::Project createNewProject(bool livery, const QString &creatorName, int carId
     return project;
 }
 
-bool containsRasterLogo(const fls::scene::Layer &node) {
-    if (node.kind() == fls::scene::LayerKind::Shape) {
-        return static_cast<const fls::scene::Shape &>(node).raster;
-    }
-    if (node.kind() != fls::scene::LayerKind::Group) {
-        return false;
-    }
-    const auto &group = static_cast<const fls::scene::Group &>(node);
-    for (const auto &child : group.children) {
-        if (containsRasterLogo(*child)) {
-            return true;
-        }
-    }
-    return false;
-}
-
-bool projectContainsRasterLogo(const fls::Project &project) {
-    if (!project.root) {
-        return false;
-    }
-    for (const auto &child : project.root->children) {
-        if (containsRasterLogo(*child)) {
-            return true;
-        }
-    }
-    return false;
-}
-
 fls::HeaderMetadata effectiveHeaderMetadata(const fls::Project &project,
                                             const QString &creatorName) {
     if (project.headerMetadata) {
@@ -658,7 +630,8 @@ bool MainWindow::loadImportedProject(const std::function<fls::Project()> &load,
     }
 }
 
-bool MainWindow::exportFolderImpl(const QString &folder, fls::ExportGameVersion game, QString *error,
+bool MainWindow::exportFolderImpl(const QString &folder, fls::ExportGameVersion game,
+                                  const fls::ExportLayerChoices &choices, QString *error,
                                   const fls::WgsExportTarget *wgsTarget) {
     if (!state_->hasProject_) {
         if (error != nullptr) {
@@ -668,6 +641,7 @@ bool MainWindow::exportFolderImpl(const QString &folder, fls::ExportGameVersion 
     }
     try {
         fls::Project exportProject = state_->project_;
+        const bool artworkChanged = fls::prepareExportLayers(exportProject, game, choices);
         std::unique_ptr<QTemporaryDir> staging;
         if (wgsTarget != nullptr) {
             fls::HeaderMetadata metadata = effectiveHeaderMetadata(exportProject, creatorName_);
@@ -714,21 +688,17 @@ bool MainWindow::exportFolderImpl(const QString &folder, fls::ExportGameVersion 
         };
         if (exportProject.isLivery) {
             QImage thumb;
-            const bool incompatibleArtwork = fls::exportIncompatibleLayerCount(exportProject, game) > 0;
-            if (incompatibleArtwork) {
-                fls::discardIncompatibleExportLayers(exportProject, game);
-            }
             if (carPreview_ != nullptr && carPreview_->hasModel()) {
                 if (webp && !QImageWriter::supportedImageFormats().contains("webp")) {
                     throw std::runtime_error(
                         "Qt WEBP image writer is not available; ensure qwebp.dll is deployed in the imageformats plugin folder");
                 }
-                thumb = carPreview_->renderThumbnail(QSize(670, 376), incompatibleArtwork ? &exportProject : nullptr);
+                thumb = carPreview_->renderThumbnail(QSize(670, 376), artworkChanged ? &exportProject : nullptr);
                 if (thumb.isNull()) {
                     throw std::runtime_error("could not render the livery thumbnail from the car preview");
                 }
             }
-            fls::exportGameLivery(exportProject, targetFolder, game);
+            fls::exportGameLivery(exportProject, targetFolder, game, choices);
             if (!thumb.isNull()) {
                 if (!thumb.save(QDir(targetFolder).filePath(thumbnailName), imageFormat)) {
                     throw std::runtime_error("could not write the livery thumbnail");
@@ -744,9 +714,6 @@ bool MainWindow::exportFolderImpl(const QString &folder, fls::ExportGameVersion 
             }
             finishExport();
             return true;
-        }
-        if (projectContainsRasterLogo(exportProject)) {
-            throw std::runtime_error("logo layers can only be exported from livery projects");
         }
         const bool parsedSourceHeader = !exportProject.headerMetadata
             && !exportProject.sourceHeader.isEmpty();
@@ -766,8 +733,7 @@ bool MainWindow::exportFolderImpl(const QString &folder, fls::ExportGameVersion 
         const fls::SpriteSizeFn spriteSize = [&geometry](quint16 id) {
             return geometry.shapeSize(static_cast<int>(id));
         };
-        fls::exportGameGroup(exportProject, targetFolder, game, spriteSize);
-        fls::discardIncompatibleExportLayers(exportProject, game);
+        fls::exportGameGroup(exportProject, targetFolder, game, spriteSize, choices);
         const QImage thumb = renderProjectPreviewImage(exportProject, QSize(256, 256));
         if (webp && !QImageWriter::supportedImageFormats().contains("webp")) {
             throw std::runtime_error("Qt WEBP image writer is not available; ensure qwebp.dll is deployed in the imageformats plugin folder");
@@ -1257,26 +1223,16 @@ void MainWindow::exportDialog() {
         state_->project_.name,
         state_->project_.isLivery,
         state_->project_.carId,
-        fls::exportMaskedLayerCount(state_->project_),
-        [this](fls::ExportGameVersion game) { return fls::exportIncompatibleLayerCount(state_->project_, game); });
+        [this](fls::ExportGameVersion game) { return fls::exportLayerWarnings(state_->project_, game); });
     if (!selection) {
         return;
     }
     const QString game = fls::exportGameCode(selection->gameVersion);
-    const CarRegistry &registry = sharedCarRegistry();
     const ExportContainerFormat format = selection->containerFormat;
 
     if (!supportsExportContainer(selection->gameVersion, format)) {
         QMessageBox::critical(this, QStringLiteral("Export failed"),
             QStringLiteral("The selected container format is unavailable for %1.").arg(game));
-        return;
-    }
-    if (state_->project_.isLivery && selection->gameVersion != fls::ExportGameVersion::Motorsport2
-        && !registry.isSupported(state_->project_.carId, game)) {
-        const QString car = registry.displayName(state_->project_.carId);
-        QMessageBox::critical(this, QStringLiteral("Export failed"), car.isEmpty()
-            ? QStringLiteral("Choose a target car before exporting this livery to %1.").arg(game)
-            : QStringLiteral("%1 is not listed as supported in %2.").arg(car, game));
         return;
     }
     if (format == ExportContainerFormat::Xbox360PlainFile || format == ExportContainerFormat::Xbox360SignedFile) {
@@ -1303,7 +1259,7 @@ void MainWindow::exportDialog() {
                 }
             }
             fls::exportXbox360Asset(state_->project_, path, selection->gameVersion,
-                                    credentials ? &*credentials : nullptr);
+                                    credentials ? &*credentials : nullptr, selection->layerChoices);
             rememberImportDirectory(path, QStringLiteral("exportFolder"));
             canvasStatusBar_->showMessage(QStringLiteral("Exported %1").arg(path), 5000);
         } catch (const std::exception &ex) {
@@ -1337,7 +1293,7 @@ void MainWindow::exportDialog() {
     }
 
     QString error;
-    if (!exportFolderImpl(folder, selection->gameVersion, &error,
+    if (!exportFolderImpl(folder, selection->gameVersion, selection->layerChoices, &error,
                           format == ExportContainerFormat::WgsContainer ? &*selection->wgsTarget : nullptr)) {
         QMessageBox::critical(this, QStringLiteral("Export failed"), error);
     }
