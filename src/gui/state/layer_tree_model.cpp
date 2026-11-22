@@ -286,7 +286,7 @@ void paintPreviewShape(QImage &image,
                                            : QPainter::CompositionMode_SourceOver);
 
     if (shape.raster) {
-        const fls::RasterDecal decal = fls::sharedRasterDecals().decal(shape.rasterId);
+        const fls::RasterDecal decal = fls::sharedRasterDecals().decal(shape.rasterId, shape.rasterGame);
         if (decal.valid()) {
             QImage decalImage(reinterpret_cast<const uchar *>(decal.rgba.constData()),
                               decal.width,
@@ -480,6 +480,7 @@ quint64 contentSignature(const fls::scene::Layer &node, QHash<QString, quint64> 
         seed = mixHash(seed, shape.raster ? 1 : 0);
         seed = mixHash(seed, shape.shapeId);
         seed = mixHash(seed, shape.rasterId);
+        seed = mixHash(seed, hashString(shape.rasterGame));
         seed = mixHash(seed, shape.rasterWidth);
         seed = mixHash(seed, shape.rasterHeight);
         seed = mixHash(seed, shape.mask ? 1 : 0);

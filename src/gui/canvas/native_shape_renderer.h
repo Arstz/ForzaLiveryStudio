@@ -1,7 +1,6 @@
 #pragma once
 
 #include "core_types.h"
-#include "raster_decals.h"
 #include "scene_view.h"
 #include "shape_geometry_store.h"
 
@@ -83,13 +82,9 @@ private:
                            const QTransform &worldToScreen,
                            const QSize &size);
     bool drawRasterLayer(QOpenGLFunctions *functions,
-                         quint32 rasterId,
-                         const std::array<quint8, 4> &color,
-                         bool mask,
-                         const QSize &fallbackSize,
+                         const fls::scene::Shape &shape,
                          const QTransform &world);
-    bool ensureRasterPackLoaded();
-    GLuint ensureRasterTexture(QOpenGLFunctions *functions, quint32 rasterId);
+    GLuint ensureRasterTexture(QOpenGLFunctions *functions, quint32 textureKey, const fls::scene::Shape &shape);
     void ensureSceneFramebuffer(const QSize &size);
     void compositeScene(QOpenGLFunctions *functions, const QSize &size, bool clearBackground);
     void setUniformRows(int row0Location, int row1Location, const QTransform &transform);
@@ -125,8 +120,6 @@ private:
     int rasterTintLocation_ = -1;
     int rasterTextureLocation_ = -1;
     int compositeTextureLocation_ = -1;
-    fls::RasterDecalPack rasterPack_;
-    QString rasterPackError_;
     QHash<quint32, GLuint> rasterTextures_;
     QHash<quint32, QSize> rasterTextureSizes_;
 };

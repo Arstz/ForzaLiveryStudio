@@ -1020,7 +1020,7 @@ void MainWindow::replaceSelectedShape(int shapeId) {
     canvasStatusBar_->showMessage(QStringLiteral("Replaced selected shape"), 1500);
 }
 
-void MainWindow::insertLogo(quint32 rasterId, int width, int height) {
+void MainWindow::insertLogo(const QString &game, quint32 rasterId, int width, int height) {
     if (!ensureProjectForInsertion()) {
         return;
     }
@@ -1028,7 +1028,7 @@ void MainWindow::insertLogo(quint32 rasterId, int width, int height) {
     auto layer = std::make_unique<fls::scene::Shape>();
     layer->id = state_->uniqueLayerId();
     layer->name = QStringLiteral("Logo %1").arg(rasterId);
-    layer->setRasterShape(rasterId, width, height);
+    layer->setRasterShape(rasterId, width, height, game);
     layer->sourceLogoId = static_cast<quint16>(0x8000u | (rasterId & 0x7fffu));
     insertShapeLayer(std::move(layer));
 }

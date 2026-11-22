@@ -219,6 +219,7 @@ private:
         QPolygonF screenPolygon;
         QRectF screenBounds;
         QPainterPath screenBody;
+        bool raster = false;
     };
 
     struct CachedPenSegment {
@@ -688,6 +689,7 @@ private:
     QStringList cursorHintLines_;
     QString hoverLayerId_;
     QPainterPath hoverBody_;
+    bool hoverRaster_ = false;
     QHash<int, QPainterPath> vectorSelectionBodies_;
     QHash<quint32, QPainterPath> rasterSelectionBodies_;
     QVector<HitEntry> hitCache_;

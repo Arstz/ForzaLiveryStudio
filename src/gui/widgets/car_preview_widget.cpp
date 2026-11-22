@@ -1652,7 +1652,7 @@ void CarPreviewWidget::loadCarAsync(const QString &path, CarLoadCallback callbac
                     guard->manufacturerColors_ = std::move(prepared->manufacturerColors);
                     guard->extractedCarDir_ = std::move(prepared->extractedCarDir);
                     guard->loadedCarPath_ = std::move(prepared->loadedCarPath);
-                    guard->loadedCarGame_ = source.game;
+                    guard->setLoadedCarGame(source.game);
                     guard->loadedCarKey_ = key;
                     guard->liveryMasks_ = std::move(prepared->liveryMasks);
                     guard->carUnwrapOverlaySets_ = std::move(
@@ -1694,6 +1694,12 @@ void CarPreviewWidget::cancelCarLoad() {
 
 bool CarPreviewWidget::hasModel() const {
     return !model_.meshes.empty();
+}
+
+void CarPreviewWidget::setLoadedCarGame(const QString &game) {
+    if (loadedCarGame_ == game) return;
+    loadedCarGame_ = game;
+    Q_EMIT loadedCarGameChanged(loadedCarGame_);
 }
 
 QImage CarPreviewWidget::renderThumbnail(const QSize &size, fls::Project *artwork) {
@@ -1744,7 +1750,7 @@ QImage CarPreviewWidget::renderThumbnail(const QSize &size, fls::Project *artwor
 void CarPreviewWidget::clearModel() {
     cancelCarLoad();
     loadedCarPath_.clear();
-    loadedCarGame_.clear();
+    setLoadedCarGame({});
     loadedCarKey_.clear();
     manufacturerColors_ = {};
     wheelPreview_.reset();

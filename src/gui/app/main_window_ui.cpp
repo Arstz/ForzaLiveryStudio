@@ -366,8 +366,8 @@ void MainWindow::setupDocks() {
     shapesBrowser_ = new ShapesBrowserWidget(this);
     shapesBrowser_->setShapeSelectedCallback([this](int shapeId) { insertShape(shapeId); });
     shapesBrowser_->setShapeReplaceCallback([this](int shapeId) { replaceSelectedShape(shapeId); });
-    shapesBrowser_->setLogoSelectedCallback([this](quint32 rasterId, int width, int height) {
-        insertLogo(rasterId, width, height);
+    shapesBrowser_->setLogoSelectedCallback([this](const QString &game, quint32 rasterId, int width, int height) {
+        insertLogo(game, rasterId, width, height);
     });
     shapesBrowser_->setCustomGroupSelectedCallback([this](const CustomShapeGroup &group) { insertCustomGroup(group.name, group.clipboard); });
     shapesBrowser_->setAddCurrentSelectionCallback([this]() { saveCurrentSelectionAsCustomGroup(); });
@@ -385,6 +385,8 @@ void MainWindow::setupDocks() {
     carPreview_->setProject(project());
     connect(carPreview_, &CarPreviewWidget::unwrapOverlayChanged,
             this, &MainWindow::updateCarUnwrapOverlay);
+    connect(carPreview_, &CarPreviewWidget::loadedCarGameChanged,
+            shapesBrowser_, &ShapesBrowserWidget::setLogoGame);
     auto *cycleDebugAction = new QAction(this);
     registerShortcutAction(
         cycleDebugAction, QStringLiteral("preview_cycle_debug_mode"),

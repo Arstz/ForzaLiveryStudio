@@ -29,16 +29,18 @@ bool shapeHasSnapEdges(const fls::scene::Shape &shape, const ShapeGeometryStore 
         return false;
     }
     if (shape.raster) {
-        auto found = rasterShapes.constFind(shape.rasterId);
+        const auto &pack = fls::sharedRasterDecals();
+        const quint32 texture = pack.textureKey(shape.rasterId, shape.rasterGame);
+        auto found = rasterShapes.constFind(texture);
         if (found == rasterShapes.cend()) {
-            const fls::RasterDecal decal = fls::sharedRasterDecals().decal(shape.rasterId);
+            const fls::RasterDecal decal = pack.decal(shape.rasterId, shape.rasterGame);
             bool eligible = false;
             if (decal.valid()) {
                 const QImage image(reinterpret_cast<const uchar *>(decal.rgba.constData()),
                                    decal.width, decal.height, decal.width * 4, QImage::Format_RGBA8888);
                 eligible = !rasterHasSoftAlpha(image);
             }
-            found = rasterShapes.insert(shape.rasterId, eligible);
+            found = rasterShapes.insert(texture, eligible);
         }
 
         return found.value();

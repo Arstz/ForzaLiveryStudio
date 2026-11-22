@@ -634,6 +634,7 @@ void ProjectCanvas::drawCanvasReferenceOverlay(QPainter &painter) {
 
 void ProjectCanvas::drawOverlay(QPainter &painter) {
     const bool showHoverOutline = options_.hoverShapeOutline && !hoverBody_.isEmpty();
+    const bool showRasterHoverOutline = showHoverOutline && hoverRaster_;
 
     painter.save();
     painter.resetTransform();
@@ -663,7 +664,7 @@ void ProjectCanvas::drawOverlay(QPainter &painter) {
             }
         }
     }
-    if (showHoverOutline) {
+    if (showHoverOutline && !showRasterHoverOutline) {
         drawShapeOutline(hoverBody_);
     }
 
@@ -710,6 +711,10 @@ void ProjectCanvas::drawOverlay(QPainter &painter) {
                 painter.drawRect(rect);
             }
         }
+    }
+
+    if (showRasterHoverOutline) {
+        drawShapeOutline(hoverBody_);
     }
 
     if (drag_.mode == DragMode::Marquee && drag_.marqueeRect.isValid()) {

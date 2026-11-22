@@ -70,6 +70,7 @@ public:
     Shape() { name = QStringLiteral("Shape"); }
 
     std::unique_ptr<VisualContainer> visual;
+    QString rasterGame;
     quint16 shapeId = 0;
     bool raster = false;
     quint32 rasterId = 0;
@@ -92,7 +93,7 @@ public:
 
     bool isRaster() const;
     void setVectorShape(quint16 id);
-    void setRasterShape(quint32 id, int width = 256, int height = 256);
+    void setRasterShape(quint32 id, int width = 256, int height = 256, const QString &game = {});
 };
 
 class ContourFigure : public Layer {

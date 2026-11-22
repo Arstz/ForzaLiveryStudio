@@ -99,7 +99,7 @@ private:
 
 class LogoTile final : public BrowserTile {
 public:
-    LogoTile(quint32 rasterId, const QSize &size, const QString &name = QString(), QWidget *parent = nullptr);
+    LogoTile(quint32 rasterId, const QString &game, const QString &name, QWidget *parent = nullptr);
 
     void refreshTheme();
     void setPressedCallback(std::function<void(quint32)> callback);
@@ -111,9 +111,9 @@ protected:
 private:
     void drawPreview(QPainter &painter, const QRect &rect);
 
-    quint32 rasterId_ = 0;
-    QSize size_;
+    QString game_;
     QString name_;
+    quint32 rasterId_ = 0;
     mutable QHash<QSize, QImage> previewCache_;
     std::function<void(quint32)> pressedCallback_;
 };
@@ -124,12 +124,13 @@ public:
 
     void setShapeSelectedCallback(std::function<void(int)> callback);
     void setShapeReplaceCallback(std::function<void(int)> callback);
-    void setLogoSelectedCallback(std::function<void(quint32, int, int)> callback);
+    void setLogoSelectedCallback(std::function<void(const QString &, quint32, int, int)> callback);
     void setCustomGroupSelectedCallback(std::function<void(const CustomShapeGroup &)> callback);
     void setAddCurrentSelectionCallback(std::function<void()> callback);
     void addCustomGroup(const QString &name, const ProjectClipboard &clipboard);
     // Logos may only be used in livery projects; hide them for Group projects.
     void setLiveryContext(bool isLivery);
+    void setLogoGame(const QString &game);
     void refreshTheme();
     void resetLayout();
 
@@ -141,6 +142,7 @@ private:
     void showGridMessage(const QString &text);
     ShapeTile *tileForShape(int shapeId);
     LogoTile *tileForLogo(quint32 rasterId);
+    QString logoName(quint32 rasterId) const;
     CustomGroupTile *tileForCustomGroup(const CustomShapeGroup &group);
     void setFavourite(int shapeId, bool enabled);
     void deleteCustomGroup(const QString &id);
@@ -158,7 +160,8 @@ private:
     bool geometryLoaded_ = false;
     bool liveryContext_ = false;
     QHash<QString, QVector<int>> categories_;
-    QHash<quint32, QSize> logos_;
+    QVector<quint32> logos_;
+    QString logoGame_;
     QStringList categoryOrder_;
     QSet<int> favourites_;
     QVector<CustomShapeGroup> customGroups_;
@@ -176,7 +179,7 @@ private:
     QLabel *searchHint_ = nullptr;
     std::function<void(int)> shapeSelectedCallback_;
     std::function<void(int)> shapeReplaceCallback_;
-    std::function<void(quint32, int, int)> logoSelectedCallback_;
+    std::function<void(const QString &, quint32, int, int)> logoSelectedCallback_;
     std::function<void(const CustomShapeGroup &)> customGroupSelectedCallback_;
     std::function<void()> addCurrentSelectionCallback_;
 };

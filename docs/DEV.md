@@ -50,8 +50,8 @@ Livery export validates per-section shape counts against the supported limits.
 
 ### Linux
 
-Install Qt6 development packages with SVG support, zlib, OpenSSL, CMake, and
-a C++20 compiler, then run:
+Install Qt6 development packages with SVG support, the Qt6 WebP image format
+plugin, zlib, OpenSSL, CMake, and a C++20 compiler, then run:
 
 ```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
@@ -71,7 +71,8 @@ apply options with `cmake -S . -B build`, then build directly with CMake.
 
 The build validates and deploys `assets/` beside the executable. Native geometry
 and shape names live in `assets/vector/`, raster decals in `assets/raster/`, and
-UI resources in `assets/icons/` and `assets/themes.json`. Car metadata and paint
+UI resources in `assets/icons/` and `assets/themes.json`. The raster decal pack
+indexes shared WebP textures by game and native logo ID. Car metadata and paint
 catalogs live in `assets/cars/`. Compact Fit and Lining use
 `assets/compact_fit_shapes.json` and `assets/lining_shapes.json`; keep these
 catalogs consistent with the deployed geometry. See

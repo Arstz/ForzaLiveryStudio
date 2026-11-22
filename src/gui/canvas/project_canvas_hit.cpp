@@ -13,11 +13,13 @@ using namespace pc_detail;
 
 QPainterPath ProjectCanvas::shapeSelectionBody(const fls::scene::Shape &shape) {
     if (shape.raster) {
-        const auto found = rasterSelectionBodies_.constFind(shape.rasterId);
+        const auto &pack = fls::sharedRasterDecals();
+        const quint32 texture = pack.textureKey(shape.rasterId, shape.rasterGame);
+        const auto found = rasterSelectionBodies_.constFind(texture);
         if (found != rasterSelectionBodies_.cend()) {
             return found.value();
         }
-        const fls::RasterDecal decal = fls::sharedRasterDecals().decal(shape.rasterId);
+        const fls::RasterDecal decal = pack.decal(shape.rasterId, shape.rasterGame);
         QPainterPath body;
 
         if (decal.valid()) {
@@ -25,7 +27,7 @@ QPainterPath ProjectCanvas::shapeSelectionBody(const fls::scene::Shape &shape) {
                                decal.width, decal.height, decal.width * 4, QImage::Format_RGBA8888);
             body = rasterSelectionBody(image);
         }
-        rasterSelectionBodies_.insert(shape.rasterId, body);
+        rasterSelectionBodies_.insert(texture, body);
 
         return body;
     }
@@ -53,13 +55,14 @@ QVector<ProjectCanvas::HitEntry> ProjectCanvas::hitEntries() {
                 return true;
             }
         }
-        const QSize rasterSize = shape.raster ? fls::sharedRasterDecals().decalSize(shape.rasterId) : QSize();
+        const QSize rasterSize = shape.raster
+            ? fls::sharedRasterDecals().decalSize(shape.rasterId, shape.rasterGame) : QSize();
         const QRectF localBounds = rasterSize.isValid()
             ? sceneLocalRect(QSizeF(rasterSize)) : sceneLocalRect(shape, geometry_);
         const QPolygonF polygon = screenQuad(world, localBounds);
         const QPainterPath body = (world * camera_.matrix()).map(shapeSelectionBody(shape));
 
-        hitCache_.push_back({drawOrder, shape.id, polygon, polygon.boundingRect(), body});
+        hitCache_.push_back({drawOrder, shape.id, polygon, polygon.boundingRect(), body, shape.isRaster()});
         return true;
     }, /*reverse=*/true);
     if (state_ != nullptr) {

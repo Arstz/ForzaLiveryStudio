@@ -32,6 +32,8 @@ To place shapes interact with `Shapes` widget. Left click would create a new sha
 
 To place text use `Place Text` on the toolbar, choose a font and type your text. Letters are placed as a group of shapes; `Monospace` gives them fixed spacing.
 
+In a livery project, load a car model and open `Logos` in the Shapes widget to browse the logo catalog for that model’s game. Placed logos retain their original artwork when you switch preview models.
+
 ### Layers
 
 Use `Layers` widget to select, group and reorder shapes. Drag rows to move them between groups; rows above other rows draw on top. Use `Edit->Group / Ungroup`, `Edit->Align` and `Edit->Distribute` to arrange your selection. Colors in `Swatches` are saved with the project.

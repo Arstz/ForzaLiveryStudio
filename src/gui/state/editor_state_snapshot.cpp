@@ -13,6 +13,7 @@ bool visualEqual(const fls::scene::Shape &a, const fls::scene::Shape &b) {
     }
     if (a.isRaster()) {
         return a.rasterId == b.rasterId
+            && a.rasterGame == b.rasterGame
             && a.rasterWidth == b.rasterWidth
             && a.rasterHeight == b.rasterHeight;
     }
@@ -149,7 +150,8 @@ bool previewChange(const fls::scene::Layer &a, const fls::scene::Layer &b) {
     if (a.kind() == fls::scene::LayerKind::Shape) {
         const auto &sa = static_cast<const fls::scene::Shape &>(a);
         const auto &sb = static_cast<const fls::scene::Shape &>(b);
-        return sa.color != sb.color || sa.shapeId != sb.shapeId || sa.rasterId != sb.rasterId;
+        return sa.color != sb.color || sa.shapeId != sb.shapeId || sa.rasterId != sb.rasterId
+            || sa.rasterGame != sb.rasterGame;
     }
     if (a.kind() == fls::scene::LayerKind::Guide) {
         const auto &ga = static_cast<const fls::scene::GuideLayer &>(a);

@@ -1,6 +1,7 @@
 #include "native_shape_renderer.h"
 
 #include "layer.h"
+#include "raster_decals.h"
 
 #include <algorithm>
 #include <cmath>
@@ -450,11 +451,8 @@ bool NativeShapeRenderer::drawShapeBatch(
 
         const bool isRaster = shape.visual && shape.visual->kind() == fls::scene::VisualKind::Raster;
         if (isRaster) {
-            const auto *raster = static_cast<const fls::scene::RasterContainer *>(shape.visual.get());
             activateRaster();
-            drew = drawRasterLayer(functions, raster->rasterId, shape.color, shape.mask,
-                                   QSize(raster->width, raster->height), world)
-                   || drew;
+            drew = drawRasterLayer(functions, shape, world) || drew;
             return;
         }
 
@@ -652,16 +650,14 @@ bool NativeShapeRenderer::drawProjectLayers(
 }
 
 bool NativeShapeRenderer::drawRasterLayer(QOpenGLFunctions *functions,
-                                          quint32 rasterId,
-                                          const std::array<quint8, 4> &color,
-                                          bool mask,
-                                          const QSize &fallbackSize,
+                                          const fls::scene::Shape &shape,
                                           const QTransform &world) {
-    const GLuint texture = ensureRasterTexture(functions, rasterId);
+    const quint32 textureKey = fls::sharedRasterDecals().textureKey(shape.rasterId, shape.rasterGame);
+    const GLuint texture = ensureRasterTexture(functions, textureKey, shape);
     if (texture == 0) {
         return false;
     }
-    const QSize decalSize = rasterTextureSizes_.value(rasterId, fallbackSize);
+    const QSize decalSize = rasterTextureSizes_.value(textureKey);
     QTransform transform = world;
     transform.scale(std::max(decalSize.width(), 1), std::max(decalSize.height(), 1));
     rasterProgram_.setUniformValue(rasterWorldRow0Location_,
@@ -672,10 +668,10 @@ bool NativeShapeRenderer::drawRasterLayer(QOpenGLFunctions *functions,
                                    static_cast<float>(transform.m12()),
                                    static_cast<float>(transform.m22()),
                                    static_cast<float>(transform.dy()));
-    if (mask) {
-        rasterProgram_.setUniformValue(rasterTintLocation_, 0.0f, 0.0f, 0.0f, static_cast<float>(color[3]) / 255.0f);
+    if (shape.mask) {
+        rasterProgram_.setUniformValue(rasterTintLocation_, 0.0f, 0.0f, 0.0f, static_cast<float>(shape.color[3]) / 255.0f);
     } else {
-        rasterProgram_.setUniformValue(rasterTintLocation_, 1.0f, 1.0f, 1.0f, static_cast<float>(color[3]) / 255.0f);
+        rasterProgram_.setUniformValue(rasterTintLocation_, 1.0f, 1.0f, 1.0f, static_cast<float>(shape.color[3]) / 255.0f);
     }
     functions->glActiveTexture(GL_TEXTURE0);
     functions->glBindTexture(GL_TEXTURE_2D, texture);
@@ -685,46 +681,16 @@ bool NativeShapeRenderer::drawRasterLayer(QOpenGLFunctions *functions,
     return true;
 }
 
-bool NativeShapeRenderer::ensureRasterPackLoaded() {
-    if (rasterPack_.isLoaded()) {
-        return true;
-    }
-    if (!rasterPackError_.isEmpty()) {
-        return false;
-    }
-
-    const QString appPath = QCoreApplication::applicationDirPath();
-    const QStringList candidates = {
-        QDir(appPath).filePath(QStringLiteral("assets/raster/decal_textures.bin")),
-        QDir(QDir::currentPath()).filePath(QStringLiteral("assets/raster/decal_textures.bin")),
-    };
-    for (const QString &path : candidates) {
-        if (!QFileInfo::exists(path)) {
-            continue;
-        }
-        QString error;
-        if (rasterPack_.load(path, &error)) {
-            return true;
-        }
-        rasterPackError_ = error;
-        return false;
-    }
-    rasterPackError_ = QStringLiteral("assets/raster/decal_textures.bin was not found");
-    return false;
-}
-
-GLuint NativeShapeRenderer::ensureRasterTexture(QOpenGLFunctions *functions, quint32 rasterId) {
-    if (rasterId == 0) {
+GLuint NativeShapeRenderer::ensureRasterTexture(QOpenGLFunctions *functions, quint32 textureKey,
+                                                 const fls::scene::Shape &shape) {
+    if (textureKey == 0) {
         return 0;
     }
-    if (const auto it = rasterTextures_.constFind(rasterId); it != rasterTextures_.constEnd()) {
+    if (const auto it = rasterTextures_.constFind(textureKey); it != rasterTextures_.constEnd()) {
         return it.value();
     }
-    if (!ensureRasterPackLoaded()) {
-        return 0;
-    }
 
-    const fls::RasterDecal decal = rasterPack_.decal(rasterId);
+    const fls::RasterDecal decal = fls::sharedRasterDecals().decal(shape.rasterId, shape.rasterGame);
     if (!decal.valid()) {
         return 0;
     }
@@ -748,8 +714,8 @@ GLuint NativeShapeRenderer::ensureRasterTexture(QOpenGLFunctions *functions, qui
                             decal.rgba.constData());
     functions->glBindTexture(GL_TEXTURE_2D, 0);
 
-    rasterTextures_.insert(rasterId, texture);
-    rasterTextureSizes_.insert(rasterId, QSize(decal.width, decal.height));
+    rasterTextures_.insert(textureKey, texture);
+    rasterTextureSizes_.insert(textureKey, QSize(decal.width, decal.height));
     return texture;
 }
 

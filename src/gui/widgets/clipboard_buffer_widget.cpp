@@ -137,7 +137,7 @@ void ClipboardBufferWidget::paintLayer(QPainter &painter,
     painter.setCompositionMode(layer.mask ? QPainter::CompositionMode_DestinationOut : QPainter::CompositionMode_SourceOver);
 
     if (layer.raster) {
-        const fls::RasterDecal decal = fls::sharedRasterDecals().decal(layer.rasterId);
+        const fls::RasterDecal decal = fls::sharedRasterDecals().decal(layer.rasterId, layer.rasterGame);
         if (decal.valid()) {
             const QImage decalImage(reinterpret_cast<const uchar *>(decal.rgba.constData()),
                                     decal.width,

@@ -71,7 +71,7 @@ public:
     void sampleGuideColorToSelection();
     void insertShape(int shapeId);
     void replaceSelectedShape(int shapeId);
-    void insertLogo(quint32 rasterId, int width, int height);
+    void insertLogo(const QString &game, quint32 rasterId, int width, int height);
     void placeTextDialog();
     void saveCurrentSelectionAsCustomGroup();
     void insertCustomGroup(const QString &name, const ProjectClipboard &clipboard);

@@ -893,11 +893,11 @@ int CustomGroupTile::layerCount() const {
     return clipboardShapeCount(group_.clipboard);
 }
 
-LogoTile::LogoTile(quint32 rasterId, const QSize &size, const QString &name, QWidget *parent)
+LogoTile::LogoTile(quint32 rasterId, const QString &game, const QString &name, QWidget *parent)
     : BrowserTile(parent)
-    , rasterId_(rasterId)
-    , size_(size)
-    , name_(name) {
+    , game_(game)
+    , name_(name)
+    , rasterId_(rasterId) {
     const QString hex = QStringLiteral("%1").arg(rasterId_, 4, 16, QLatin1Char('0')).toUpper();
     const QString title = name_.isEmpty() ? QStringLiteral("Logo %1").arg(rasterId_) : name_;
     setToolTip(QStringLiteral("%1\nID: %2 / 0x%3").arg(title).arg(rasterId_).arg(hex));
@@ -938,7 +938,7 @@ void LogoTile::paintEvent(QPaintEvent *event) {
 
 void LogoTile::drawPreview(QPainter &painter, const QRect &rect) {
     drawCachedPreview(painter, rect, previewCache_, [&]() -> QImage {
-        const fls::RasterDecal decal = fls::sharedRasterDecals().decal(rasterId_);
+        const fls::RasterDecal decal = fls::sharedRasterDecals().decal(rasterId_, game_);
         if (!decal.valid() || rect.isEmpty()) {
             return QImage();
         }
@@ -979,15 +979,6 @@ ShapesBrowserWidget::ShapesBrowserWidget(QWidget *parent)
         for (const QString &path : candidates) {
             if (QFile::exists(path) && logoNames_.loadFromFile(path)) {
                 break;
-            }
-        }
-    }
-    const fls::RasterDecalPack &logoPack = fls::sharedRasterDecals();
-    if (logoPack.isLoaded()) {
-        for (quint32 id : logoPack.ids()) {
-            const QSize size = logoPack.decalSize(id);
-            if (size.isValid()) {
-                logos_.insert(id, size);
             }
         }
     }
@@ -1080,7 +1071,7 @@ void ShapesBrowserWidget::setShapeReplaceCallback(std::function<void(int)> callb
     shapeReplaceCallback_ = std::move(callback);
 }
 
-void ShapesBrowserWidget::setLogoSelectedCallback(std::function<void(quint32, int, int)> callback) {
+void ShapesBrowserWidget::setLogoSelectedCallback(std::function<void(const QString &, quint32, int, int)> callback) {
     logoSelectedCallback_ = std::move(callback);
 }
 
@@ -1114,6 +1105,15 @@ void ShapesBrowserWidget::setLiveryContext(bool isLivery) {
     } else {
         categoriesList_->setCurrentRow(0);
     }
+    refreshGrid();
+}
+
+void ShapesBrowserWidget::setLogoGame(const QString &game) {
+    if (logoGame_ == game) return;
+    logoGame_ = game;
+    logos_ = fls::sharedRasterDecals().ids(logoGame_);
+    qDeleteAll(logoTiles_);
+    logoTiles_.clear();
     refreshGrid();
 }
 
@@ -1251,15 +1251,15 @@ void ShapesBrowserWidget::refreshGrid() {
     }
 
     if (!searching && liveryContext_ && currentCategory_ == QString::fromLatin1(kLogoCategory)) {
-        QVector<quint32> ids;
-        ids.reserve(logos_.size());
-        for (auto it = logos_.constBegin(); it != logos_.constEnd(); ++it) {
-            ids.push_back(it.key());
+        if (logos_.isEmpty()) {
+            showGridMessage(logoGame_.isEmpty()
+                ? QStringLiteral("Load a car model from a game to browse compatible logos")
+                : QStringLiteral("No logos available for %1").arg(logoGame_));
+            return;
         }
-        std::sort(ids.begin(), ids.end());
         QVector<QWidget *> tiles;
-        tiles.reserve(ids.size());
-        for (quint32 id : ids) {
+        tiles.reserve(logos_.size());
+        for (quint32 id : logos_) {
             tiles.push_back(tileForLogo(id));
         }
         layoutTiles(tiles);
@@ -1281,18 +1281,16 @@ void ShapesBrowserWidget::refreshGrid() {
 
     QVector<quint32> matchedLogos;
     if (searching && liveryContext_) {
-        for (auto it = logos_.constBegin(); it != logos_.constEnd(); ++it) {
-            const quint32 rasterId = it.key();
+        for (quint32 rasterId : logos_) {
             const QString haystack = QStringLiteral("logo %1 0x%2 %3")
                                          .arg(rasterId)
                                          .arg(rasterId, 4, 16, QLatin1Char('0'))
-                                         .arg(logoNames_.name(static_cast<int>(rasterId)))
+                                         .arg(logoName(rasterId))
                                          .toLower();
             if (haystack.contains(query)) {
                 matchedLogos.push_back(rasterId);
             }
         }
-        std::sort(matchedLogos.begin(), matchedLogos.end());
     }
 
     QVector<int> searchIds = searching ? geometry_.shapeIds() : categoryShapeIds(currentCategory_);
@@ -1385,16 +1383,23 @@ LogoTile *ShapesBrowserWidget::tileForLogo(quint32 rasterId) {
     if (tile != nullptr) {
         return tile;
     }
-    const QSize size = logos_.value(rasterId);
-    tile = new LogoTile(rasterId, size, logoNames_.name(static_cast<int>(rasterId)));
+    tile = new LogoTile(rasterId, logoGame_, logoName(rasterId));
     tile->setPressedCallback([this](quint32 id) {
         if (logoSelectedCallback_) {
-            const QSize logoSize = logos_.value(id);
-            logoSelectedCallback_(id, logoSize.width(), logoSize.height());
+            const QSize logoSize = fls::sharedRasterDecals().decalSize(id, logoGame_);
+            logoSelectedCallback_(logoGame_, id, logoSize.width(), logoSize.height());
         }
     });
     logoTiles_.insert(rasterId, tile);
     return tile;
+}
+
+QString ShapesBrowserWidget::logoName(quint32 rasterId) const {
+    const auto &pack = fls::sharedRasterDecals();
+    const quint32 texture = pack.textureKey(rasterId, logoGame_);
+
+    return texture != 0 && texture == pack.textureKey(rasterId)
+        ? logoNames_.name(static_cast<int>(rasterId)) : QString();
 }
 
 CustomGroupTile *ShapesBrowserWidget::tileForCustomGroup(const CustomShapeGroup &group) {

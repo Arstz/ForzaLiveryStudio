@@ -39,9 +39,16 @@ void ProjectCanvas::refreshHover(const QPointF &point, Qt::KeyboardModifiers mod
     }
     hoverLayerId_ = id;
     hoverBody_ = {};
+    hoverRaster_ = false;
     for (const HitEntry &entry : hitEntries()) {
         if (entry.layerId == id) {
-            hoverBody_ = entry.screenBody;
+            hoverRaster_ = entry.raster;
+            if (hoverRaster_) {
+                hoverBody_.addPolygon(entry.screenPolygon);
+                hoverBody_.closeSubpath();
+            } else {
+                hoverBody_ = entry.screenBody;
+            }
             break;
         }
     }

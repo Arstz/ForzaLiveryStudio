@@ -47,6 +47,7 @@ std::unique_ptr<Layer> Shape::clone() const {
     copy->shapeId = shapeId;
     copy->raster = raster;
     copy->rasterId = rasterId;
+    copy->rasterGame = rasterGame;
     copy->rasterWidth = rasterWidth;
     copy->rasterHeight = rasterHeight;
     copy->color = color;
@@ -69,14 +70,16 @@ void Shape::setVectorShape(quint16 id) {
     shapeId = id;
     raster = false;
     rasterId = 0;
+    rasterGame.clear();
     auto vector = std::make_unique<VectorContainer>();
     vector->shapeId = id;
     visual = std::move(vector);
 }
 
-void Shape::setRasterShape(quint32 id, int width, int height) {
+void Shape::setRasterShape(quint32 id, int width, int height, const QString &game) {
     raster = true;
     rasterId = id;
+    rasterGame = game;
     rasterWidth = width > 0 ? width : 256;
     rasterHeight = height > 0 ? height : 256;
     auto raster = std::make_unique<RasterContainer>();

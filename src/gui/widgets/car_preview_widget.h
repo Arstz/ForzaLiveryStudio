@@ -79,6 +79,7 @@ public Q_SLOTS:
 
 Q_SIGNALS:
     void unwrapOverlayChanged();
+    void loadedCarGameChanged(const QString &game);
 
 protected:
     void initializeGL() override;
@@ -120,6 +121,7 @@ private:
     void fitCameraToModel();
     void invalidateCachedLivery();
     void updateModelStatus();
+    void setLoadedCarGame(const QString &game);
     void layoutOverlayControls();
     void resetPartSelections();
     void initializePartControls();

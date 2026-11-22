@@ -14,6 +14,7 @@
 #include "layer.h"
 #include "livery_codec.h"
 #include "project_codec.h"
+#include "raster_decals.h"
 #include "shape_geometry_store.h"
 #include "shapes_browser_widget.h"
 #include "xbox360_vinyl.h"
@@ -611,12 +612,19 @@ bool MainWindow::loadImportedProject(const std::function<fls::Project()> &load,
     try {
         fls::Project project = load();
         CarRegistry::ModelSource source;
+        const QString game = project.liveryPaint.game.trimmed().toUpper();
         ProjectPreviewMode previewMode = ProjectPreviewMode::Automatic;
 
+        if (project.isLivery && !game.isEmpty()) {
+            forEachShape(project, [&game](fls::scene::Shape &shape) {
+                if (!shape.isRaster() || !shape.rasterGame.isEmpty()) return;
+                const QSize size = fls::sharedRasterDecals().decalSize(shape.rasterId, game);
+                shape.setRasterShape(shape.rasterId, size.width(), size.height(), game);
+            });
+        }
         if (project.isLivery && project.carId > 0) {
             const CarRegistry &registry = sharedCarRegistry();
             const BehaviorSettings settings = loadBehaviorSettings();
-            const QString game = project.liveryPaint.game.trimmed().toUpper();
             const QMap<QString, QString> targetFolders{{game, settings.gameFolders.value(game)}};
 
             source = registry.findModel(project.carId, targetFolders, game);

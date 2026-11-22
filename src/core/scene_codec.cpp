@@ -249,6 +249,9 @@ QJsonObject shapeToJson(const Shape &s) {
     if (s.isRaster()) {
         visual.insert(QStringLiteral("kind"), QStringLiteral("raster"));
         visual.insert(QStringLiteral("raster_id"), static_cast<qint64>(s.rasterId));
+        if (!s.rasterGame.isEmpty()) {
+            visual.insert(QStringLiteral("game"), s.rasterGame);
+        }
         visual.insert(QStringLiteral("width"), s.rasterWidth);
         visual.insert(QStringLiteral("height"), s.rasterHeight);
     } else {
@@ -357,7 +360,8 @@ std::unique_ptr<Shape> shapeFromJson(const QJsonObject &o) {
     if (visual.value(QStringLiteral("kind")).toString() == QLatin1String("raster")) {
         shape->setRasterShape(static_cast<quint32>(visual.value(QStringLiteral("raster_id")).toInteger(0)),
                               visual.value(QStringLiteral("width")).toInt(256),
-                              visual.value(QStringLiteral("height")).toInt(256));
+                              visual.value(QStringLiteral("height")).toInt(256),
+                              visual.value(QStringLiteral("game")).toString());
     } else {
         shape->setVectorShape(static_cast<quint16>(visual.value(QStringLiteral("shape_id")).toInt(0)));
     }
