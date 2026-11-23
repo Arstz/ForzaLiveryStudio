@@ -623,18 +623,34 @@ bool CarPreviewWidget::applyWheelGeometry(bool sizingChanged) {
 }
 
 void CarPreviewWidget::rebuildWheelSizingControls() {
-    if (!wheelPreview_) return;
-    auto *heading = new QLabel(QStringLiteral("Wheel sizing"), colorsPage_);
-    QFont headingFont = heading->font();
-    headingFont.setBold(true);
-    heading->setFont(headingFont);
-    colorsLayout_->addWidget(heading);
+    QWidget *page = partsLayout_->parentWidget();
+
+    while (QLayoutItem *item = partsLayout_->takeAt(0)) {
+        delete item->widget();
+        delete item;
+    }
+    if (!wheelPreview_) {
+        auto *empty = new QLabel(hasModel() ? QStringLiteral("Wheel sizing is unavailable for this model.")
+            : QStringLiteral("Load a car to choose parts and adjust wheel sizing."), page);
+        empty->setWordWrap(true);
+        empty->setProperty("secondary", true);
+        partsLayout_->addWidget(empty);
+        partsLayout_->addStretch();
+        return;
+    }
+    auto *heading = new QLabel(QStringLiteral("Wheel sizing"), page);
+    heading->setProperty("previewSectionHeading", true);
+    partsLayout_->addWidget(heading);
     for (bool front : {true, false}) {
-        auto *label = new QLabel(front ? QStringLiteral("Front axle") : QStringLiteral("Rear axle"), colorsPage_);
-        colorsLayout_->addWidget(label);
-        auto *row = new QWidget(colorsPage_);
+        auto *axleLabel = new QLabel(front ? QStringLiteral("Front axle") : QStringLiteral("Rear axle"), page);
+        axleLabel->setProperty("secondary", true);
+        partsLayout_->addWidget(axleLabel);
+        auto *row = new QWidget(page);
         auto *layout = new QFormLayout(row);
         layout->setContentsMargins(0, 0, 0, 0);
+        layout->setSpacing(kUiSpacing);
+        layout->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+        layout->setRowWrapPolicy(QFormLayout::WrapLongRows);
         for (bool diameter : {true, false}) {
             auto *combo = new QComboBox(row);
             const auto options = wheelSizeOptions(*wheelPreview_, front, diameter,
@@ -658,15 +674,19 @@ void CarPreviewWidget::rebuildWheelSizingControls() {
             }
             combo->setCurrentIndex(selectedIndex);
             combo->setEnabled(options.size() > 1);
-            layout->addRow(diameter ? QStringLiteral("Rim diameter") : QStringLiteral("Tire width"), combo);
+            auto *label = new QLabel(diameter ? QStringLiteral("Rim diameter") : QStringLiteral("Tire width"), row);
+            label->setProperty("uiControlLabel", true);
+            label->setBuddy(combo);
+            layout->addRow(label, combo);
             connect(combo, qOverload<int>(&QComboBox::activated), this, [this, front, diameter, options](int index) {
                 if (index >= 0 && index < options.size()) {
                     selectWheelSize(front, diameter, options[index].id, options[index].value);
                 }
             });
         }
-        colorsLayout_->addWidget(row);
+        partsLayout_->addWidget(row);
     }
+    partsLayout_->addStretch();
 }
 
 void CarPreviewWidget::selectWheelSize(bool front, bool diameter, int optionId, float value) {
@@ -682,7 +702,7 @@ void CarPreviewWidget::selectWheelSize(bool front, bool diameter, int optionId, 
     fitTireAspect(stock, sizing);
     if (!applyWheelGeometry(true)) {
         sizing = previous;
-        rebuildColorsPanel();
+        QMetaObject::invokeMethod(this, &CarPreviewWidget::rebuildWheelSizingControls, Qt::QueuedConnection);
         return;
     }
     (diameter ? axle.diameterId : axle.widthId) = optionId;

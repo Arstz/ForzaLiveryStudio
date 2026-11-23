@@ -998,7 +998,7 @@ void MainWindow::applyTheme(UiTheme theme, bool save) {
         canvas_->update();
     }
     if (carPreview_ != nullptr) {
-        carPreview_->update();
+        carPreview_->refreshTheme();
     }
     const PreviewBackgroundSettings previewBackgroundSettings = loadPreviewBackgroundSettings();
     if (clipboardWidget_ != nullptr) {

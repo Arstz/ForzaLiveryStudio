@@ -73,8 +73,11 @@ public:
     }
 
     void setCaptionHeight(int height) {
-        const int leadingInset = (height - kCaptionLogoExtent) / 2;
-        setFixedSize(leadingInset + kCaptionLogoExtent, height);
+        const int inset = (height - kCaptionLogoExtent) / 2;
+        const int rightInset = qobject_cast<QMainWindow *>(window_) != nullptr ? inset - kUiHighlightMargin : 0;
+
+        setContentsMargins(inset, inset, rightInset, height - kCaptionLogoExtent - inset);
+        setFixedSize(inset + kCaptionLogoExtent + rightInset, height);
     }
 
     QSize sizeHint() const override {
@@ -88,10 +91,8 @@ public:
 protected:
     void paintEvent(QPaintEvent *) override {
         QPainter painter(this);
-        QRect logo(QPoint(), QSize(kCaptionLogoExtent, kCaptionLogoExtent));
 
-        logo.moveTopRight(QPoint(rect().right(), (height() - kCaptionLogoExtent) / 2));
-        window_->windowIcon().paint(&painter, logo);
+        window_->windowIcon().paint(&painter, contentsRect());
     }
 
 private:

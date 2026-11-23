@@ -20,6 +20,7 @@ namespace {
 constexpr int kChoicesPerPage = 8;
 constexpr int kRadialMargin = 8;
 constexpr int kRadialShadeAlpha = 110;
+constexpr int kPageCounterVerticalPadding = 3;
 constexpr qreal kMaximumRadius = 190.0;
 constexpr qreal kInnerRadiusRatio = 0.34;
 constexpr qreal kTileRadiusRatio = 0.68;
@@ -122,7 +123,8 @@ void PartRadialSelector::beginSelection(const QPoint &origin, const QString &tit
     const bool multiplePages = choices.size() > kChoicesPerPage;
     const qreal hintHeight = helpMetrics.height() + kUiMargin * 2;
     const bool counterBelow = origin.y() <= (height() - hintHeight) * 0.5;
-    const qreal counterSpace = multiplePages ? helpMetrics.height() + kUiSpacing : 0;
+    const int counterHeight = helpMetrics.height() + 2 * kPageCounterVerticalPadding;
+    const qreal counterSpace = multiplePages ? counterHeight + kUiSpacing : 0;
     const QRectF available(kRadialMargin, kRadialMargin + (counterBelow ? 0 : counterSpace),
         std::max(1, width() - kRadialMargin * 2),
         std::max(1.0, height() - kRadialMargin * 2 - hintHeight - counterSpace));
@@ -144,7 +146,7 @@ void PartRadialSelector::beginSelection(const QPoint &origin, const QString &tit
         std::max(available.top() + outerRadius_, available.bottom() - outerRadius_)));
     pageCounterBounds_ = multiplePages
         ? QRectF(center_.x() - outerRadius_, counterBelow ? center_.y() + outerRadius_ + kUiSpacing
-            : center_.y() - outerRadius_ - kUiSpacing - helpMetrics.height(), outerRadius_ * 2, helpMetrics.height())
+            : center_.y() - outerRadius_ - counterSpace, outerRadius_ * 2, counterHeight)
         : QRectF();
     selectedOptionId_ = selectedOptionId;
     hoveredChoice_ = -1;
@@ -262,11 +264,20 @@ void PartRadialSelector::paintEvent(QPaintEvent *) {
         center_.y() - innerRadius, (innerRadius - kUiSpacing) * 2, innerRadius * 2);
     painter.drawText(label, Qt::AlignCenter | Qt::TextWordWrap, name);
     painter.setFont(uiSecondaryTextFont());
-    painter.setPen(colors.mutedText);
     if (!pageCounterBounds_.isEmpty()) {
-        painter.drawText(pageCounterBounds_, Qt::AlignCenter,
-            QStringLiteral("%1/%2").arg(page_ + 1).arg((choices_.size() + kChoicesPerPage - 1) / kChoicesPerPage));
+        const QString counter = QStringLiteral("%1/%2").arg(page_ + 1)
+            .arg((choices_.size() + kChoicesPerPage - 1) / kChoicesPerPage);
+        QRectF panel = pageCounterBounds_;
+
+        panel.setWidth(painter.fontMetrics().horizontalAdvance(counter) + 2 * kUiSpacing);
+        panel.moveCenter(pageCounterBounds_.center());
+        painter.setPen(QPen(colors.border, kUiControlBorderWidth));
+        painter.setBrush(colors.popupBackground);
+        painter.drawRoundedRect(panel, kUiCornerRadius, kUiCornerRadius);
+        painter.setPen(colors.text);
+        painter.drawText(panel, Qt::AlignCenter, counter);
     }
+    painter.setPen(colors.mutedText);
     painter.drawText(QRectF(kUiMargin, height() - fontMetrics().height() - kUiMargin,
         width() - kUiMargin * 2, fontMetrics().height()), Qt::AlignCenter,
         choices_.size() > kChoicesPerPage

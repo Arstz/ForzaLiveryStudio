@@ -24,6 +24,8 @@ class QComboBox;
 class QFrame;
 class QLabel;
 class QPushButton;
+class QScrollArea;
+class QStackedWidget;
 class QToolButton;
 class QVBoxLayout;
 
@@ -68,6 +70,7 @@ public:
     int liveryTextureScale() const;
     void setLiveryTextureScale(int scale);
     void setLoadCarTextures(bool enabled);
+    void refreshTheme();
     void cycleLod();
     void cycleDebugMode();
 
@@ -83,14 +86,16 @@ Q_SIGNALS:
 
 protected:
     void initializeGL() override;
-    void resizeGL(int w, int h) override;
     void paintGL() override;
     void paintEvent(QPaintEvent *event) override;
+    void resizeEvent(QResizeEvent *event) override;
     void mousePressEvent(QMouseEvent *event) override;
     void mouseMoveEvent(QMouseEvent *event) override;
     void wheelEvent(QWheelEvent *event) override;
 
 private:
+    enum class PreviewMenu { None, Paint, Parts, Lod };
+
     struct CachedProjectedLiverySection {
         fls::Project project;
         QRect clipRect;
@@ -122,6 +127,7 @@ private:
     void invalidateCachedLivery();
     void updateModelStatus();
     void setLoadedCarGame(const QString &game);
+    void initializePreviewMenus();
     void layoutOverlayControls();
     void resetPartSelections();
     void initializePartControls();
@@ -153,15 +159,15 @@ private:
     void selectWheelSize(bool front, bool diameter, int optionId, float value);
     void rebuildColorsPanel();
     void syncPaintControls();
+    void syncLodControl();
     void selectLod(int lodIndex);
     void switchCarUnwrapOverlay();
-    void setSidePanelVisible(bool visible);
+    void setPreviewMenu(PreviewMenu menu);
     int previewViewportWidth() const;
     void chooseSlotColor(const CarPaintSlot &slot, bool secondary, QWidget *anchor);
     void chooseSlotFinish(quint64 hash, quint32 finish);
     fls::LiveryPaintMaterial slotPaint(const CarPaintSlot &slot) const;
     QColor slotColor(const CarPaintSlot &slot, bool secondary) const;
-    void clearPaintOverrides();
     void updateCarColorControl();
 
     NativeShapeRenderer shapeRenderer_;
@@ -214,13 +220,19 @@ private:
     QLabel *referenceNote_ = nullptr;
     QLabel *modelStatus_ = nullptr;
     QFrame *sidePanel_ = nullptr;
-    QToolButton *sidePanelToggle_ = nullptr;
-    QWidget *colorsPage_ = nullptr;
-    QVBoxLayout *colorsLayout_ = nullptr;
-    QPushButton *clearPaintButton_ = nullptr;
+    QLabel *menuHeading_ = nullptr;
+    QStackedWidget *menuPages_ = nullptr;
+    QScrollArea *paintScroll_ = nullptr;
+    QScrollArea *partsScroll_ = nullptr;
+    QScrollArea *lodScroll_ = nullptr;
+    QToolButton *paintMenuButton_ = nullptr;
+    QToolButton *partsMenuButton_ = nullptr;
+    QToolButton *lodMenuButton_ = nullptr;
+    QVBoxLayout *paintLayout_ = nullptr;
+    QVBoxLayout *partsLayout_ = nullptr;
+    QComboBox *lodCombo_ = nullptr;
     QVector<PaintControls> paintControls_;
     QVector<CarPaintFinish> paintFinishChoices_;
-    QToolButton *partsToggle_ = nullptr;
     PartRadialSelector *partSelector_ = nullptr;
     QVector<PartHotspot> partHotspots_;
     QHash<int, QHash<int, QImage>> partOptionPreviews_;
@@ -237,7 +249,7 @@ private:
     QHash<int, int> individualPartOptions_;
     int partSelectorType_ = -1;
     int selectedLodIndex_ = 0;
-    bool sidePanelVisible_ = false;
+    PreviewMenu activeMenu_ = PreviewMenu::None;
 
     QVector3D target_;
     float modelRadius_ = 1.0f;

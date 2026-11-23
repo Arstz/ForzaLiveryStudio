@@ -34,6 +34,7 @@
 #include <QScopedValueRollback>
 #include <QScrollArea>
 #include <QSet>
+#include <QStackedWidget>
 #include <QToolButton>
 #include <QVBoxLayout>
 
@@ -49,6 +50,11 @@ constexpr int kLiveryBaseTexWidth = 2048;
 constexpr int kLiveryBaseTexHeight = 1024;
 constexpr int kFinishColorCountRole = Qt::UserRole + 1;
 constexpr int kFinishSpecialRole = Qt::UserRole + 2;
+constexpr int kPreviewMenuIconExtent = 18;
+constexpr int kPreviewMenuInset = kUiSpacing + kUiControlBorderWidth;
+constexpr int kPreviewMenuHeaderHeight = kUiControlHeight + 2 * kUiSpacing;
+constexpr int kPreviewPanelMinimumWidth = 220;
+constexpr int kPreviewPanelMaximumWidth = 292;
 constexpr int kLiverySectionMaskSlots[fls::kLiverySideCount] = {
     0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
 };
@@ -1491,51 +1497,19 @@ CarPreviewWidget::CarPreviewWidget(QWidget *parent)
     referenceNote_ = new QLabel(QStringLiteral("Only for reference, ingame render may differ"), this);
     referenceNote_->setObjectName(QStringLiteral("previewReference"));
     referenceNote_->setAttribute(Qt::WA_TransparentForMouseEvents);
-    referenceNote_->move(8, 6);
-    referenceNote_->adjustSize();
-    referenceNote_->raise();
+    referenceNote_->move(kUiMargin, kPreviewMenuInset);
 
     modelStatus_ = new QLabel(this);
     modelStatus_->setObjectName(QStringLiteral("previewStatus"));
     modelStatus_->setAttribute(Qt::WA_TransparentForMouseEvents);
     modelStatus_->setAlignment(Qt::AlignCenter);
 
-    sidePanel_ = new QFrame(this);
-    sidePanel_->setObjectName(QStringLiteral("previewSidePanel"));
-    sidePanel_->setAttribute(Qt::WA_StyledBackground, true);
-
-    auto *panelLayout = new QVBoxLayout(sidePanel_);
-    panelLayout->setContentsMargins(0, 0, 0, 0);
-    panelLayout->setSpacing(0);
-
-    auto *heading = new QLabel(QStringLiteral("PAINT"), sidePanel_);
-    heading->setContentsMargins(42, 10, 10, 10);
-    panelLayout->addWidget(heading);
-    auto *scroll = new QScrollArea(sidePanel_);
-    scroll->setWidgetResizable(true);
-    scroll->setFrameShape(QFrame::NoFrame);
-    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    colorsPage_ = new QWidget(scroll);
-    colorsLayout_ = new QVBoxLayout(colorsPage_);
-    colorsLayout_->setContentsMargins(kUiMargin, kUiMargin, kUiMargin, kUiMargin);
-    colorsLayout_->setSpacing(kUiSpacing);
-    scroll->setWidget(colorsPage_);
-    panelLayout->addWidget(scroll, 1);
-
-    sidePanelToggle_ = new QToolButton(this);
-    sidePanelToggle_->setObjectName(QStringLiteral("previewSidePanelToggle"));
-    sidePanelToggle_->setFocusPolicy(Qt::NoFocus);
-    sidePanelToggle_->setFixedSize(kUiHeaderHeight, kUiHeaderHeight);
-    connect(sidePanelToggle_, &QToolButton::clicked, this, [this]() {
-        setSidePanelVisible(!sidePanelVisible_);
-    });
-
+    initializePreviewMenus();
     initializePartControls();
     resetPartSelections();
     updateCarColorControl();
-
-    setSidePanelVisible(false);
     updateModelStatus();
+    refreshTheme();
     connect(this, &QOpenGLWidget::frameSwapped, this, [this]() {
         if (!carLoadTimings_.contains(QStringLiteral("render_submit_ms"))
             || carLoadTimings_.contains(QStringLiteral("first_frame_ms"))) {
@@ -1702,6 +1676,72 @@ void CarPreviewWidget::setLoadedCarGame(const QString &game) {
     Q_EMIT loadedCarGameChanged(loadedCarGame_);
 }
 
+void CarPreviewWidget::initializePreviewMenus() {
+    sidePanel_ = new QFrame(this);
+    sidePanel_->setObjectName(QStringLiteral("previewSidePanel"));
+    sidePanel_->setAttribute(Qt::WA_StyledBackground, true);
+
+    auto *panelLayout = new QVBoxLayout(sidePanel_);
+    panelLayout->setContentsMargins(kUiControlBorderWidth, kUiControlBorderWidth,
+        kUiControlBorderWidth, kUiControlBorderWidth);
+    panelLayout->setSpacing(0);
+
+    menuHeading_ = new QLabel(sidePanel_);
+    menuHeading_->setObjectName(QStringLiteral("previewMenuHeading"));
+    menuHeading_->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    panelLayout->addWidget(menuHeading_);
+
+    menuPages_ = new QStackedWidget(sidePanel_);
+    panelLayout->addWidget(menuPages_, 1);
+
+    const auto addPage = [this](QVBoxLayout *&pageLayout) {
+        auto *scroll = new QScrollArea(menuPages_);
+        auto *page = new QWidget(scroll);
+        pageLayout = new QVBoxLayout(page);
+        pageLayout->setContentsMargins(kUiMargin, kUiMargin, kUiMargin, kUiMargin);
+        pageLayout->setSpacing(kUiSpacing);
+        scroll->setWidgetResizable(true);
+        scroll->setFrameShape(QFrame::NoFrame);
+        scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        scroll->setWidget(page);
+        menuPages_->addWidget(scroll);
+
+        return scroll;
+    };
+    paintScroll_ = addPage(paintLayout_);
+    partsScroll_ = addPage(partsLayout_);
+    QVBoxLayout *lodLayout = nullptr;
+    lodScroll_ = addPage(lodLayout);
+    lodCombo_ = new QComboBox(lodScroll_->widget());
+    lodCombo_->setObjectName(QStringLiteral("previewLodCombo"));
+    lodCombo_->setAccessibleName(QStringLiteral("Level of detail"));
+    lodCombo_->setPlaceholderText(QStringLiteral("No model loaded"));
+    lodLayout->addWidget(lodCombo_);
+    lodLayout->addStretch();
+    connect(lodCombo_, qOverload<int>(&QComboBox::activated), this, &CarPreviewWidget::selectLod);
+
+    const auto addButton = [this](const QString &name, const QString &label, PreviewMenu menu) {
+        auto *button = new QToolButton(this);
+        button->setObjectName(name);
+        button->setText(label);
+        button->setToolTip(label);
+        button->setAccessibleName(label);
+        button->setToolButtonStyle(Qt::ToolButtonIconOnly);
+        button->setCheckable(true);
+        button->setProperty("uiSquareButton", true);
+        button->setFixedSize(kUiControlHeight, kUiControlHeight);
+        button->setIconSize(QSize(kPreviewMenuIconExtent, kPreviewMenuIconExtent));
+        connect(button, &QToolButton::clicked, this, [this, menu](bool checked) {
+            setPreviewMenu(checked ? menu : PreviewMenu::None);
+        });
+
+        return button;
+    };
+    paintMenuButton_ = addButton(QStringLiteral("previewPaintMenu"), QStringLiteral("Paint"), PreviewMenu::Paint);
+    partsMenuButton_ = addButton(QStringLiteral("previewPartsMenu"), QStringLiteral("Parts"), PreviewMenu::Parts);
+    lodMenuButton_ = addButton(QStringLiteral("previewLodMenu"), QStringLiteral("LODs"), PreviewMenu::Lod);
+}
+
 QImage CarPreviewWidget::renderThumbnail(const QSize &size, fls::Project *artwork) {
     if (!hasModel() || !size.isValid() || size.isEmpty()) {
         return {};
@@ -1835,6 +1875,19 @@ void CarPreviewWidget::cycleLod() {
     selectLod((selectedLodIndex_ + 1) % model_.lodCount());
 }
 
+void CarPreviewWidget::syncLodControl() {
+    const int lodCount = model_.lodCount();
+
+    if (lodCombo_->count() != lodCount) {
+        lodCombo_->clear();
+        for (int lodIndex = 0; lodIndex < lodCount; ++lodIndex) {
+            lodCombo_->addItem(QStringLiteral("LOD %1").arg(lodIndex));
+        }
+    }
+    lodCombo_->setCurrentIndex(lodCount > 0 ? selectedLodIndex_ : -1);
+    lodCombo_->setEnabled(!modelLoadPending_ && lodCount > 1);
+}
+
 void CarPreviewWidget::selectLod(int lodIndex) {
     if (lodIndex < 0 || lodIndex >= model_.lodCount()
         || selectedLodIndex_ == lodIndex) {
@@ -1842,6 +1895,7 @@ void CarPreviewWidget::selectLod(int lodIndex) {
     }
     partSelector_->cancelSelection();
     selectedLodIndex_ = lodIndex;
+    syncLodControl();
     invalidateExteriorPartPreviews();
     switchCarUnwrapOverlay();
     modelUploadPending_ = true;
@@ -2040,61 +2094,45 @@ void CarPreviewWidget::chooseSlotFinish(quint64 hash, quint32 finish) {
     state_->noteProjectPaintChanged();
 }
 
-void CarPreviewWidget::clearPaintOverrides() {
-    if (!state_ || project_ == nullptr || !project_->isLivery
-        || state_->project() != project_ || project_->liveryPaint.materials.isEmpty()) return;
-    if (paintPopup_) paintPopup_->close();
-    state_->beginProjectEdit();
-    project_->liveryPaint.materials.clear();
-    state_->commitProjectEdit();
-    state_->noteProjectPaintChanged();
-}
-
 void CarPreviewWidget::rebuildColorsPanel() {
-    if (colorsLayout_ == nullptr || colorsPage_ == nullptr) return;
+    QWidget *page = paintScroll_->widget();
+
     paintControls_.clear();
-    clearPaintButton_ = nullptr;
-    while (QLayoutItem *item = colorsLayout_->takeAt(0)) {
+    while (QLayoutItem *item = paintLayout_->takeAt(0)) {
         delete item->widget();
         delete item;
     }
-    rebuildWheelSizingControls();
-    auto *header = new QWidget(colorsPage_);
-    auto *headerLayout = new QHBoxLayout(header);
-    headerLayout->setContentsMargins(0, 0, 0, 0);
-    headerLayout->addWidget(new QLabel(QStringLiteral("Paint slots"), header));
-    headerLayout->addStretch();
-    clearPaintButton_ = new QPushButton(QStringLiteral("Reset"), header);
-    clearPaintButton_->setObjectName(QStringLiteral("previewClearPaint"));
-    headerLayout->addWidget(clearPaintButton_);
-    connect(clearPaintButton_, &QPushButton::clicked, this, &CarPreviewWidget::clearPaintOverrides);
-    colorsLayout_->addWidget(header);
     if (project_ == nullptr || !project_->isLivery || !state_ || state_->project() != project_) {
-        auto *empty = new QLabel(QStringLiteral("Open a livery project to edit paint slots."), colorsPage_);
+        auto *empty = new QLabel(QStringLiteral("Open a livery project to edit paint slots."), page);
         empty->setWordWrap(true);
-        colorsLayout_->addWidget(empty);
-        clearPaintButton_->setEnabled(false);
-        colorsLayout_->addStretch();
+        empty->setProperty("secondary", true);
+        paintLayout_->addWidget(empty);
+        paintLayout_->addStretch();
         return;
     }
     paintFinishChoices_ = carPaintFinishes(project_->liveryPaint.game);
     const auto paintSlots = carPaintSlots(model_, project_->liveryPaint, selectedLodIndex_, selectedPartOptions_);
     if (paintSlots.isEmpty()) {
         auto *empty = new QLabel(hasModel() ? QStringLiteral("This model has no paintable surfaces.")
-                                           : QStringLiteral("Load a car to see its paint slots."), colorsPage_);
+                                           : QStringLiteral("Load a car to see its paint slots."), page);
         empty->setWordWrap(true);
-        colorsLayout_->addWidget(empty);
+        empty->setProperty("secondary", true);
+        paintLayout_->addWidget(empty);
     }
     for (const CarPaintSlot &slot : paintSlots) {
         PaintControls controls;
         controls.slot = slot;
-        auto *row = new QWidget(colorsPage_);
+        auto *row = new QWidget(page);
         row->setObjectName(QStringLiteral("paintSlot.") + slot.name);
         auto *layout = new QVBoxLayout(row);
         layout->setContentsMargins(0, 0, 0, 0);
-        layout->setSpacing(4);
-        layout->addWidget(new QLabel(slot.name, row));
+        layout->setSpacing(kUiSpacing);
+        auto *label = new QLabel(slot.name, row);
+        label->setProperty("previewSectionHeading", true);
+        label->setWordWrap(true);
+        layout->addWidget(label);
         controls.material = new PaintMaterialComboBox(row);
+        label->setBuddy(controls.material);
         controls.material->setObjectName(QStringLiteral("paintMaterial.") + slot.name);
         controls.material->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
         controls.material->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
@@ -2125,16 +2163,15 @@ void CarPreviewWidget::rebuildColorsPanel() {
         connect(controls.material, qOverload<int>(&QComboBox::activated), this, [this, combo = controls.material, hash = slot.hash](int index) {
             chooseSlotFinish(hash, combo->itemData(index).toUInt());
         });
-        colorsLayout_->addWidget(row);
+        paintLayout_->addWidget(row);
         paintControls_.push_back(std::move(controls));
     }
-    colorsLayout_->addStretch();
+    paintLayout_->addStretch();
     syncPaintControls();
 }
 
 void CarPreviewWidget::syncPaintControls() {
     if (project_ == nullptr || !project_->isLivery || !state_ || state_->project() != project_) return;
-    if (clearPaintButton_ != nullptr) clearPaintButton_->setEnabled(!project_->liveryPaint.materials.isEmpty());
     for (const PaintControls &controls : paintControls_) {
         const auto material = slotPaint(controls.slot);
         const quint32 finish = controls.slot.window ? 0 : material.finish != 0 ? material.finish
@@ -2240,12 +2277,6 @@ void CarPreviewWidget::initializeGL() {
     liveLiveryFullDirty_ = true;
     liveryDirty_ = true;
     updateModelStatus();
-}
-
-void CarPreviewWidget::resizeGL(int width, int) {
-    (void)width;
-    partDepthViewProjection_.reset();
-    layoutOverlayControls();
 }
 
 void CarPreviewWidget::paintGL() {
@@ -2444,6 +2475,12 @@ void CarPreviewWidget::paintEvent(QPaintEvent *event) {
     layoutPartControls();
 }
 
+void CarPreviewWidget::resizeEvent(QResizeEvent *event) {
+    partDepthViewProjection_.reset();
+    layoutOverlayControls();
+    QOpenGLWidget::resizeEvent(event);
+}
+
 void CarPreviewWidget::setLoadCarTextures(bool enabled) {
     if (loadCarTextures_ == enabled) {
         return;
@@ -2461,6 +2498,14 @@ void CarPreviewWidget::setLoadCarTextures(bool enabled) {
     }, game);
 }
 
+void CarPreviewWidget::refreshTheme() {
+    paintMenuButton_->setIcon(assetIcon(QStringLiteral("ToolBucket.xpm")));
+    partsMenuButton_->setIcon(assetIcon(QStringLiteral("PropertyDebug.xpm")));
+    lodMenuButton_->setIcon(assetIcon(QStringLiteral("ImportCar.xpm")));
+    layoutOverlayControls();
+    update();
+}
+
 QMatrix4x4 CarPreviewWidget::cameraView() const {
     const float cp = std::cos(pitch_);
     const float sp = std::sin(pitch_);
@@ -2473,13 +2518,22 @@ QMatrix4x4 CarPreviewWidget::cameraView() const {
 }
 
 QMatrix4x4 CarPreviewWidget::cameraProjection() const {
+    QMatrix4x4 projection;
+    const int viewportWidth = previewViewportWidth();
+    const int framingWidth = std::min(width(), height());
     const float aspect = height() > 0
-        ? static_cast<float>(previewViewportWidth()) / static_cast<float>(height())
+        ? static_cast<float>(viewportWidth) / static_cast<float>(height())
         : 1.0f;
     const float nearPlane = std::max(0.01f, modelRadius_ * 0.02f);
     const float farPlane = modelRadius_ * 8.0f + distance_ * 2.0f;
-    QMatrix4x4 projection;
+
     projection.perspective(45.0f, aspect, nearPlane, farPlane);
+    if (activeMenu_ == PreviewMenu::Parts && viewportWidth < framingWidth) {
+        const float scale = static_cast<float>(viewportWidth) / static_cast<float>(framingWidth);
+        projection(0, 0) *= scale;
+        projection(1, 1) *= scale;
+    }
+
     return projection;
 }
 
@@ -2513,29 +2567,55 @@ void CarPreviewWidget::invalidateCachedLivery() {
 }
 
 void CarPreviewWidget::layoutOverlayControls() {
-    if (sidePanel_ == nullptr || sidePanelToggle_ == nullptr) {
+    if (lodMenuButton_ == nullptr) {
         return;
     }
-    const int preferredWidth = std::min(292, std::max(220, width() * 2 / 5));
-    const int panelWidth = std::min(preferredWidth, std::max(0, width() - 38));
+    const int preferredWidth = std::clamp(width() * 2 / 5, kPreviewPanelMinimumWidth, kPreviewPanelMaximumWidth);
+    const int minimumViewportWidth = std::max(width() / 2, kUiControlHeight + 2 * kPreviewMenuInset);
+    const int panelWidth = std::min(preferredWidth, std::max(0, width() - minimumViewportWidth));
+
     sidePanel_->setGeometry(width() - panelWidth, 0, panelWidth, height());
-    sidePanel_->setVisible(sidePanelVisible_);
+    sidePanel_->setVisible(activeMenu_ != PreviewMenu::None);
+    partsScroll_->setEnabled(!modelLoadPending_);
+
+    lodMenuButton_->move(width() - kPreviewMenuInset - lodMenuButton_->width(), kPreviewMenuInset);
+    partsMenuButton_->move(lodMenuButton_->x() - kUiSpacing - partsMenuButton_->width(), kPreviewMenuInset);
+    paintMenuButton_->move(partsMenuButton_->x() - kUiSpacing - paintMenuButton_->width(), kPreviewMenuInset);
+
+    const int headingRightInset = width() - paintMenuButton_->x() + kUiSpacing;
+    const int headingWidth = menuHeading_->fontMetrics().horizontalAdvance(menuHeading_->text());
+    const bool headingFits = headingWidth + kUiMargin + headingRightInset <= panelWidth;
+
+    menuHeading_->setContentsMargins(kUiMargin, headingFits ? 0 : kPreviewMenuHeaderHeight,
+        headingFits ? headingRightInset : kUiMargin, 0);
+    menuHeading_->setFixedHeight(kPreviewMenuHeaderHeight + (headingFits ? 0 : kUiControlHeight));
+
+    referenceNote_->setWordWrap(false);
+    const QSize singleLineSize = referenceNote_->sizeHint();
+    const int viewportWidth = previewViewportWidth();
+    const int noteWidth = std::min(singleLineSize.width(),
+        std::min(viewportWidth, paintMenuButton_->x()) - referenceNote_->x() - kUiSpacing);
+
+    referenceNote_->setVisible(noteWidth >= kUiControlHeight);
+    if (noteWidth >= kUiControlHeight) {
+        const bool wrap = noteWidth < singleLineSize.width();
+
+        referenceNote_->setWordWrap(wrap);
+        referenceNote_->resize(noteWidth, wrap ? referenceNote_->heightForWidth(noteWidth) : singleLineSize.height());
+    }
 
     if (modelStatus_ != nullptr) {
         modelStatus_->adjustSize();
-        const int viewportWidth = previewViewportWidth();
         modelStatus_->move(
             std::max(0, (viewportWidth - modelStatus_->width()) / 2),
             std::max(0, (height() - modelStatus_->height()) / 2));
         modelStatus_->raise();
     }
 
-    const int toggleX = sidePanelVisible_
-        ? std::max(3, width() - panelWidth + 5)
-        : std::max(3, width() - sidePanelToggle_->width() - 5);
-    sidePanelToggle_->move(toggleX, 5);
     sidePanel_->raise();
-    sidePanelToggle_->raise();
+    paintMenuButton_->raise();
+    partsMenuButton_->raise();
+    lodMenuButton_->raise();
     layoutPartControls();
 }
 
@@ -2555,27 +2635,47 @@ void CarPreviewWidget::updateModelStatus() {
 
     modelStatus_->setText(status);
     modelStatus_->setVisible(!status.isEmpty());
+    if (!transparentBackground_) {
+        syncLodControl();
+    }
     layoutOverlayControls();
 }
 
-void CarPreviewWidget::setSidePanelVisible(bool visible) {
-    sidePanelVisible_ = visible;
-    if (sidePanel_ != nullptr) {
-        sidePanel_->setVisible(visible);
+void CarPreviewWidget::setPreviewMenu(PreviewMenu menu) {
+    if (activeMenu_ == menu) {
+        return;
     }
-    if (sidePanelToggle_ != nullptr) {
-        sidePanelToggle_->setText(visible ? QStringLiteral(">")
-                                          : QStringLiteral("<"));
-        sidePanelToggle_->setToolTip(
-            visible ? QStringLiteral("Hide paint menu")
-                    : QStringLiteral("Show paint menu"));
+    if (paintPopup_) {
+        paintPopup_->close();
+    }
+    activeMenu_ = menu;
+    partSelector_->cancelSelection();
+    partDepthViewProjection_.reset();
+    paintMenuButton_->setChecked(menu == PreviewMenu::Paint);
+    partsMenuButton_->setChecked(menu == PreviewMenu::Parts);
+    lodMenuButton_->setChecked(menu == PreviewMenu::Lod);
+    switch (menu) {
+    case PreviewMenu::None:
+        break;
+    case PreviewMenu::Paint:
+        menuHeading_->setText(QStringLiteral("Paint slots"));
+        menuPages_->setCurrentWidget(paintScroll_);
+        break;
+    case PreviewMenu::Parts:
+        menuHeading_->setText(QStringLiteral("Parts"));
+        menuPages_->setCurrentWidget(partsScroll_);
+        break;
+    case PreviewMenu::Lod:
+        menuHeading_->setText(QStringLiteral("Level of detail"));
+        menuPages_->setCurrentWidget(lodScroll_);
+        break;
     }
     layoutOverlayControls();
     update();
 }
 
 int CarPreviewWidget::previewViewportWidth() const {
-    if (transparentBackground_ || !sidePanelVisible_ || sidePanel_ == nullptr) {
+    if (transparentBackground_ || activeMenu_ == PreviewMenu::None) {
         return width();
     }
     return std::max(1, width() - sidePanel_->width());
@@ -2592,6 +2692,7 @@ void CarPreviewWidget::resetPartSelections() {
     individualPartOptions_ = selectedPartOptions_;
     carRenderer_.setPartSelections(selectedPartOptions_);
     rebuildPartControls();
+    rebuildWheelSizingControls();
 }
 
 void CarPreviewWidget::switchCarUnwrapOverlay() {

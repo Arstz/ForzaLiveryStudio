@@ -14,7 +14,6 @@
 #include <QOpenGLExtraFunctions>
 #include <QPainter>
 #include <QRegularExpression>
-#include <QToolButton>
 
 #include <algorithm>
 #include <cmath>
@@ -239,22 +238,9 @@ void CarPreviewWidget::initializePartControls() {
     partPreviewTimer_.setInterval(kPartPreviewIntervalMs);
     connect(&partPreviewTimer_, &QTimer::timeout, this, &CarPreviewWidget::bakeNextPartPreview);
     connect(this, &QOpenGLWidget::frameSwapped, this, &CarPreviewWidget::schedulePartPreviewBake);
-    partsToggle_ = new QToolButton(this);
-    partsToggle_->setObjectName(QStringLiteral("previewPartsToggle"));
-    partsToggle_->setText(QStringLiteral("Parts"));
-    partsToggle_->setAccessibleName(QStringLiteral("Show part hotspots"));
-    partsToggle_->setCheckable(true);
-    partsToggle_->setChecked(true);
-    partsToggle_->setFixedHeight(kUiControlHeight);
-    connect(partsToggle_, &QToolButton::toggled, this, [this]() {
-        partSelector_->cancelSelection();
-        layoutPartControls();
-        update();
-    });
 }
 
 void CarPreviewWidget::rebuildPartControls() {
-    if (partsToggle_ == nullptr) return;
     const auto &minimum = model_.boundsMin;
     const auto &maximum = model_.boundsMax;
     const float clearance = kPartAnchorClearanceRatio * QVector3D(
@@ -341,14 +327,12 @@ void CarPreviewWidget::syncPartControls() {
     const auto *body = findPartOption(model_, fls::car_part_types::CarBody,
         selectedPartOptions_.value(fls::car_part_types::CarBody, -1));
     const bool fullKit = body != nullptr && !body->stock;
-    bool hasChoices = false;
 
     for (PartHotspot &hotspot : partHotspots_) {
         QString currentName;
         const int selected = selectedPartOptions_.value(hotspot.partType, -1);
 
         hotspot.options = availablePartOptions(hotspot.partType);
-        hasChoices = hasChoices || hotspot.options.size() > 1;
         for (qsizetype index = 0; index < hotspot.options.size(); ++index) {
             if (hotspot.options[index]->id == selected) {
                 currentName = partOptionName(model_.mediaName, loadedCarGame_, *hotspot.options[index],
@@ -367,9 +351,6 @@ void CarPreviewWidget::syncPartControls() {
                     : QStringLiteral("Hold, drag to a part, and release to apply")));
         hotspot.button->setAccessibleDescription(currentName);
     }
-    partsToggle_->setToolTip(hasChoices
-        ? QStringLiteral("Show or hide exterior part hotspots")
-        : QStringLiteral("This car has no selectable exterior part variants"));
     layoutPartControls();
 }
 
@@ -395,7 +376,8 @@ void main() {
 }
 
 void CarPreviewWidget::updatePartVisibility() {
-    if (transparentBackground_ || !partDepthVao_.isCreated() || !partsToggle_->isChecked() || partHotspots_.isEmpty()) return;
+    if (transparentBackground_ || activeMenu_ != PreviewMenu::Parts
+        || !partDepthVao_.isCreated() || partHotspots_.isEmpty()) return;
     const QMatrix4x4 view = cameraView();
     const QMatrix4x4 viewProjection = cameraProjection() * view;
     const QVector3D eye = view.inverted().map(QVector3D());
@@ -454,38 +436,28 @@ void CarPreviewWidget::updatePartVisibility() {
 }
 
 void CarPreviewWidget::layoutPartControls() {
-    if (partsToggle_ == nullptr) return;
-    QRect viewport;
-    const int viewportWidth = previewViewportWidth();
-    const int controlsTop = referenceNote_->geometry().bottom() + kUiSpacing;
-    const bool ready = hasModel() && graphicsApiSuitable_
+    if (partSelector_ == nullptr) return;
+    const QSize viewportSize(previewViewportWidth(), height());
+    const QRect viewport = QRect(QPoint(), viewportSize).adjusted(
+        kPartHotspotMargin, kPartHotspotMargin, -kPartHotspotMargin, -kPartHotspotMargin);
+    const QRect noteBounds = referenceNote_->isVisible() ? referenceNote_->geometry() : QRect{};
+    const bool ready = activeMenu_ == PreviewMenu::Parts && hasModel() && graphicsApiSuitable_
         && !modelLoadPending_ && !modelUploadPending_ && !transparentBackground_;
-    bool hasChoices = false;
 
-    viewport = QRect(kPartHotspotMargin, controlsTop + kUiControlHeight + kUiSpacing,
-        std::max(0, viewportWidth - 2 * kPartHotspotMargin),
-        std::max(0, height() - controlsTop - kUiControlHeight - kUiSpacing - kPartHotspotMargin));
-    partsToggle_->resize(partsToggle_->sizeHint().width(), kUiControlHeight);
-    partsToggle_->move(kUiMargin, controlsTop);
     for (const PartHotspot &hotspot : partHotspots_) {
-        const bool selectable = hotspot.options.size() > 1;
-        hasChoices = hasChoices || selectable;
-        if (!ready || !partsToggle_->isChecked() || !selectable || !hotspot.visibleCenter) {
+        if (!ready || !partDepthViewProjection_ || hotspot.options.size() < 2 || !hotspot.visibleCenter) {
             hotspot.button->hide();
             continue;
         }
         QRect placement(QPoint(), hotspot.button->size());
         placement.moveCenter(*hotspot.visibleCenter);
         hotspot.button->move(placement.topLeft());
-        hotspot.button->setVisible(viewport.contains(placement));
+        hotspot.button->setVisible(viewport.contains(placement) && !placement.intersects(noteBounds));
     }
-    partsToggle_->setEnabled(ready && hasChoices);
-    partsToggle_->setVisible(!transparentBackground_
-        && viewportWidth >= partsToggle_->sizeHint().width() + 2 * kUiMargin);
-    if (!ready || partSelector_->size() != QSize(viewportWidth, height())) {
+    if (!ready || partSelector_->size() != size()) {
         partSelector_->cancelSelection();
     }
-    partSelector_->setGeometry(0, 0, viewportWidth, height());
+    partSelector_->setGeometry(rect());
 }
 
 void CarPreviewWidget::beginPartSelection(int partType, QAbstractButton *anchor) {
@@ -718,6 +690,7 @@ void CarPreviewWidget::selectPartOption(int partType, int optionId) {
     invalidatePartPreview(fls::car_part_types::CarBody);
     carRenderer_.setPartSelections(selectedPartOptions_);
     switchCarUnwrapOverlay();
+    rebuildWheelSizingControls();
     rebuildColorsPanel();
     syncPartControls();
     Q_EMIT unwrapOverlayChanged();

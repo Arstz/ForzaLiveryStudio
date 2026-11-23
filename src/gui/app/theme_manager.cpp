@@ -727,8 +727,10 @@ QString themeStyleSheet(UiTheme theme) {
         QFrame#previewSidePanel QScrollArea, QFrame#previewSidePanel QScrollArea > QWidget > QWidget {
             background: transparent;
         }
-        QToolButton#previewSidePanelToggle { background: @main; min-height: 0; padding: 0; font-size: 16px; }
-        QToolButton#previewSidePanelToggle:hover { color: @selectedText; background: @highlightFill; border-color: transparent; }
+        QLabel#previewMenuHeading {
+            background: @panelHeaderSurface; border-bottom: 1px solid @surfaceSeparator; font-weight: 600;
+        }
+        QFrame#previewSidePanel QLabel[previewSectionHeading="true"] { font-weight: 600; }
         QLabel#previewReference, QLabel#previewStatus {
             color: @text; background: @popupSurface; border: 1px solid @border;
             border-radius: @radiuspx; padding: 3px 6px;
