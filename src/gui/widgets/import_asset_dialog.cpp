@@ -1,4 +1,5 @@
 #include "import_asset_dialog.h"
+#include "browser_scroll.h"
 #include "browser_tile_palette.h"
 
 #include "car_registry.h"
@@ -443,11 +444,7 @@ private:
         }
 
         painter->save();
-        painter->setRenderHint(QPainter::Antialiasing, true);
-        painter->setPen(hovered || selected ? Qt::NoPen : QPen(colors.stroke, kUiControlBorderWidth));
-        painter->setBrush(selected ? uiColors(currentUiTheme()).selection
-                                  : hovered ? colors.hover : colors.base);
-        painter->drawRoundedRect(tileRect.adjusted(0, 0, -1, -1), kUiCornerRadius, kUiCornerRadius);
+        paintBrowserTileBackground(*painter, tileRect, colors, hovered, selected);
 
         if (!thumbnail.isNull()) {
             painter->fillRect(previewRect, colors.previewBase);
@@ -526,9 +523,15 @@ public:
         : QListWidget(parent) {
         setMouseTracking(true);
         viewport()->setMouseTracking(true);
+        enableBrowserScrolling(*this);
     }
 
 protected:
+    void scrollContentsBy(int dx, int dy) override {
+        setHoveredIndex({});
+        QListWidget::scrollContentsBy(dx, dy);
+    }
+
     bool viewportEvent(QEvent *event) override {
         if (event->type() == QEvent::MouseMove) {
             const auto *mouseEvent = static_cast<QMouseEvent *>(event);

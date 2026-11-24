@@ -1,5 +1,6 @@
 #include "title_menu_bar.h"
 
+#include "file_picker_style.h"
 #include "theme_manager.h"
 
 #include <QAbstractNativeEventFilter>
@@ -7,6 +8,7 @@
 #include <QEvent>
 #include <QAbstractButton>
 #include <QDialog>
+#include <QFileDialog>
 #include <QFontMetrics>
 #include <QHBoxLayout>
 #include <QLayout>
@@ -650,6 +652,11 @@ protected:
         if (dialog == nullptr || !dialog->isWindow() || dialog->layout() == nullptr
             || dialog->windowType() != Qt::Dialog) {
             return false;
+        }
+        if (event->type() == QEvent::Show) {
+            if (auto *picker = qobject_cast<QFileDialog *>(dialog)) {
+                styleFilePicker(*picker);
+            }
         }
         auto *caption = dialog->findChild<QMenuBar *>(QStringLiteral("WindowTitleMenu"), Qt::FindDirectChildrenOnly);
 
