@@ -5,6 +5,7 @@
 #include <QHash>
 #include <QJsonObject>
 #include <QMutex>
+#include <QStringList>
 #include <QVector>
 
 #include <memory>
@@ -47,7 +48,7 @@ struct WheelPreviewState {
     fls::WheelSizing sizing;
     QJsonObject partNames;
     QVector<int> bodyIds;
-    QString libraryPath;
+    QStringList libraryPaths;
     QVector<WheelStyleOption> rims;
     QVector<WheelStyleOption> tires;
     std::array<WheelAxlePreview, 2> axles;

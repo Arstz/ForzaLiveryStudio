@@ -49,32 +49,43 @@ QJsonObject forGame(QJsonObject entry, const QString &game) {
     return entry;
 }
 
-QString wheelLibrary(const QString &sourcePath, const QString &gameFolder) {
-    const QString library = QStringLiteral("_library/scene");
+QStringList wheelLibraries(const QString &sourcePath, const QString &gameFolder) {
+    QStringList libraries;
     QStringList carsDirectories = fls::gameCarsDirs(gameFolder);
-    QDir directory = QFileInfo(sourcePath).absoluteDir();
+    QString mediaDirectory = fls::gameMediaDir(gameFolder);
+    QDir sourceDirectory = QFileInfo(sourcePath).absoluteDir();
+    const auto addLibrary = [&libraries](const QString &carsDirectory) {
+        const QString path = fls::gameAssetFilePath(QDir(carsDirectory), QStringLiteral("_library/scene"));
+        if (QFileInfo(path).isDir() && !libraries.contains(path, Qt::CaseInsensitive)) {
+            libraries.push_back(path);
+        }
+    };
 
-    if (!carsDirectories.isEmpty()) {
-        const QString source = directory.absolutePath() + QLatin1Char('/');
+    if (carsDirectories.isEmpty()) {
+        do {
+            addLibrary(sourceDirectory.absolutePath());
+            if (sourceDirectory.dirName().compare(QStringLiteral("media"), Qt::CaseInsensitive) == 0) {
+                mediaDirectory = sourceDirectory.absolutePath();
+                carsDirectories = fls::gameCarsDirs(mediaDirectory);
+                break;
+            }
+        } while (sourceDirectory.cdUp());
+    } else {
+        const QString source = sourceDirectory.absolutePath() + QLatin1Char('/');
         const auto loadedCarsDirectory = std::find_if(carsDirectories.begin(), carsDirectories.end(),
             [&source](const QString &path) { return source.startsWith(path + QLatin1Char('/'), Qt::CaseInsensitive); });
         if (loadedCarsDirectory != carsDirectories.end()) {
             std::rotate(carsDirectories.begin(), loadedCarsDirectory, loadedCarsDirectory + 1);
         }
-        for (const QString &carsDirectory : carsDirectories) {
-            const QString path = fls::gameAssetFilePath(QDir(carsDirectory), library);
-            if (QFileInfo(path).isDir()) return path;
-        }
-        return {};
+    }
+    for (const QString &carsDirectory : carsDirectories) {
+        addLibrary(carsDirectory);
+    }
+    if (!mediaDirectory.isEmpty()) {
+        addLibrary(fls::gameAssetFilePath(QDir(mediaDirectory), QStringLiteral("base/Cars")));
     }
 
-    do {
-        const QString path = fls::gameAssetFilePath(directory, library);
-        if (QFileInfo(path).isDir()) return path;
-        if (directory.dirName().compare(QStringLiteral("media"), Qt::CaseInsensitive) == 0) break;
-    } while (directory.cdUp());
-
-    return {};
+    return libraries;
 }
 
 QString tireArchive(const QString &name) {
@@ -112,9 +123,18 @@ QString fh3StockTireArchive(const QString &label) {
     return match.hasMatch() ? QStringLiteral("tire_") + match.captured(1) : QString();
 }
 
-QString wheelArchivePath(const QString &libraryPath, const QString &archive, bool rim) {
-    return fls::gameAssetFilePath(QDir(libraryPath), (rim ? QStringLiteral("wheels/")
-        : QStringLiteral("tires/")) + archive + QStringLiteral(".zip"));
+QString wheelArchivePath(const QStringList &libraries, const QString &archive, bool rim) {
+    const QString relativePath = (rim ? QStringLiteral("wheels/") : QStringLiteral("tires/"))
+        + archive + QStringLiteral(".zip");
+
+    for (const QString &library : libraries) {
+        const QString path = fls::gameAssetFilePath(QDir(library), relativePath);
+        if (QFileInfo(path).isFile()) {
+            return path;
+        }
+    }
+
+    return {};
 }
 
 std::shared_ptr<const fls::CarModel> cacheWheelTemplate(WheelTemplateCache &cache, const QString &key,
@@ -131,7 +151,13 @@ std::shared_ptr<const fls::CarModel> cacheWheelTemplate(WheelTemplateCache &cach
 
 std::shared_ptr<const fls::CarModel> wheelTemplate(const WheelPreviewState &state, const QString &archive,
                                                   bool left, bool rim, QString *error) {
-    QString path = wheelArchivePath(state.libraryPath, archive, rim);
+    QString path = wheelArchivePath(state.libraryPaths, archive, rim);
+    if (path.isEmpty()) {
+        if (error != nullptr) {
+            *error = QStringLiteral("Wheel archive %1.zip was not found.").arg(archive);
+        }
+        return {};
+    }
     const QString key = path + (left ? QStringLiteral("|L") : QStringLiteral("|R"));
 
     {
@@ -153,11 +179,13 @@ std::shared_ptr<const fls::CarModel> wheelTemplate(const WheelPreviewState &stat
     };
     QString entry = findEntry(entries);
     if (entry.isEmpty() && !rim && !left) {
-        const QString rightPath = wheelArchivePath(state.libraryPath,
+        const QString rightPath = wheelArchivePath(state.libraryPaths,
             QString(archive).replace(QStringLiteral("tire_"), QStringLiteral("tireR_")), rim);
-        path = rightPath;
-        entries = fls::listZipEntries(path, error);
-        entry = findEntry(entries);
+        if (!rightPath.isEmpty()) {
+            path = rightPath;
+            entries = fls::listZipEntries(path, error);
+            entry = findEntry(entries);
+        }
     }
     if (entry.isEmpty() && !rim && !left) {
         const auto fallback = wheelTemplate(state, archive, true, false, error);
@@ -328,8 +356,8 @@ std::shared_ptr<WheelPreviewState> prepareWheelPreview(
     state->independentRimStyles = !game.isEmpty() && version == QStringLiteral("FH6");
     state->sizing = sizing;
     state->mounts = model.wheelMounts;
-    state->libraryPath = wheelLibrary(sourcePath, gameFolder);
-    if (state->mounts.empty() || state->libraryPath.isEmpty()) return {};
+    state->libraryPaths = wheelLibraries(sourcePath, gameFolder);
+    if (state->mounts.empty() || state->libraryPaths.isEmpty()) return {};
     for (const auto &mesh : model.meshes) {
         QString path = mesh.sourceModelPath;
         path.replace(QLatin1Char('\\'), QLatin1Char('/'));
@@ -363,7 +391,7 @@ std::shared_ptr<WheelPreviewState> prepareWheelPreview(
             const QString archive = value.value(QStringLiteral("model")).toString();
             const QStringList versions = value.value(QStringLiteral("version")).toString().split(QStringLiteral(", "));
             if (value.value(QStringLiteral("stock")).toBool() || !versions.contains(version)
-                || !QFileInfo::exists(wheelArchivePath(state->libraryPath, archive, true))) continue;
+                || wheelArchivePath(state->libraryPaths, archive, true).isEmpty()) continue;
             const auto manufacturer = forGame(catalog.value(QStringLiteral("manufacturers")).toObject()
                 .value(QString::number(value.value(QStringLiteral("manufacturer")).toInt())).toObject(), version);
             const QString brand = manufacturer.value(QStringLiteral("name")).toString();
@@ -387,8 +415,8 @@ std::shared_ptr<WheelPreviewState> prepareWheelPreview(
         const bool stock = name.startsWith(QStringLiteral("Stock"), Qt::CaseInsensitive);
         const int id = match.captured(1).toInt();
 
-        if (!QFileInfo::exists(wheelArchivePath(state->libraryPath, archive, false))) {
-            if (!stock || !QFileInfo::exists(wheelArchivePath(state->libraryPath, kFallbackStockTire, false))) continue;
+        if (wheelArchivePath(state->libraryPaths, archive, false).isEmpty()) {
+            if (!stock || wheelArchivePath(state->libraryPaths, kFallbackStockTire, false).isEmpty()) continue;
             archive = kFallbackStockTire;
         }
         state->tires.push_back({name, archive, id});

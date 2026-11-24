@@ -157,6 +157,13 @@ QString gameMediaDir(const QString &gameFolder) {
         return QString();
     }
     const QDir root(gameFolder);
+    QDir parent = root;
+    const QString layer = root.dirName().toLower();
+
+    if ((layer == QStringLiteral("pcfamily") || layer == QStringLiteral("base"))
+        && parent.cdUp() && parent.dirName().compare(QStringLiteral("media"), Qt::CaseInsensitive) == 0) {
+        return parent.absolutePath();
+    }
     if (QFileInfo(gameAssetFilePath(root, QStringLiteral("Cars"))).isDir()
         || QFileInfo(gameAssetFilePath(root, QStringLiteral("pcfamily/Cars"))).isDir()) {
         return root.absolutePath();

@@ -1,5 +1,6 @@
 #include "car_preview_wheels.h"
 #include "material_hashes.h"
+#include "model_bundle.h"
 #include "model_material.h"
 #include "zip_extract.h"
 
@@ -24,34 +25,47 @@ int meshCount(const fls::CarModel &model, int partType) {
         [partType](const auto &mesh) { return mesh.carPartType == partType; }));
 }
 
-void requireTireMaterial(const fls::CarMesh &mesh) {
+void requireTireTextures(const fls::ModelMaterial &material) {
     namespace hashes = fls::material_hashes::parameter;
-    require(mesh.material && mesh.material->normalTexture
-        && mesh.material->normalTexture->image.valid(), "compound lost its stationary normal map");
-    require(!mesh.material->normalTexture->path.contains(QStringLiteral("blur"), Qt::CaseInsensitive),
+    const auto &normal = material.normalTexture;
+    const auto &height = material.tireHeightTexture;
+    require(normal && normal->image.valid(), "compound lost its stationary normal map");
+    require(!normal->path.contains(QStringLiteral("blur"), Qt::CaseInsensitive),
         "stationary tyre received a motion-blur map");
-    for (const auto &parameter : mesh.material->parameters) {
-        if (parameter.nameHash == hashes::kTireNormalHeightTexture) {
-            require(mesh.material->tireHeightTexture == mesh.material->normalTexture,
-                "packed tyre height is missing from the normal map binding");
+    bool packedHeight = false;
+    bool separateHeight = false;
+    for (const auto &parameter : material.parameters) {
+        if (parameter.texturePath.isEmpty()) continue;
+        const auto binding = fls::shaderTextureParameter(material, parameter);
+        if (!binding) continue;
+        packedHeight = packedHeight || *binding == hashes::kTireNormalHeightTexture;
+        separateHeight = separateHeight || fls::material_hashes::contains(hashes::kSeparateTireHeightTextures, *binding);
+        if (*binding == hashes::kLegacyTireDiffuseTexture) {
+            require(material.diffuseTexture && material.diffuseTexture->image.valid(),
+                "compound lost its diffuse map");
+            require(!material.diffuseTexture->path.contains(QStringLiteral("blur"), Qt::CaseInsensitive),
+                "stationary tyre received a motion-blur diffuse map");
         }
-        if (parameter.nameHash == hashes::kLegacyTireHeightTexture && !parameter.texturePath.isEmpty()) {
-            require(mesh.material->tireHeightTexture && mesh.material->tireHeightTexture->image.valid()
-                && mesh.material->tireHeightTexture != mesh.material->normalTexture,
-                "legacy compound lost its separate height map");
-        }
-        if (parameter.nameHash == hashes::kTireSurfaceMasks && !parameter.texturePath.isEmpty()) {
-            require(mesh.material->surfaceTexture && mesh.material->surfaceTexture->image.valid(),
+        if (*binding == hashes::kTireSurfaceMasks) {
+            require(material.surfaceTexture && material.surfaceTexture->image.valid(),
                 "compound lost its surface masks");
         }
     }
-    const auto &height = mesh.material->tireHeightTexture;
+    if (packedHeight || separateHeight) {
+        require(height && height->image.valid(), "compound lost its height map");
+        require((height == normal) == packedHeight, "compound received the wrong height map binding");
+    }
     if (height && height->path.contains(QStringLiteral("tread_street_nrml"), Qt::CaseInsensitive)) {
         const auto &pixels = height->image.rgba;
         size_t alpha = 3;
         while (alpha < pixels.size() && pixels[alpha] == pixels[3]) alpha += 4;
         require(alpha < pixels.size(), "street tread height decoded to a constant");
     }
+}
+
+void requireTireMaterial(const fls::CarMesh &mesh) {
+    require(static_cast<bool>(mesh.material), "compound lost its material");
+    requireTireTextures(*mesh.material);
     const auto vector = [](const fls::ModelVec3 &v) { return QVector3D(v.x, v.y, v.z); };
     double orientation = 0;
     for (size_t i = 0; i + 2 < mesh.indices.size(); i += 3) {
@@ -122,17 +136,23 @@ void testSelectionPolicy() {
         "unknown tire choice changed the configuration");
 }
 
-void testCar(const QString &archive) {
-    using namespace gui;
+fls::CarModel loadFixtureCar(const QString &archive, const fls::WheelSizing &sizing) {
     QString error;
     const auto extracted = fls::sharedZipExtraction(archive, &error);
     require(extracted != nullptr, qPrintable(error));
     QDirIterator iterator(extracted->path(), {QStringLiteral("*.carbin")}, QDir::Files, QDirIterator::Subdirectories);
     require(iterator.hasNext(), "carbin missing from fixture");
-    fls::WheelSizing sizing;
     auto model = fls::loadCarBin(iterator.next(), &error, sizing);
     require(!model.meshes.empty(), qPrintable(error));
     require(model.wheelMounts.size() == 4, "four wheel mounts were not retained");
+    return model;
+}
+
+void testCar(const QString &archive) {
+    using namespace gui;
+    QString error;
+    fls::WheelSizing sizing;
+    auto model = loadFixtureCar(archive, sizing);
     auto state = prepareWheelPreview(model, archive, QStringLiteral("FH6"), sizing);
     const auto legacyState = prepareWheelPreview(model, archive, QStringLiteral("FH5"), sizing);
     require(state && state->rims.size() > 2, "available rim catalog was not connected");
@@ -238,12 +258,98 @@ void testCar(const QString &archive) {
         static_cast<long long>(state->rims.size()), static_cast<long long>(state->tires.size()));
 }
 
+void testMotorsportCar(const QString &archive, const QString &gameFolder) {
+    using namespace gui;
+    const fls::WheelSizing sizing;
+    const auto model = loadFixtureCar(archive, sizing);
+    QDir platformFolder = QFileInfo(archive).absoluteDir();
+    require(platformFolder.cdUp(), "Motorsport platform folder missing");
+    for (const QString &folder : {gameFolder, platformFolder.absolutePath(), QString()}) {
+        const auto state = prepareWheelPreview(model, archive, QStringLiteral("FM2023"), sizing, folder);
+        require(state && state->rims.size() > 1, "Motorsport aftermarket rims missing");
+        state->loadCarTextures = !folder.isEmpty();
+        for (const bool front : {true, false}) {
+            QString error;
+            const auto stock = buildWheelPreviewGeometry(*state, front, kStockRimStyle, state->tireId, &error);
+            require(error.isEmpty(), qPrintable(error));
+            require(meshCount(stock, kTireSelector) >= 2, "Motorsport stock tire geometry missing");
+            requirePair(stock, kTireSelector);
+            if (state->loadCarTextures) {
+                const auto textured = std::find_if(stock.meshes.cbegin(), stock.meshes.cend(), [](const auto &mesh) {
+                    return mesh.carPartType == kTireSelector && mesh.material && mesh.material->tireHeightTexture;
+                });
+                require(textured != stock.meshes.cend(), "Motorsport stock tire height map missing");
+                requireTireTextures(*textured->material);
+            }
+        }
+        const int rimId = state->rims[1].id;
+        require(selectWheelPreviewStyle(*state, kFrontRimSelector, rimId), "Motorsport rim selection failed");
+        for (const bool front : {true, false}) {
+            const int partType = front ? kFrontRimSelector : kRearRimSelector;
+            const int selected = state->axles[front ? 0 : 1].rimId;
+            QString error;
+            const auto wheels = buildWheelPreviewGeometry(*state, front, selected, state->tireId, &error);
+            require(error.isEmpty(), qPrintable(error));
+            require(selected == rimId && meshCount(wheels, partType) >= 2
+                && meshCount(wheels, kTireSelector) >= 2, "Motorsport rim and tire geometry missing");
+            requirePair(wheels, partType);
+            requirePair(wheels, kTireSelector);
+        }
+    }
+    std::printf("%s: Motorsport split rim and tire libraries passed\n", qPrintable(model.mediaName));
+}
+
+void testTireMaterial(const QString &archive) {
+    namespace hashes = fls::material_hashes::parameter;
+    QString error;
+    const QStringList entries = fls::listZipEntries(archive, &error);
+    const auto entry = std::find_if(entries.begin(), entries.end(), [](const QString &name) {
+        return name.endsWith(QStringLiteral(".modelbin"), Qt::CaseInsensitive);
+    });
+    require(entry != entries.end(), qPrintable(error.isEmpty() ? "tire model missing" : error));
+    auto model = fls::decodeModel(fls::parseModelBundle(fls::readZipEntry(archive, *entry, &error)));
+    require(!model.meshes.empty(), "tire model has no geometry");
+    gui::resolveTireTemplateMaterials(model, archive, true);
+    QSet<const fls::ModelMaterial *> materials;
+    for (const auto &mesh : model.meshes) {
+        if (!mesh.material || materials.contains(mesh.material.get())) continue;
+        const auto &material = *mesh.material;
+        const bool hasNormal = std::any_of(material.parameters.cbegin(), material.parameters.cend(),
+            [&](const auto &parameter) {
+                const auto binding = fls::shaderTextureParameter(material, parameter);
+                return binding && !parameter.texturePath.isEmpty()
+                    && (*binding == hashes::kTireNormalHeightTexture
+                        || fls::material_hashes::contains(hashes::kSeparateTireNormalTextures, *binding));
+            });
+        if (!hasNormal) continue;
+        materials.insert(&material);
+        try {
+            requireTireTextures(material);
+            require(static_cast<bool>(material.tireHeightTexture), "fixture has no loaded height map");
+        } catch (const std::exception &) {
+            std::fprintf(stderr, "%s [%s]\n", qPrintable(archive), qPrintable(mesh.materialName));
+            throw;
+        }
+    }
+    require(!materials.isEmpty(), "tire model has no material with authored relief");
+    std::printf("%s: tire textures passed\n", qPrintable(archive));
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
     QCoreApplication app(argc, argv);
     try {
         testSelectionPolicy();
+        const QStringList arguments = app.arguments();
+        if (arguments.size() > 2 && arguments[1] == QStringLiteral("--tire-material")) {
+            for (const auto &archive : arguments.sliced(2)) testTireMaterial(archive);
+            return 0;
+        }
+        if (arguments.size() == 4 && arguments[1] == QStringLiteral("--fm2023")) {
+            testMotorsportCar(arguments[2], arguments[3]);
+            return 0;
+        }
         require(argc > 1, "provide a car archive fixture");
         for (int index = 1; index < argc; ++index) testCar(QString::fromLocal8Bit(argv[index]));
         return 0;

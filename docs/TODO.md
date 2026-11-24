@@ -1,7 +1,6 @@
 Small changes:
     -Anull UV cache on manual model change
     -Replace shape based on bounding box
-    -Fix error with car rims import in FM2023
 
 Medium changes:
     -Unify file picker explorer

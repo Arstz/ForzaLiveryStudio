@@ -278,6 +278,28 @@ std::optional<ProjectedLiverySection> buildProjectedLiverySection(const fls::Pro
     return projected;
 }
 
+QString findMediaResource(const QString &sourcePath, const QString &relativePath) {
+    QDir directory = QFileInfo(sourcePath).absoluteDir();
+    do {
+        if (directory.dirName().compare(QStringLiteral("media"), Qt::CaseInsensitive) == 0
+            || QFileInfo(fls::gameAssetFilePath(directory, QStringLiteral("Cars"))).isDir()
+            || directory.exists(QStringLiteral("pcfamily/Cars"))) {
+            const QDir media(fls::gameMediaDir(directory.absolutePath()));
+            const QStringList layers = {directory.absolutePath(), media.absolutePath(),
+                media.filePath(QStringLiteral("pcfamily")), media.filePath(QStringLiteral("base"))};
+            for (const QString &layer : layers) {
+                const QString path = fls::gameAssetFilePath(QDir(layer), relativePath);
+                if (QFileInfo(path).isFile()) {
+                    return path;
+                }
+            }
+            return {};
+        }
+    } while (directory.cdUp());
+
+    return {};
+}
+
 QString findSharedCarAsset(const QString &sourcePath, const QString &relativePath) {
     QDir dir = QFileInfo(sourcePath).absoluteDir();
     for (int depth = 0; depth < 6; ++depth) {
@@ -289,7 +311,8 @@ QString findSharedCarAsset(const QString &sourcePath, const QString &relativePat
             break;
         }
     }
-    return {};
+
+    return findMediaResource(sourcePath, QStringLiteral("Cars/") + relativePath);
 }
 
 QString findCarResourceArchive(const fls::CarAssetIndex &assets, const QString &sourcePath,
@@ -297,20 +320,6 @@ QString findCarResourceArchive(const fls::CarAssetIndex &assets, const QString &
     const QString packagedPath = assets.resolve(relativePath);
 
     return packagedPath.isEmpty() ? findSharedCarAsset(sourcePath, relativePath) : packagedPath;
-}
-
-QString findMediaResource(const QString &sourcePath, const QString &relativePath) {
-    QDir directory = QFileInfo(sourcePath).absoluteDir();
-    do {
-        if (directory.dirName().compare(QStringLiteral("media"), Qt::CaseInsensitive) == 0
-            || QFileInfo(fls::gameAssetFilePath(directory, QStringLiteral("Cars"))).isDir()
-            || directory.exists(QStringLiteral("pcfamily/Cars"))) {
-            const QString path = fls::gameAssetFilePath(directory, relativePath);
-            return QFileInfo(path).isFile() ? path : QString();
-        }
-    } while (directory.cdUp());
-
-    return {};
 }
 
 struct CarGameSource {
@@ -323,7 +332,7 @@ CarGameSource carGameSource(const QString &path, const QString &game) {
     if (!archive.isEmpty()) {
         QDir media = QFileInfo(archive).absoluteDir();
         if (media.cdUp()) {
-            if (!game.isEmpty()) return {game, media.absolutePath()};
+            if (!game.isEmpty()) return {game, fls::gameMediaDir(media.absolutePath())};
             if (fls::hasFh3ObfuscatedNames(media.absolutePath())) return {QStringLiteral("FH3"), media.absolutePath()};
             QDir install = media;
             if (install.cdUp()) {
@@ -624,6 +633,8 @@ enum class NativeTextureSlot {
     Diffuse,
     Alpha,
     Normal,
+    TireDiffuse,
+    TireNormal,
     TireNormalHeight,
     TireHeight,
     Surface,
@@ -639,9 +650,10 @@ enum class NativeTextureSlot {
 
 NativeTextureSlot tireTextureSlot(quint32 hash) {
     using namespace fls::material_hashes;
+    if (hash == parameter::kLegacyTireDiffuseTexture) return NativeTextureSlot::TireDiffuse;
     if (hash == parameter::kTireNormalHeightTexture) return NativeTextureSlot::TireNormalHeight;
-    if (hash == parameter::kLegacyTireNormalTexture) return NativeTextureSlot::Normal;
-    if (hash == parameter::kLegacyTireHeightTexture) return NativeTextureSlot::TireHeight;
+    if (contains(parameter::kSeparateTireNormalTextures, hash)) return NativeTextureSlot::TireNormal;
+    if (contains(parameter::kSeparateTireHeightTextures, hash)) return NativeTextureSlot::TireHeight;
     if (hash == parameter::kTireSurfaceMasks) return NativeTextureSlot::TireSurface;
 
     return NativeTextureSlot::Unknown;
@@ -750,8 +762,11 @@ std::shared_ptr<fls::ModelMaterial> loadLocalMaterial(const QString &path) {
 void assignNativeTexture(fls::ModelMaterial &material,
                          NativeTextureSlot slot,
                          const std::shared_ptr<const fls::ModelMaterialTexture> &texture) {
+    const bool hasPackedTireRelief = material.normalTexture && material.normalTexture == material.tireHeightTexture;
+
     switch (slot) {
     case NativeTextureSlot::Diffuse:
+    case NativeTextureSlot::TireDiffuse:
         material.diffuseTexture = texture;
         break;
     case NativeTextureSlot::Alpha:
@@ -760,11 +775,17 @@ void assignNativeTexture(fls::ModelMaterial &material,
     case NativeTextureSlot::Normal:
         material.normalTexture = texture;
         break;
+    case NativeTextureSlot::TireNormal:
+        if (!hasPackedTireRelief) material.normalTexture = texture;
+        break;
     case NativeTextureSlot::TireNormalHeight:
-        material.normalTexture = texture;
-        [[fallthrough]];
+        if (texture) {
+            material.normalTexture = texture;
+            material.tireHeightTexture = texture;
+        }
+        break;
     case NativeTextureSlot::TireHeight:
-        material.tireHeightTexture = texture;
+        if (!hasPackedTireRelief) material.tireHeightTexture = texture;
         break;
     case NativeTextureSlot::Surface:
     case NativeTextureSlot::TireSurface:
@@ -1059,7 +1080,8 @@ void resolveModelMaterials(
             const auto &parameters = mesh.material->parameters;
             const bool tire = std::any_of(parameters.cbegin(), parameters.cend(),
                 [](const auto &parameter) {
-                    return tireTextureSlot(parameter.nameHash) != NativeTextureSlot::Unknown;
+                    const NativeTextureSlot slot = tireTextureSlot(parameter.nameHash);
+                    return slot != NativeTextureSlot::Unknown && slot != NativeTextureSlot::TireDiffuse;
                 });
             const auto &legacySurface = mesh.material->legacySurface;
             const bool weave = mesh.material->weave.has_value();

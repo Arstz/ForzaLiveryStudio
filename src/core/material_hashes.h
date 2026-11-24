@@ -283,8 +283,15 @@ inline constexpr std::array<quint32, 2> kFlakeAmount = {
 inline constexpr quint32 kColorTexture = 0x85E937A9;
 inline constexpr quint32 kNormalTexture = 0xF9E8078D;
 inline constexpr quint32 kTireNormalHeightTexture = 0x1585B73B;
+inline constexpr quint32 kLegacyTireDiffuseTexture = 0x1FB83FBA;
 inline constexpr quint32 kLegacyTireNormalTexture = 0x18EA8FF0;
 inline constexpr quint32 kLegacyTireHeightTexture = 0x86AB1BDA;
+inline constexpr std::array<quint32, 3> kSeparateTireNormalTextures = {
+    kLegacyTireNormalTexture, 0x5BB7DA76, 0xC751A20B,
+};
+inline constexpr std::array<quint32, 3> kSeparateTireHeightTextures = {
+    kLegacyTireHeightTexture, 0x3A72873C, 0x5139CFD8,
+};
 inline constexpr quint32 kTireSurfaceMasks = 0x6510A127;
 inline constexpr quint32 kTireMapTiling = 0x25F1CD0C;
 inline constexpr quint32 kTireBaseColor = 0xE795999C;
