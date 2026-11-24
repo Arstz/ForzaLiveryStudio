@@ -394,6 +394,7 @@ protected:
         const bool result = QMenuBar::event(event);
 
         switch (event->type()) {
+        case QEvent::ApplicationFontChange:
         case QEvent::FontChange:
         case QEvent::StyleChange:
         case QEvent::DevicePixelRatioChange:
@@ -590,9 +591,13 @@ private:
 
         observeFrameWindow();
         const QFont menuFont = uiTextFont();
-        const QFontMetrics menuMetrics(menuFont, this);
+        if (font() != menuFont) {
+            setFont(menuFont);
+        }
+        const QFontMetrics menuMetrics = fontMetrics();
         const QMargins textMargins = uiTextInsets(menuFont);
-        const int captionHeight = std::max(kUiControlHeight, kDefaultCaptionHeight);
+        const int captionHeight = std::max({kUiControlHeight, kDefaultCaptionHeight,
+            menuMetrics.height() + 2 * kUiHighlightMargin});
         const int menuPadding = std::max(0, captionHeight - 2 * kUiHighlightMargin - menuMetrics.height());
         const int menuTopPadding = std::clamp(
             (menuPadding + textMargins.top() - textMargins.bottom()) / 2, 0, menuPadding);
@@ -600,19 +605,17 @@ private:
         const QString sheet = QStringLiteral(
             "QMenuBar#WindowTitleMenu { padding: 0; spacing: 0; }"
             "QMenuBar#WindowTitleMenu::item { padding: %1px %2px %3px %2px;"
-            " margin: %4px %4px %5px %4px; }")
+            " margin: %4px %4px %5px %4px; }"
+            "QMenuBar#WindowTitleMenu > QToolButton { padding: 0; }")
             .arg(menuTopPadding).arg(kCaptionMenuHorizontalPadding).arg(menuBottomPadding)
             .arg(kUiHighlightMargin).arg(kUiHighlightMargin + kUiControlBorderWidth);
 
-        if (font() != menuFont) {
-            setFont(menuFont);
-        }
         controls_->setCaptionHeight(captionHeight);
         logo_->setCaptionHeight(captionHeight);
-        setFixedHeight(captionHeight + kUiControlBorderWidth);
         if (styleSheet() != sheet) {
             setStyleSheet(sheet);
         }
+        setFixedHeight(std::max(captionHeight + kUiControlBorderWidth, QMenuBar::heightForWidth(width())));
         applyNativeFrameTheme(nativeWindow_);
     }
 
