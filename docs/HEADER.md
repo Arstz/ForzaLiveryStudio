@@ -104,4 +104,4 @@ receives target defaults. Projects without source headers receive generated
 draft metadata.
 
 See [group encoding](CGROUP.md), [livery export profiles](CLIVERY.md#native-export-targets),
-and [WGS replacement](WGS.md) for the enclosing asset formats.
+and [WGS export](WGS.md) for the enclosing asset formats.

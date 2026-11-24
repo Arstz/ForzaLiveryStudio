@@ -17,7 +17,7 @@ materials, and livery masks.
 | [Group encoding](CGROUP.md) | Group records, transforms, shapes, masks, and game dialects. |
 | [Livery encoding](CLIVERY.md) | Sections, paint descriptors, compression, and export profiles. |
 | [Header encoding](HEADER.md) | Header sidecars and metadata. |
-| [WGS replacement](WGS.md) | Save containers, replacement transactions, and recovery. |
+| [WGS export](WGS.md) | Save containers, registrations, and recovery. |
 
 ## Build and run
 
@@ -120,7 +120,7 @@ section occupancy from visible content. Figures and guides remain editor
 content.
 
 Destination formats are documented in
-[native export profiles](CLIVERY.md#native-export-targets). WGS replacement uses
+[native export profiles](CLIVERY.md#native-export-targets). WGS export uses
 the transactional pipeline described in [WGS.md](WGS.md).
 
 ### Contours and fill

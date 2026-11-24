@@ -192,6 +192,8 @@ QByteArray nativeHeader(const Project &project, ExportGameVersion game,
                 detail::appendLeU32(metadata.trailing, metadata.carId);
             }
             metadata.trailing.append(QByteArray(16, '\0'));
+        } else if (game == ExportGameVersion::Horizon5 && !project.isLivery) {
+            metadata.sectionPrefix[0] = '\x01';
         } else {
             metadata.trailing = QByteArray(project.isLivery ? 14 : 2, '\0');
             if (!project.isLivery) {

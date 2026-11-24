@@ -14,6 +14,7 @@
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMap>
 #include <QPushButton>
 #include <QSettings>
 #include <QSignalBlocker>
@@ -32,8 +33,10 @@ bool supportsExportContainer(ExportGameVersion game, ExportContainerFormat forma
     switch (format) {
     case ExportContainerFormat::PgsFolder:
         return !xbox360;
-    case ExportContainerFormat::WgsContainer:
+    case ExportContainerFormat::WgsAppend:
         return game == ExportGameVersion::Horizon5;
+    case ExportContainerFormat::WgsFh5ToMotorsport:
+        return game == ExportGameVersion::Motorsport2023;
     case ExportContainerFormat::Xbox360PlainFile:
         return xbox360;
     case ExportContainerFormat::Xbox360SignedFile:
@@ -51,7 +54,8 @@ constexpr int kLayoutMargin = kUiMargin;
 constexpr int kLayoutSpacing = kUiSpacing;
 constexpr int kComboLabelInset = 2;
 constexpr char kGeometrySettingsKey[] = "export/dialogGeometry";
-constexpr char kDescriptorSettingsKey[] = "export/wgsDescriptor";
+constexpr char kNativeIndexSettingsKey[] = "export/wgsFh5Index";
+constexpr char kImportIndexSettingsKey[] = "export/wgsFh5ImportIndex";
 const QString kDiscardChoiceText = QStringLiteral("Discard");
 
 struct ExportContainerOption {
@@ -61,10 +65,16 @@ struct ExportContainerOption {
 
 constexpr ExportContainerOption kContainerOptions[] = {
     {ExportContainerFormat::PgsFolder, "PGS / asset folder"},
-    {ExportContainerFormat::WgsContainer, "WGS / replace existing container"},
+    {ExportContainerFormat::WgsAppend, "WGS / add new container"},
+    {ExportContainerFormat::WgsFh5ToMotorsport, "WGS (FH5->FM2023)"},
     {ExportContainerFormat::Xbox360PlainFile, "Xbox 360 plaintext file"},
     {ExportContainerFormat::Xbox360SignedFile, "Xbox 360 encrypted file"},
 };
+
+QString wgsPathSettingsKey(ExportContainerFormat format) {
+    return QLatin1String(format == ExportContainerFormat::WgsFh5ToMotorsport
+        ? kImportIndexSettingsKey : kNativeIndexSettingsKey);
+}
 
 void sizeWarningChoice(QComboBox &choice) {
     QStyleOptionComboBox option;
@@ -170,23 +180,20 @@ public:
         folderHint_->setWordWrap(true);
         layout->addWidget(folderHint_);
 
-        wgsOptions_ = new QGroupBox(QStringLiteral("WGS replacement"), this);
+        wgsOptions_ = new QGroupBox(QStringLiteral("WGS save profile"), this);
         auto *wgsForm = new QFormLayout(wgsOptions_);
-        auto *descriptorRow = new QHBoxLayout();
-        descriptorEdit_ = new QLineEdit(QSettings().value(QLatin1String(kDescriptorSettingsKey)).toString(), wgsOptions_);
-        descriptorEdit_->setPlaceholderText(QStringLiteral("Select container.1 or the active container.N"));
-        auto *descriptorBrowse = new QPushButton(QStringLiteral("Browse…"), wgsOptions_);
-        descriptorBrowse->setAutoDefault(false);
-        descriptorRow->addWidget(descriptorEdit_, 1);
-        descriptorRow->addWidget(descriptorBrowse);
-        wgsForm->addRow(QStringLiteral("Container descriptor"), descriptorRow);
+        auto *indexRow = new QHBoxLayout();
+        indexEdit_ = new QLineEdit(wgsOptions_);
+        indexEdit_->setPlaceholderText(QStringLiteral("Select containers.index"));
+        auto *indexBrowse = new QPushButton(QStringLiteral("Browse…"), wgsOptions_);
+        indexBrowse->setAutoDefault(false);
+        indexRow->addWidget(indexEdit_, 1);
+        indexRow->addWidget(indexBrowse);
+        wgsForm->addRow(QStringLiteral("Profile index"), indexRow);
         profileEdit_ = new QLineEdit(wgsOptions_);
         profileEdit_->setReadOnly(true);
         wgsForm->addRow(QStringLiteral("Save profile"), profileEdit_);
-        containerNameEdit_ = new QLineEdit(wgsOptions_);
-        containerNameEdit_->setReadOnly(true);
-        wgsForm->addRow(QStringLiteral("Container name"), containerNameEdit_);
-        gameClosed_ = new QCheckBox(QStringLiteral("FH5 is closed and cloud synchronization has finished"), wgsOptions_);
+        gameClosed_ = new QCheckBox(wgsOptions_);
         wgsForm->addRow(gameClosed_);
         layout->addWidget(wgsOptions_);
         layout->addStretch(1);
@@ -205,8 +212,8 @@ public:
         layout->addWidget(buttons_);
 
         connect(browse_, &QPushButton::clicked, this, [this]() { browseDirectory(); });
-        connect(descriptorBrowse, &QPushButton::clicked, this, [this]() { browseDescriptor(); });
-        connect(descriptorEdit_, &QLineEdit::textChanged, this, [this]() {
+        connect(indexBrowse, &QPushButton::clicked, this, [this]() { browseIndex(); });
+        connect(indexEdit_, &QLineEdit::textChanged, this, [this]() {
             gameClosed_->setChecked(false);
             updateDestination();
         });
@@ -218,7 +225,7 @@ public:
             updateDestination();
             if (buttons_->button(QDialogButtonBox::Save)->isEnabled()) {
                 if (wgsTarget_) {
-                    QSettings().setValue(QLatin1String(kDescriptorSettingsKey), descriptorEdit_->text());
+                    QSettings().setValue(wgsPathSettingsKey(selectedFormat()), indexEdit_->text());
                 }
                 accept();
             }
@@ -275,11 +282,16 @@ private:
 
     void updateWarnings(ExportGameVersion game) {
         const auto warnings = layerWarnings_ ? layerWarnings_(game) : fls::ExportLayerWarnings{};
-        const QString name = gameVersion_->currentText();
+        const bool importProfile = selectedFormat() == ExportContainerFormat::WgsFh5ToMotorsport;
+        const QString gameName = gameVersion_->currentText();
+        const QString name = importProfile ? QStringLiteral("Forza Horizon 5") : gameName;
         const bool carWarning = livery_ && (carId_ != 0 || game != ExportGameVersion::Motorsport2)
             && !sharedCarRegistry().isSupported(carId_, fls::exportGameCode(game));
+        const bool motorsportCarWarning = livery_ && importProfile && !sharedCarRegistry().isSupported(
+            carId_, fls::exportGameCode(ExportGameVersion::Motorsport2023));
 
-        carWarning_.update(QStringLiteral("Car model is not supported in %1").arg(name), carWarning);
+        carWarning_.update(QStringLiteral("Car model is not supported in %1")
+            .arg(carWarning ? name : gameName), carWarning || motorsportCarWarning);
         maskWarning_.update(QStringLiteral("Masks are not supported in %1 (%2 layers)").arg(name).arg(warnings.masks),
                             warnings.masks > 0);
         maskWarning_.choice->setToolTip(fls::isXbox360ExportGame(game)
@@ -303,7 +315,8 @@ private:
     }
 
     bool wgsSelected() const {
-        return selectedFormat() == ExportContainerFormat::WgsContainer;
+        return selectedFormat() == ExportContainerFormat::WgsAppend
+            || selectedFormat() == ExportContainerFormat::WgsFh5ToMotorsport;
     }
 
     void updateFormatOptions() {
@@ -321,7 +334,6 @@ private:
         if (previousIndex >= 0) {
             containerFormat_->setCurrentIndex(previousIndex);
         }
-        updateWarnings(game);
         updateFormat();
     }
 
@@ -329,6 +341,17 @@ private:
         const auto game = static_cast<ExportGameVersion>(gameVersion_->currentData().toInt());
         const bool xbox360 = fls::isXbox360ExportGame(game);
         const bool wgs = wgsSelected();
+        const bool importProfile = selectedFormat() == ExportContainerFormat::WgsFh5ToMotorsport;
+        const QSignalBlocker gameClosedBlocker(gameClosed_);
+
+        if (wgs && selectedFormat() != wgsPathFormat_) {
+            const QSignalBlocker blocker(indexEdit_);
+            wgsPaths_.insert(wgsPathFormat_, indexEdit_->text());
+            wgsPathFormat_ = selectedFormat();
+            indexEdit_->setText(wgsPaths_.value(wgsPathFormat_,
+                QSettings().value(wgsPathSettingsKey(wgsPathFormat_)).toString()));
+            gameClosed_->setChecked(false);
+        }
         if (wgs != wgsActive_) {
             const QSignalBlocker blocker(directoryEdit_);
             if (wgs) {
@@ -344,17 +367,22 @@ private:
         browse_->setEnabled(!wgs);
         folderHint_->setVisible(!wgs && !xbox360);
         wgsOptions_->setVisible(wgs);
+        gameClosed_->setText(importProfile
+            ? QStringLiteral("FM2023 is closed and cloud synchronization has finished")
+            : QStringLiteral("FH5 is closed and cloud synchronization has finished"));
+        updateWarnings(importProfile ? ExportGameVersion::Horizon5 : game);
         updateDestination();
     }
 
-    void browseDescriptor() {
-        const QString current = QDir::fromNativeSeparators(descriptorEdit_->text().trimmed());
+    void browseIndex() {
+        const QString current = QDir::fromNativeSeparators(indexEdit_->text().trimmed());
         const QString start = QFileInfo(current).exists() ? current : pgsDirectory_;
         const QString path = QFileDialog::getOpenFileName(
-            this, QStringLiteral("Select WGS Container"), start,
-            QStringLiteral("WGS descriptors (container.*)"), nullptr, QFileDialog::DontUseNativeDialog);
+            this, QStringLiteral("Select WGS Profile"), start,
+            QStringLiteral("WGS profile index (containers.index)"),
+            nullptr, QFileDialog::DontUseNativeDialog);
         if (!path.isEmpty()) {
-            descriptorEdit_->setText(QDir::toNativeSeparators(path));
+            indexEdit_->setText(QDir::toNativeSeparators(path));
         }
     }
 
@@ -389,26 +417,23 @@ private:
         }
         setUiState(hint_, QString());
         if (wgsSelected()) {
+            const QString path = QDir::fromNativeSeparators(indexEdit_->text().trimmed());
             profileEdit_->clear();
-            containerNameEdit_->clear();
             buttons_->button(QDialogButtonBox::Save)->setEnabled(false);
             try {
-                const QString path = QDir::fromNativeSeparators(descriptorEdit_->text().trimmed());
-                wgsTarget_ = fls::inspectWgsExportTarget(path, game, livery_, carId_);
+                const auto kind = livery_ ? fls::WgsAssetKind::Livery : fls::WgsAssetKind::Group;
+                wgsTarget_ = fls::inspectWgsAppendTarget(path, game, kind, carId_);
                 const QString profile = QFileInfo(wgsTarget_->indexPath).absolutePath();
                 const QSignalBlocker blocker(directoryEdit_);
                 directoryEdit_->setText(QDir::toNativeSeparators(profile));
                 profileEdit_->setText(QDir(profile).dirName());
-                containerNameEdit_->setText(wgsTarget_->containerName);
                 buttons_->button(QDialogButtonBox::Save)->setEnabled(gameClosed_->isChecked());
-                hint_->setText(QStringLiteral(
-                    "This replaces the selected slot and creates a backup under .fls-wgs-backups. "
-                    "Confirm FH5 is closed before exporting."));
+                hint_->setText(QStringLiteral("Adds a new container and backs up the profile index."));
             } catch (const std::exception &error) {
                 const QSignalBlocker blocker(directoryEdit_);
                 directoryEdit_->clear();
-                hint_->setText(descriptorEdit_->text().trimmed().isEmpty()
-                    ? QStringLiteral("Select the active container.1 or container.N from your FH5 WGS save.")
+                hint_->setText(path.isEmpty()
+                    ? QStringLiteral("Select containers.index from the WGS profile ending in 7900C3C7.")
                     : QString::fromUtf8(error.what()));
             }
             return;
@@ -424,9 +449,8 @@ private:
     }
 
     QLineEdit *directoryEdit_ = nullptr;
-    QLineEdit *descriptorEdit_ = nullptr;
+    QLineEdit *indexEdit_ = nullptr;
     QLineEdit *profileEdit_ = nullptr;
-    QLineEdit *containerNameEdit_ = nullptr;
     QComboBox *gameVersion_ = nullptr;
     QComboBox *containerFormat_ = nullptr;
     QLabel *hint_ = nullptr;
@@ -440,10 +464,12 @@ private:
     QCheckBox *gameClosed_ = nullptr;
     QDialogButtonBox *buttons_ = nullptr;
     QString pgsDirectory_;
+    QMap<ExportContainerFormat, QString> wgsPaths_;
     std::optional<fls::WgsExportTarget> wgsTarget_;
     std::function<fls::ExportLayerWarnings(ExportGameVersion)> layerWarnings_;
     bool livery_ = false;
     bool wgsActive_ = false;
+    ExportContainerFormat wgsPathFormat_ = ExportContainerFormat::PgsFolder;
     int carId_ = 0;
 };
 

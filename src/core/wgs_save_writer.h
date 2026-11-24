@@ -8,21 +8,22 @@
 namespace fls {
 
 struct WgsExportTarget {
-    QString descriptorPath;
     QString indexPath;
-    QString containerName;
-    WgsAsset asset;
-    QMap<QString, QString> blobPaths;
     QByteArray creatorTag;
-    QByteArray headerBytes;
+    QByteArray assetGuid;
     QByteArray fingerprint;
     ExportGameVersion game = ExportGameVersion::Horizon5;
+    WgsAssetKind kind = WgsAssetKind::Group;
     int carId = 0;
 };
 
-WgsExportTarget inspectWgsExportTarget(const QString &descriptorPath,
-                                      ExportGameVersion game, bool livery, int carId = 0);
-QString replaceWgsContainer(const WgsExportTarget &target,
-                            const QMap<QString, QByteArray> &replacementBlobs);
+struct WgsAppendResult {
+    QString containerName;
+    QString backupPath;
+};
+
+WgsExportTarget inspectWgsAppendTarget(const QString &indexPath, ExportGameVersion game,
+                                      WgsAssetKind kind, int carId = 0);
+WgsAppendResult appendWgsContainer(const WgsExportTarget &target, const QMap<QString, QByteArray> &blobs);
 
 } // namespace fls

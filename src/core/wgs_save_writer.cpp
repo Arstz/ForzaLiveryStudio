@@ -11,8 +11,12 @@
 #include <QFileInfo>
 #include <QLockFile>
 #include <QSaveFile>
+#include <QTemporaryDir>
 #include <QUuid>
 
+#include <algorithm>
+#include <limits>
+#include <span>
 #include <stdexcept>
 
 namespace fls {
@@ -20,29 +24,37 @@ namespace {
 
 constexpr quint32 kIndexVersion = 14;
 constexpr quint32 kDescriptorVersion = 4;
-constexpr quint32 kSupportedContainerState = 1;
-constexpr int kDescriptorHeaderSize = 8;
-constexpr int kDescriptorEntrySize = 160;
-constexpr int kBlobNameSize = 128;
+constexpr quint32 kCreatedContainerState = 5;
+constexpr quint32 kFullyUploaded = 1;
+constexpr quint32 kUnresolvedConflicts = 16;
+constexpr quint8 kInitialGeneration = 1;
 constexpr int kCurrentGuidOffset = 144;
 constexpr int kGuidSize = 16;
 constexpr qint64 kMaximumFileSize = 64 * 1024 * 1024;
 constexpr quint32 kMaximumEntries = 1000000;
 constexpr quint64 kWindowsEpochOffset = 116444736000000000;
 constexpr quint64 kFileTimeTicksPerMillisecond = 10000;
-constexpr int kEntrySizeOffset = 16;
+constexpr int kIndexEntryMetadataSize = 45;
 constexpr int kLiveryCreatorTagOffset = 33;
+constexpr int kLiveryInfoVersionOffset = 29;
+constexpr quint32 kFh5LiveryInfoVersion = 18;
+constexpr quint32 kIndexCountOffset = 4;
+constexpr quint32 kFileTimeSize = 8;
 constexpr char kBackupFolder[] = ".fls-wgs-backups";
 constexpr char kLockName[] = ".fls-wgs-export.lock";
+constexpr char kIndexName[] = "containers.index";
+constexpr char kFh5Scid[] = "0000000000000000000000007900C3C7";
+constexpr char kMotorsportPackage[] = "Microsoft.ForzaMotorsport_8wekyb3d8bbwe!ReleaseFinal";
+constexpr const char *kLiveryBlobNames[] = {"C_livery", "header", "bigThumb.png", "smallThumb.png"};
+constexpr const char *kGroupBlobNames[] = {"C_group", "header", "thumb.png"};
 
-struct Snapshot {
+struct AppendSnapshot {
     WgsExportTarget target;
-    QMap<QString, QByteArray> files;
-    QMap<QString, QDateTime> modifiedTimes;
+    QMap<QString, int> entryOffsets;
     QByteArray index;
-    QByteArray descriptor;
+    QDateTime indexModifiedAt;
     int indexTimeOffset = 0;
-    int entryTimeOffset = 0;
+    quint32 count = 0;
 };
 
 void require(bool condition, const QString &message) {
@@ -77,22 +89,27 @@ QString readString(const QByteArray &bytes, int &offset) {
     return value;
 }
 
+void appendString(QByteArray &bytes, const QString &value) {
+    detail::appendLeU32(bytes, static_cast<quint32>(value.size()));
+    for (QChar character : value) {
+        detail::appendLeU16(bytes, character.unicode());
+    }
+}
+
 void skip(const QByteArray &bytes, int &offset, int count) {
     require(offset >= 0 && count <= bytes.size() - offset,
             QStringLiteral("WGS index is truncated"));
     offset += count;
 }
 
-QString guidName(const QByteArray &bytes) {
-    require(bytes.size() == kGuidSize, QStringLiteral("WGS GUID is truncated"));
-    const QUuid guid = QUuid::fromRfc4122(bytes);
-    require(!guid.isNull(), QStringLiteral("WGS GUID is empty"));
-    const QString prefix = QStringLiteral("%1%2%3")
-        .arg(detail::readLeU32(bytes, 0), 8, 16, QLatin1Char('0'))
-        .arg(detail::readLeU16(bytes, 4), 4, 16, QLatin1Char('0'))
-        .arg(detail::readLeU16(bytes, 6), 4, 16, QLatin1Char('0'));
+QByteArray guidBytes(const QUuid &guid) {
+    QByteArray bytes;
+    detail::appendLeU32(bytes, guid.data1);
+    detail::appendLeU16(bytes, guid.data2);
+    detail::appendLeU16(bytes, guid.data3);
+    bytes.append(reinterpret_cast<const char *>(guid.data4), 8);
 
-    return (prefix + QString::fromLatin1(bytes.mid(8).toHex())).toUpper();
+    return bytes;
 }
 
 QString checkedFile(const QString &directory, const QString &name) {
@@ -105,76 +122,28 @@ QString checkedFile(const QString &directory, const QString &name) {
     return info.absoluteFilePath();
 }
 
-void readIndex(Snapshot &snapshot, const QString &containerDirectory) {
+quint32 readIndexHeader(AppendSnapshot &snapshot, int &offset) {
     const QByteArray &bytes = snapshot.index;
-    const QString folderName = QFileInfo(containerDirectory).fileName();
-    const QString descriptorName = QFileInfo(snapshot.target.descriptorPath).fileName();
-    int offset = 0;
-    int matches = 0;
 
-    require(detail::readLeU32(bytes, offset) == kIndexVersion,
+    require(detail::readLeU32(bytes, 0) == kIndexVersion,
             QStringLiteral("Unsupported WGS index version"));
-    const quint32 count = detail::readLeU32(bytes, 4);
+    const quint32 count = detail::readLeU32(bytes, kIndexCountOffset);
     require(count <= kMaximumEntries, QStringLiteral("Invalid WGS index container count"));
     offset = 12;
     const QString package = readString(bytes, offset);
-    require(package.endsWith(QStringLiteral("!Forzahorizon5"), Qt::CaseInsensitive),
-            QStringLiteral("The selected WGS profile is not Forza Horizon 5"));
+    if (snapshot.target.game == ExportGameVersion::Motorsport2023) {
+        require(package.compare(QLatin1String(kMotorsportPackage), Qt::CaseInsensitive) == 0,
+                QStringLiteral("Select the FH5 import profile under Forza Motorsport 2023."));
+    } else {
+        require(package.endsWith(QStringLiteral("!Forzahorizon5"), Qt::CaseInsensitive),
+                QStringLiteral("The selected WGS profile is not Forza Horizon 5"));
+    }
     snapshot.indexTimeOffset = offset;
     skip(bytes, offset, 12);
     readString(bytes, offset);
     skip(bytes, offset, 8);
-    for (quint32 index = 0; index < count; ++index) {
-        const QString name = readString(bytes, offset);
-        readString(bytes, offset);
-        readString(bytes, offset);
-        require(offset < bytes.size(), QStringLiteral("WGS descriptor generation is truncated"));
-        const quint8 generation = static_cast<quint8>(bytes.at(offset++));
-        const quint32 state = detail::readLeU32(bytes, offset);
-        skip(bytes, offset, 4);
-        const QString directory = guidName(bytes.mid(offset, kGuidSize));
-        skip(bytes, offset, kGuidSize);
-        if (directory.compare(folderName, Qt::CaseInsensitive) == 0) {
-            require(state == kSupportedContainerState,
-                    QStringLiteral("Unsupported WGS container state (%1). Select a synchronized existing slot.").arg(state));
-            require(descriptorName == QStringLiteral("container.%1").arg(generation),
-                    QStringLiteral("This descriptor is stale; select container.%1 from the same folder.").arg(generation));
-            snapshot.target.containerName = name;
-            snapshot.entryTimeOffset = offset;
-            ++matches;
-        }
-        skip(bytes, offset, 24);
-    }
-    require(matches == 1, QStringLiteral("The container is not uniquely registered in containers.index"));
-    require(offset == bytes.size(), QStringLiteral("Unsupported trailing WGS index data"));
-}
 
-void readDescriptor(Snapshot &snapshot, const QString &directory) {
-    const QByteArray &bytes = snapshot.descriptor;
-    require(detail::readLeU32(bytes, 0) == kDescriptorVersion,
-            QStringLiteral("Unsupported WGS descriptor version"));
-    const quint32 count = detail::readLeU32(bytes, 4);
-    require(count > 0 && count <= kMaximumEntries
-                && bytes.size() == kDescriptorHeaderSize + static_cast<qint64>(count) * kDescriptorEntrySize,
-            QStringLiteral("Invalid WGS descriptor size"));
-    for (quint32 index = 0; index < count; ++index) {
-        const int offset = kDescriptorHeaderSize + static_cast<int>(index) * kDescriptorEntrySize;
-        QString name;
-        for (int character = 0; character < kBlobNameSize; character += 2) {
-            const quint16 value = detail::readLeU16(bytes, offset + character);
-            if (value == 0) {
-                break;
-            }
-            name.append(QChar(value));
-        }
-        const QString key = name.toLower();
-        const QString fileName = guidName(bytes.mid(offset + kCurrentGuidOffset, kGuidSize));
-        const QString path = checkedFile(directory, fileName);
-        require(!name.isEmpty() && !snapshot.target.blobPaths.contains(key)
-                    && !snapshot.files.contains(path), QStringLiteral("Duplicate or empty WGS blob entry"));
-        snapshot.target.blobPaths.insert(key, path);
-        snapshot.files.insert(path, readFile(path));
-    }
+    return count;
 }
 
 QByteArray inflatedPayload(const QByteArray &wrapped, bool livery) {
@@ -189,80 +158,60 @@ QByteArray inflatedPayload(const QByteArray &wrapped, bool livery) {
     return raw;
 }
 
-QByteArray fingerprint(const QMap<QString, QByteArray> &files) {
-    QCryptographicHash hash(QCryptographicHash::Sha256);
-    for (auto file = files.cbegin(); file != files.cend(); ++file) {
-        hash.addData(file.key().toUtf8());
-        hash.addData(QCryptographicHash::hash(file.value(), QCryptographicHash::Sha256));
-    }
-
-    return hash.result();
-}
-
-Snapshot readSnapshot(const QString &descriptorPath, ExportGameVersion game, bool livery, int carId) {
-    require(game == ExportGameVersion::Horizon5, QStringLiteral("WGS export currently supports FH5 only"));
-    const QFileInfo descriptorInfo(descriptorPath);
-    const QString directory = descriptorInfo.absolutePath();
-    const QDir profile(QFileInfo(directory).absolutePath());
-    Snapshot snapshot;
-
-    require(QDir::isAbsolutePath(descriptorPath) && descriptorInfo.fileName().startsWith(QStringLiteral("container.")),
-            QStringLiteral("Select an existing container.1 or container.N file using an absolute path"));
-    require(QDir(directory).canonicalPath() == QDir(profile.canonicalPath()).filePath(QFileInfo(directory).fileName()),
-            QStringLiteral("WGS container folder resolves outside its profile"));
-    snapshot.target.descriptorPath = checkedFile(directory, descriptorInfo.fileName());
-    snapshot.target.indexPath = checkedFile(profile.absolutePath(), QStringLiteral("containers.index"));
-    snapshot.target.game = game;
-    snapshot.index = readFile(snapshot.target.indexPath);
-    snapshot.descriptor = readFile(snapshot.target.descriptorPath);
-    readIndex(snapshot, directory);
-    require(snapshot.target.containerName.startsWith(livery ? QStringLiteral("Livery_") : QStringLiteral("LayerGroup_")),
-            QStringLiteral("Select a full %1 slot of the same type as the project.").arg(livery ? QStringLiteral("livery") : QStringLiteral("layer group")));
-    readDescriptor(snapshot, directory);
-    const QString payloadKey = livery ? QStringLiteral("c_livery") : QStringLiteral("c_group");
-    require(snapshot.target.blobPaths.contains(payloadKey) && snapshot.target.blobPaths.contains(QStringLiteral("header"))
-                && !snapshot.target.blobPaths.contains(livery ? QStringLiteral("c_group") : QStringLiteral("c_livery")),
-            QStringLiteral("The selected container has incomplete or mismatched asset blobs"));
-    const QByteArray raw = inflatedPayload(snapshot.files.value(snapshot.target.blobPaths.value(payloadKey)), livery);
-    snapshot.target.carId = livery ? static_cast<int>(detail::readLeU32(raw, 16)) : 0;
-    if (livery) {
-        bool validCar = false;
-        const int registeredCar = snapshot.target.containerName.section(QLatin1Char('_'), 1, 1).toInt(&validCar);
-        require(validCar && registeredCar == snapshot.target.carId && snapshot.target.carId == carId,
-                QStringLiteral("Select a WGS livery slot for the project's target car (%1).").arg(carId));
-    }
-    snapshot.target.headerBytes = snapshot.files.value(snapshot.target.blobPaths.value(QStringLiteral("header")));
-    const HeaderMetadata header = parseHeader(snapshot.target.headerBytes);
-    require(header.guid.size() == kGuidSize && (header.formatVersion == 4 || header.formatVersion == 6),
-            QStringLiteral("Unsupported FH5 WGS asset header"));
+QByteArray profileCreatorTag(const QDir &profile) {
     const QString ownerText = profile.dirName().section(QLatin1Char('_'), 0, 0);
+    QByteArray tag;
     bool validOwner = false;
     const quint64 owner = ownerText.toULongLong(&validOwner, 16);
-    require(validOwner && ownerText.size() == 16 && owner != 0,
-            QStringLiteral("The WGS profile folder must retain its account identifier"));
-    for (int byte = 0; byte < 8; ++byte) {
-        snapshot.target.creatorTag.append(static_cast<char>((owner >> (byte * 8)) & 0xff));
-    }
-    quint64 size = 0;
-    for (const QByteArray &file : snapshot.files) {
-        size += static_cast<quint64>(file.size());
-    }
-    const int sizeOffset = snapshot.entryTimeOffset + kEntrySizeOffset;
-    const quint64 recordedSize = detail::readLeU32(snapshot.index, sizeOffset)
-        | (static_cast<quint64>(detail::readLeU32(snapshot.index, sizeOffset + 4)) << 32);
-    require(size == recordedSize, QStringLiteral("WGS size metadata has changed or is inconsistent"));
-    snapshot.target.asset = {snapshot.target.containerName, snapshot.target.blobPaths.value(payloadKey),
-        snapshot.target.blobPaths.value(QStringLiteral("header")),
-        snapshot.target.blobPaths.value(livery ? QStringLiteral("bigthumb.png") : QStringLiteral("thumb.png")),
-        livery ? WgsAssetKind::Livery : WgsAssetKind::Group};
-    snapshot.files.insert(snapshot.target.descriptorPath, snapshot.descriptor);
-    snapshot.files.insert(snapshot.target.indexPath, snapshot.index);
-    for (auto file = snapshot.files.cbegin(); file != snapshot.files.cend(); ++file) {
-        snapshot.modifiedTimes.insert(file.key(), QFileInfo(file.key()).lastModified());
-    }
-    snapshot.target.fingerprint = fingerprint(snapshot.files);
 
-    return snapshot;
+    require(validOwner && owner != 0 && ownerText.compare(
+                QStringLiteral("%1").arg(owner, 16, 16, QLatin1Char('0')), Qt::CaseInsensitive) == 0,
+            QStringLiteral("The WGS profile folder must retain its account identifier"));
+    detail::appendLeU32(tag, static_cast<quint32>(owner));
+    detail::appendLeU32(tag, static_cast<quint32>(owner >> 32));
+
+    return tag;
+}
+
+AppendSnapshot readAppendSnapshot(const QString &indexPath, ExportGameVersion game,
+                                  WgsAssetKind kind, int carId) {
+    const QFileInfo indexInfo(indexPath);
+    const QDir profile(indexInfo.absolutePath());
+    AppendSnapshot append;
+    int offset = 0;
+
+    require(game == ExportGameVersion::Horizon5 || game == ExportGameVersion::Motorsport2023,
+            QStringLiteral("WGS append requires an FH5 or FM2023 FH5 import profile."));
+    require(kind != WgsAssetKind::Livery || carId > 0, QStringLiteral("Select a valid car for the WGS livery."));
+    require(QDir::isAbsolutePath(indexPath) && indexInfo.fileName() == QLatin1String(kIndexName),
+            QStringLiteral("Select containers.index from the destination WGS profile."));
+    require(profile.dirName().section(QLatin1Char('_'), 1).compare(QLatin1String(kFh5Scid),
+                Qt::CaseInsensitive) == 0,
+            QStringLiteral("Select the FH5 service profile ending in 7900C3C7."));
+    append.target.indexPath = checkedFile(profile.absolutePath(), QLatin1String(kIndexName));
+    append.target.creatorTag = profileCreatorTag(profile);
+    append.target.game = game;
+    append.target.kind = kind;
+    append.target.carId = kind == WgsAssetKind::Livery ? carId : 0;
+    append.index = readFile(append.target.indexPath);
+    append.indexModifiedAt = QFileInfo(append.target.indexPath).lastModified();
+    append.target.fingerprint = QCryptographicHash::hash(append.index, QCryptographicHash::Sha256);
+    append.count = readIndexHeader(append, offset);
+    const quint32 flags = detail::readLeU32(append.index, append.indexTimeOffset + kFileTimeSize);
+    require((flags & kUnresolvedConflicts) == 0,
+            QStringLiteral("Resolve the WGS profile's cloud conflict before exporting."));
+    require(append.count < kMaximumEntries, QStringLiteral("WGS index is full."));
+    for (quint32 index = 0; index < append.count; ++index) {
+        const int start = offset;
+        const QString name = readString(append.index, offset);
+        readString(append.index, offset);
+        readString(append.index, offset);
+        skip(append.index, offset, kIndexEntryMetadataSize);
+        append.entryOffsets.insert(name.toCaseFolded(), start);
+    }
+    require(offset == append.index.size(), QStringLiteral("Unsupported trailing WGS index data"));
+
+    return append;
 }
 
 void writeFile(const QString &path, const QByteArray &bytes) {
@@ -279,55 +228,130 @@ void writeU64(QByteArray &bytes, int offset, quint64 value) {
     }
 }
 
-QMap<QString, QByteArray> prepareWrites(const Snapshot &snapshot, const QMap<QString, QByteArray> &blobs) {
-    QMap<QString, QByteArray> writes;
-    const bool livery = snapshot.target.asset.kind == WgsAssetKind::Livery;
-    const QString payloadKey = livery ? QStringLiteral("c_livery") : QStringLiteral("c_group");
-
-    require(blobs.contains(payloadKey) && blobs.contains(QStringLiteral("header")),
-            QStringLiteral("WGS export requires an encoded payload and header"));
-    for (auto blob = blobs.cbegin(); blob != blobs.cend(); ++blob) {
-        require(snapshot.target.blobPaths.contains(blob.key()) && !blob.value().isEmpty()
-                    && blob.value().size() <= kMaximumFileSize,
-                QStringLiteral("Unregistered or invalid replacement blob: %1").arg(blob.key()));
-        if (blob.key() != payloadKey && blob.key() != QStringLiteral("header")) {
-            require((blob.key() == QStringLiteral("thumb.png") || blob.key() == QStringLiteral("bigthumb.png")
-                        || blob.key() == QStringLiteral("smallthumb.png"))
-                        && blob.value().startsWith(QByteArray::fromHex("89504e470d0a1a0a")),
-                    QStringLiteral("Replacement thumbnails must be PNG blobs"));
-        }
-        writes.insert(snapshot.target.blobPaths.value(blob.key()), blob.value());
-    }
-    const QByteArray raw = inflatedPayload(blobs.value(payloadKey), livery);
-    require(!livery || detail::readLeU32(raw, 16) == static_cast<quint32>(snapshot.target.carId),
-            QStringLiteral("Replacement payload targets a different car"));
-    require(!livery || (detail::readLeU32(raw, 8) == 0
-                && raw.mid(kLiveryCreatorTagOffset, snapshot.target.creatorTag.size()) == snapshot.target.creatorTag),
-            QStringLiteral("Replacement payload must be editable and assigned to the destination profile"));
-    const HeaderMetadata oldHeader = parseHeader(snapshot.target.headerBytes);
-    const HeaderMetadata header = parseHeader(blobs.value(QStringLiteral("header")));
-    require((header.formatVersion == 4 || header.formatVersion == 6)
-                && header.guid == oldHeader.guid && header.creatorTag == snapshot.target.creatorTag
-                && (!livery || header.carId == static_cast<quint32>(snapshot.target.carId)),
-            QStringLiteral("Replacement header must retain the WGS slot identity and profile owner"));
-    quint64 size = 0;
-    for (auto blob = snapshot.target.blobPaths.cbegin(); blob != snapshot.target.blobPaths.cend(); ++blob) {
-        size += static_cast<quint64>(writes.contains(blob.value())
-            ? writes.value(blob.value()).size() : snapshot.files.value(blob.value()).size());
-    }
-    QByteArray index = snapshot.index;
-    const quint64 timestamp = kWindowsEpochOffset
-        + static_cast<quint64>(QDateTime::currentDateTimeUtc().toMSecsSinceEpoch()) * kFileTimeTicksPerMillisecond;
-    writeU64(index, snapshot.indexTimeOffset, timestamp);
-    writeU64(index, snapshot.entryTimeOffset, timestamp);
-    writeU64(index, snapshot.entryTimeOffset + kEntrySizeOffset, size);
-    writes.insert(snapshot.target.indexPath, index);
-    writes.insert(snapshot.target.descriptorPath, snapshot.descriptor);
-
-    return writes;
+void writeU32(QByteArray &bytes, int offset, quint32 value) {
+    QByteArray encoded;
+    detail::appendLeU32(encoded, value);
+    bytes.replace(offset, encoded.size(), encoded);
 }
 
-QString createBackup(const Snapshot &snapshot) {
+quint64 readU64(const QByteArray &bytes, int offset) {
+    const quint64 low = detail::readLeU32(bytes, offset);
+    const quint64 high = detail::readLeU32(bytes, offset + 4);
+
+    return low | (high << 32);
+}
+
+quint64 fileTime(const QDateTime &time) {
+    return kWindowsEpochOffset
+        + static_cast<quint64>(time.toMSecsSinceEpoch()) * kFileTimeTicksPerMillisecond;
+}
+
+void appendU64(QByteArray &bytes, quint64 value) {
+    detail::appendLeU32(bytes, static_cast<quint32>(value));
+    detail::appendLeU32(bytes, static_cast<quint32>(value >> 32));
+}
+
+void validateAppendBlobs(const WgsExportTarget &target, const QMap<QString, QByteArray> &blobs,
+                         std::span<const char *const> names) {
+    const bool livery = target.kind == WgsAssetKind::Livery;
+    const QString payloadKey = livery ? QStringLiteral("c_livery") : QStringLiteral("c_group");
+    const QByteArray pngSignature = QByteArray::fromHex("89504e470d0a1a0a");
+
+    require(blobs.size() == static_cast<qsizetype>(names.size()),
+            QStringLiteral("WGS append requires artwork, a header, and the registered PNG thumbnails."));
+    for (const char *name : names) {
+        const QString key = QString::fromLatin1(name).toLower();
+        const auto blob = blobs.constFind(key);
+        require(blob != blobs.cend() && !blob->isEmpty() && blob->size() <= kMaximumFileSize,
+                QStringLiteral("Missing or invalid WGS blob: %1").arg(QLatin1String(name)));
+        require(!key.endsWith(QStringLiteral(".png")) || blob->startsWith(pngSignature),
+                QStringLiteral("WGS thumbnails must be PNG blobs."));
+    }
+    const QByteArray raw = inflatedPayload(blobs.value(payloadKey), livery);
+    require(!livery || (detail::readLeU32(raw, kLiveryInfoVersionOffset) == kFh5LiveryInfoVersion
+                && detail::readLeU32(raw, 8) == 0
+                && detail::readLeU32(raw, 16) == static_cast<quint32>(target.carId)
+                && raw.mid(kLiveryCreatorTagOffset, target.creatorTag.size()) == target.creatorTag),
+            QStringLiteral("WGS artwork must be an editable FH5 livery for the selected car and profile."));
+    const HeaderMetadata header = parseHeader(blobs.value(QStringLiteral("header")));
+    require(header.formatVersion == 6 && header.hasCarId == livery
+                && (!livery || header.carId == static_cast<quint32>(target.carId))
+                && header.guid == target.assetGuid && header.creatorTag == target.creatorTag,
+            QStringLiteral("WGS header must match the new asset and profile."));
+}
+
+QString newContainerName(const AppendSnapshot &append, const QDateTime &now) {
+    const WgsExportTarget &target = append.target;
+    const QString prefix = target.kind == WgsAssetKind::Livery
+        ? QStringLiteral("Livery_%1_").arg(target.carId, 4, 10, QLatin1Char('0'))
+        : QStringLiteral("LayerGroup_0000_");
+    QDateTime nameTime = now;
+    QString name = prefix + nameTime.toString(QStringLiteral("yyyyMMddHHmmss"));
+
+    while (append.entryOffsets.contains(name.toCaseFolded())) {
+        nameTime = nameTime.addSecs(1);
+        name = prefix + nameTime.toString(QStringLiteral("yyyyMMddHHmmss"));
+    }
+
+    return name;
+}
+
+QByteArray indexWithNewContainer(const AppendSnapshot &append, const QString &name, const QUuid &folderId,
+                                const QDateTime &now, quint64 blobSize) {
+    QByteArray index = append.index;
+    QByteArray entry;
+    const auto next = append.entryOffsets.lowerBound(name.toCaseFolded());
+    const qsizetype position = next == append.entryOffsets.cend() ? index.size() : next.value();
+    const int timeOffset = append.indexTimeOffset;
+    const int flagsOffset = timeOffset + kFileTimeSize;
+    const quint64 previousTime = readU64(index, timeOffset);
+    const quint32 flags = detail::readLeU32(index, flagsOffset);
+
+    require(previousTime < std::numeric_limits<quint64>::max(), QStringLiteral("Invalid WGS index timestamp."));
+    const quint64 timestamp = std::max(fileTime(now), previousTime + 1);
+    appendString(entry, name);
+    appendString(entry, name);
+    appendString(entry, QString());
+    entry.append(static_cast<char>(kInitialGeneration));
+    detail::appendLeU32(entry, kCreatedContainerState);
+    entry.append(guidBytes(folderId));
+    appendU64(entry, timestamp);
+    appendU64(entry, 0);
+    appendU64(entry, blobSize);
+    index.insert(position, entry);
+
+    writeU32(index, kIndexCountOffset, append.count + 1);
+    writeU64(index, timeOffset, timestamp);
+    writeU32(index, flagsOffset, flags & ~kFullyUploaded);
+
+    return index;
+}
+
+quint64 stageContainer(const QDir &directory, const QMap<QString, QByteArray> &blobs,
+                       std::span<const char *const> names) {
+    QByteArray descriptor;
+    quint64 size = 0;
+
+    detail::appendLeU32(descriptor, kDescriptorVersion);
+    detail::appendLeU32(descriptor, static_cast<quint32>(names.size()));
+    for (const char *name : names) {
+        const QString blobName = QString::fromLatin1(name);
+        const QUuid localId = QUuid::createUuid();
+        const QByteArray &blob = blobs[blobName.toLower()];
+        for (QChar character : blobName) {
+            detail::appendLeU16(descriptor, character.unicode());
+        }
+        descriptor.append(QByteArray(kCurrentGuidOffset - blobName.size() * 2, '\0'));
+        descriptor.append(guidBytes(localId));
+        writeFile(directory.filePath(localId.toString(QUuid::Id128).toUpper()), blob);
+        size += static_cast<quint64>(blob.size());
+    }
+    writeFile(directory.filePath(QStringLiteral("container.%1").arg(kInitialGeneration)), descriptor);
+
+    return size;
+}
+
+QString createBackup(const AppendSnapshot &snapshot) {
     const QDir profile(QFileInfo(snapshot.target.indexPath).absolutePath());
     const QString backupRoot = profile.filePath(QLatin1String(kBackupFolder));
     require(QDir().mkpath(backupRoot) && QDir(backupRoot).canonicalPath() == profile.filePath(QLatin1String(kBackupFolder)),
@@ -335,74 +359,68 @@ QString createBackup(const Snapshot &snapshot) {
     const QString name = QDateTime::currentDateTimeUtc().toString(QStringLiteral("yyyyMMdd-HHmmss-zzz"))
         + QLatin1Char('-') + QUuid::createUuid().toString(QUuid::WithoutBraces);
     const QDir backup(QDir(backupRoot).filePath(name));
-    for (auto file = snapshot.files.cbegin(); file != snapshot.files.cend(); ++file) {
-        const QString path = backup.filePath(profile.relativeFilePath(file.key()));
-        require(QDir().mkpath(QFileInfo(path).absolutePath()), QStringLiteral("Could not create WGS backup directories"));
-        writeFile(path, file.value());
-        QFile copy(path);
-        require(copy.open(QIODevice::ReadWrite)
-                    && copy.setFileTime(snapshot.modifiedTimes.value(file.key()), QFileDevice::FileModificationTime),
-                QStringLiteral("Could not preserve a WGS backup timestamp"));
-    }
+    const QString indexPath = backup.filePath(QLatin1String(kIndexName));
+    require(QDir().mkpath(backup.absolutePath()), QStringLiteral("Could not create the WGS backup directory"));
+    writeFile(indexPath, snapshot.index);
+    QFile copy(indexPath);
+    require(copy.open(QIODevice::ReadWrite)
+                && copy.setFileTime(snapshot.indexModifiedAt, QFileDevice::FileModificationTime),
+            QStringLiteral("Could not preserve the WGS index backup timestamp"));
 
     return backup.absolutePath();
 }
 
-void commitWrites(const Snapshot &snapshot, const QMap<QString, QByteArray> &writes, const QString &backup) {
-    QStringList order = writes.keys();
-    QStringList committed;
-    order.removeAll(snapshot.target.descriptorPath);
-    order.removeAll(snapshot.target.indexPath);
-    order.append(snapshot.target.descriptorPath);
-    order.append(snapshot.target.indexPath);
-    try {
-        for (const QString &path : order) {
-            require(readFile(path) == snapshot.files.value(path), QStringLiteral("WGS save changed during export; close the game and retry"));
-            writeFile(path, writes.value(path));
-            committed.append(path);
-        }
-    } catch (const std::exception &error) {
-        QStringList failed;
-        for (auto path = committed.crbegin(); path != committed.crend(); ++path) {
-            try {
-                require(readFile(*path) == writes.value(*path),
-                        QStringLiteral("A committed WGS file changed before rollback"));
-                writeFile(*path, snapshot.files.value(*path));
-                QFile file(*path);
-                require(file.open(QIODevice::ReadWrite)
-                            && file.setFileTime(snapshot.modifiedTimes.value(*path), QFileDevice::FileModificationTime),
-                        QStringLiteral("Could not restore a WGS file timestamp"));
-            } catch (const std::exception &) {
-                failed.append(*path);
-            }
-        }
-        throw std::runtime_error(QStringLiteral("%1\nBackup: %2%3")
-            .arg(QString::fromUtf8(error.what()), backup,
-                 failed.isEmpty() ? QStringLiteral("\nCompleted writes were rolled back.")
-                                  : QStringLiteral("\nRestore these files from backup: %1").arg(failed.join(QLatin1Char('\n'))))
-            .toStdString());
-    }
-}
-
 } // namespace
 
-WgsExportTarget inspectWgsExportTarget(const QString &descriptorPath, ExportGameVersion game, bool livery, int carId) {
-    return readSnapshot(descriptorPath, game, livery, carId).target;
+WgsExportTarget inspectWgsAppendTarget(const QString &indexPath, ExportGameVersion game,
+                                      WgsAssetKind kind, int carId) {
+    WgsExportTarget target = readAppendSnapshot(indexPath, game, kind, carId).target;
+    target.assetGuid = guidBytes(QUuid::createUuid());
+
+    return target;
 }
 
-QString replaceWgsContainer(const WgsExportTarget &target, const QMap<QString, QByteArray> &replacementBlobs) {
-    const QDir profile(QFileInfo(target.indexPath).absolutePath());
+WgsAppendResult appendWgsContainer(const WgsExportTarget &target, const QMap<QString, QByteArray> &blobs) {
+    QDir profile(QFileInfo(target.indexPath).absolutePath());
     QLockFile lock(profile.filePath(QLatin1String(kLockName)));
-    require(lock.tryLock(0), QStringLiteral("Another WGS export is using this save profile"));
-    const Snapshot snapshot = readSnapshot(target.descriptorPath, target.game,
-                                          target.asset.kind == WgsAssetKind::Livery, target.carId);
-    require(snapshot.target.fingerprint == target.fingerprint && snapshot.target.indexPath == target.indexPath,
-            QStringLiteral("The selected WGS save changed. Reselect its descriptor before exporting."));
-    const QMap<QString, QByteArray> writes = prepareWrites(snapshot, replacementBlobs);
-    const QString backup = createBackup(snapshot);
-    commitWrites(snapshot, writes, backup);
+    const std::span<const char *const> names = target.kind == WgsAssetKind::Livery
+        ? std::span<const char *const>(kLiveryBlobNames) : std::span<const char *const>(kGroupBlobNames);
 
-    return backup;
+    require(lock.tryLock(0), QStringLiteral("Another WGS export is using this save profile"));
+    const AppendSnapshot append = readAppendSnapshot(target.indexPath, target.game, target.kind, target.carId);
+    require(append.target.fingerprint == target.fingerprint && append.target.creatorTag == target.creatorTag,
+            QStringLiteral("The WGS profile changed. Reselect containers.index before exporting."));
+    require(target.assetGuid.size() == kGuidSize && !QUuid::fromRfc4122(target.assetGuid).isNull(),
+            QStringLiteral("Invalid new WGS asset identity."));
+    validateAppendBlobs(target, blobs, names);
+
+    const QDateTime now = QDateTime::currentDateTimeUtc();
+    const QString name = newContainerName(append, now);
+    const QUuid folderId = QUuid::createUuid();
+    const QString folderName = folderId.toString(QUuid::Id128).toUpper();
+    const QTemporaryDir temporary(profile.filePath(QStringLiteral(".fls-wgs-stage-XXXXXX")));
+    require(temporary.isValid() && QDir(temporary.path()).mkdir(folderName),
+            QStringLiteral("Could not stage the new WGS container."));
+    const QDir staged(QDir(temporary.path()).filePath(folderName));
+    const quint64 blobSize = stageContainer(staged, blobs, names);
+    const QByteArray updatedIndex = indexWithNewContainer(append, name, folderId, now, blobSize);
+    const QString backup = createBackup(append);
+    const QString stagedPath = profile.relativeFilePath(staged.absolutePath());
+    require(profile.rename(stagedPath, folderName),
+            QStringLiteral("Could not publish the new WGS container."));
+    try {
+        require(readFile(target.indexPath) == append.index,
+                QStringLiteral("The WGS index changed during export."));
+        writeFile(target.indexPath, updatedIndex);
+    } catch (const std::exception &error) {
+        const bool restored = profile.rename(folderName, stagedPath);
+        throw std::runtime_error(QStringLiteral("%1\nBackup: %2%3")
+            .arg(QString::fromUtf8(error.what()), backup, restored ? QString()
+                : QStringLiteral("\nUnregistered container: %1").arg(profile.filePath(folderName)))
+            .toStdString());
+    }
+
+    return {name, backup};
 }
 
 } // namespace fls

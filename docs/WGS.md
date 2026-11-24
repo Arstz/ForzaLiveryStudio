@@ -1,10 +1,10 @@
-# WGS Asset Replacement
+# WGS Asset Export
 
-FH5 WGS export replaces an existing registered livery or layer-group container.
-The export dialog accepts its active `container.N` descriptor and resolves the
-save profile through the parent `containers.index`. Asset type and livery car
-identifier must match the editor project. Profile ownership is derived from the
-account identifier in the profile folder name.
+WGS export registers new liveries and layer groups. Select **WGS / add new
+container** for the native FH5 profile or **WGS (FH5->FM2023)** for the
+Motorsport import profile. Choose `containers.index` in the destination
+game's FH5 service namespace. The host package identifies the destination and
+the account identifier in the profile folder supplies the creator identity.
 
 ## Storage Layout
 
@@ -14,34 +14,19 @@ descriptors contain fixed-size entries with UTF-16 blob names and GUID pairs.
 The current GUID identifies each physical blob file. FH5 stores its native
 compressed artwork, header, and PNG thumbnails in those files.
 
-Replacement accepts the supported index container-state value of 1.
-The replacement pipeline retains the logical registration, descriptor generation,
-asset GUID, blob GUID pairs, cloud revision text, and opaque index fields. It
-updates the index and container timestamps and recalculates the total blob size.
-The FH5 PGS encoder supplies the artwork and header; the header is assigned the
-existing slot GUID and destination profile owner. Generated thumbnails replace
-registered thumbnail blobs. Livery thumbnails are retained when a car preview is
-unavailable and no source thumbnail is available.
+The FH5 encoder supplies the artwork and header. The export assigns fresh
+identifiers to the asset, folder, and blobs. Liveries use the car ID and a
+timestamp in the registration name. Layer groups use the group prefix and a
+timestamp.
 
 ## Transaction
 
-The dialog requires confirmation that the game is closed and cloud synchronization
-has finished. Export also requests confirmation of the selected replacement slot.
-The writer acquires a profile-level editor lock and checks a fingerprint of the
-index, descriptor, and selected blobs against the inspected destination.
+The dialog asks for confirmation that the game is closed and cloud
+synchronization has finished. The writer acquires a profile-level editor lock
+and checks the index against the inspected version. It stages the descriptor
+and blobs, backs up the original index under `.fls-wgs-backups/<backup-id>/`,
+and commits the updated index last.
 
-Before committing, it saves the original index, descriptor, and all registered
-blobs of the selected container under `.fls-wgs-backups/<backup-id>/` in the
-profile folder. Backup files retain their original modification timestamps.
-Each destination file is replaced through `QSaveFile`, with the index committed
-last. Changes detected during the transaction abort the operation. Completed
-writes are restored after a failure; a restoration error reports the retained
-backup location and affected files.
-
-To restore a backup, close the game and copy its `containers.index` and GUID
-container folder over the corresponding files in the profile folder. Restore a
-backup only against the matching save snapshot, because its index also contains
-registrations for the rest of that profile.
-
-New-container registration and FH6/FM23 WGS export are deferred. Game acceptance
-and cloud synchronization require user testing on a backed-up save.
+With the game closed, restoring the backup index against its matching save
+snapshot unregisters the added asset. Check the destination game's asset browser
+after exporting.

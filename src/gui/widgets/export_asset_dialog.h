@@ -16,9 +16,10 @@ using ExportGameVersion = fls::ExportGameVersion;
 
 enum class ExportContainerFormat {
     PgsFolder,
-    WgsContainer,
     Xbox360PlainFile,
     Xbox360SignedFile,
+    WgsFh5ToMotorsport,
+    WgsAppend,
 };
 
 struct ExportAssetSelection {

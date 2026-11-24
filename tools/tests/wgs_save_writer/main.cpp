@@ -9,6 +9,7 @@
 
 #include <QtCore>
 
+#include <algorithm>
 #include <functional>
 #include <memory>
 #include <stdexcept>
@@ -49,18 +50,9 @@ void appendString(QByteArray &bytes, const QString &value) {
     }
 }
 
-QByteArray guidBytes(const QUuid &id) {
-    QByteArray bytes;
-    fls::detail::appendLeU32(bytes, id.data1);
-    fls::detail::appendLeU16(bytes, id.data2);
-    fls::detail::appendLeU16(bytes, id.data3);
-    bytes.append(reinterpret_cast<const char *>(id.data4), 8);
-    return bytes;
-}
-
 fls::Project makeProject(bool livery, int car = 0) {
     fls::Project project;
-    project.name = QStringLiteral("WGS replacement test");
+    project.name = QStringLiteral("WGS append test");
     project.isLivery = livery;
     project.carId = car;
     project.root = std::make_unique<fls::scene::Group>();
@@ -85,11 +77,11 @@ fls::Project makeProject(bool livery, int car = 0) {
     return project;
 }
 
-QMap<QString, QByteArray> replacement(const fls::WgsExportTarget &target, const QString &staging) {
-    auto project = makeProject(target.asset.kind == fls::WgsAssetKind::Livery, target.carId);
+QMap<QString, QByteArray> encodedArtwork(const fls::WgsExportTarget &target, const QString &staging) {
+    auto project = makeProject(target.kind == fls::WgsAssetKind::Livery, target.carId);
     auto header = fls::defaultDraftHeader(project.name, "WGS tests", target.carId);
     header.formatVersion = 4;
-    header.guid = fls::parseHeader(target.headerBytes).guid;
+    header.guid = target.assetGuid;
     header.creatorTag = target.creatorTag;
     project.headerMetadata = header;
     if (project.isLivery) {
@@ -102,73 +94,20 @@ QMap<QString, QByteArray> replacement(const fls::WgsExportTarget &target, const 
             {QStringLiteral("header"), readFile(QDir(staging).filePath(QStringLiteral("header")))}};
 }
 
-struct Fixture {
-    QString profile;
-    QString descriptor;
-    QString index;
-    int headerTimeOffset = 0;
-    int entryTimeOffset = 0;
-};
-
-Fixture makeFixture(const QString &root, bool livery, int generation = 1) {
-    Fixture fixture;
-    fixture.profile = QDir(root).filePath(QStringLiteral("000901FEBE15706D_0000000000000000000000007900C3C7"));
-    fixture.index = QDir(fixture.profile).filePath("containers.index");
-    const QUuid id = QUuid::createUuid();
-    const QString folder = QDir(fixture.profile).filePath(id.toString(QUuid::Id128).toUpper());
-    fixture.descriptor = QDir(folder).filePath(QStringLiteral("container.%1").arg(generation));
-    const QString pgs = QDir(root).filePath("initial");
-    auto project = makeProject(livery, livery ? 1069 : 0);
-    project.headerMetadata = fls::defaultDraftHeader(project.name, "Original", project.carId);
-    if (livery) {
-        fls::exportGameLivery(project, pgs, fls::ExportGameVersion::Horizon5);
-    } else {
-        fls::exportGameGroup(project, pgs, fls::ExportGameVersion::Horizon5);
-    }
-    QByteArray descriptor;
-    fls::detail::appendLeU32(descriptor, 4);
-    fls::detail::appendLeU32(descriptor, 3);
-    quint64 size = 0;
-    for (const QString &name : {livery ? QStringLiteral("C_livery") : QStringLiteral("C_group"),
-                                QStringLiteral("header"), QStringLiteral("thumb.png")}) {
-        QByteArray data = name == "thumb.png" ? QByteArray::fromHex("89504e470d0a1a0a01020304") : readFile(QDir(pgs).filePath(name));
-        QByteArray encodedName;
-        for (QChar character : name) {
-            fls::detail::appendLeU16(encodedName, character.unicode());
-        }
-        encodedName.resize(128, '\0');
-        const QUuid blobId = QUuid::createUuid();
-        const QUuid previousId = QUuid::createUuid();
-        descriptor.append(encodedName);
-        descriptor.append(guidBytes(previousId));
-        descriptor.append(guidBytes(blobId));
-        writeFile(QDir(folder).filePath(blobId.toString(QUuid::Id128).toUpper()), data);
-        size += data.size();
-    }
-    writeFile(fixture.descriptor, descriptor);
+QString makeProfile(const QString &root, fls::ExportGameVersion game) {
+    const QString profile = QDir(root).filePath(QStringLiteral("000901FEBE15706D_0000000000000000000000007900C3C7"));
     QByteArray index;
     fls::detail::appendLeU32(index, 14);
-    fls::detail::appendLeU32(index, 1);
+    fls::detail::appendLeU32(index, 0);
     fls::detail::appendLeU32(index, 17);
-    appendString(index, "Microsoft.624F8B84B80_8wekyb3d8bbwe!Forzahorizon5");
-    fixture.headerTimeOffset = index.size();
+    appendString(index, game == fls::ExportGameVersion::Motorsport2023
+        ? "Microsoft.ForzaMotorsport_8wekyb3d8bbwe!ReleaseFinal" : "Microsoft.624F8B84B80_8wekyb3d8bbwe!Forzahorizon5");
     appendU64(index, 1);
     fls::detail::appendLeU32(index, 3);
     appendString(index, "b329481a-9cff-4b60-924b-41554f4c35f2");
     appendU64(index, 2147483648);
-    const QString name = livery ? "Livery_1069_20261013000000" : "LayerGroup_0000_20261013000000";
-    appendString(index, name);
-    appendString(index, name);
-    appendString(index, "\"0x012345abcdef\"");
-    index.append(static_cast<char>(generation));
-    fls::detail::appendLeU32(index, 1);
-    index.append(guidBytes(id));
-    fixture.entryTimeOffset = index.size();
-    appendU64(index, 2);
-    appendU64(index, 0x11223344);
-    appendU64(index, size);
-    writeFile(fixture.index, index);
-    return fixture;
+    writeFile(QDir(profile).filePath("containers.index"), index);
+    return profile;
 }
 
 QMap<QString, QByteArray> snapshotFiles(const QString &directory) {
@@ -193,73 +132,6 @@ void mustReject(const std::function<void()> &action, const QString &message) {
     require(rejected, message);
 }
 
-void testSynthetic(const QString &root) {
-    for (const bool livery : {false, true}) {
-        const QString caseRoot = QDir(root).filePath(livery ? "livery" : "group");
-        const auto fixture = makeFixture(caseRoot, livery, 3);
-        const auto target = fls::inspectWgsExportTarget(fixture.descriptor, fls::ExportGameVersion::Horizon5, livery, livery ? 1069 : 0);
-        const auto before = snapshotFiles(fixture.profile);
-        const auto blobs = replacement(target, QDir(caseRoot).filePath("replacement"));
-        mustReject([&] { fls::inspectWgsExportTarget(fixture.descriptor, fls::ExportGameVersion::Motorsport2023, livery); }, "game mismatch");
-        mustReject([&] { fls::inspectWgsExportTarget(fixture.descriptor, fls::ExportGameVersion::Horizon5, !livery); }, "type mismatch");
-        if (livery) {
-            mustReject([&] { fls::inspectWgsExportTarget(fixture.descriptor, fls::ExportGameVersion::Horizon5, true, 123); }, "car mismatch");
-        }
-        writeFile(QDir(QFileInfo(fixture.descriptor).absolutePath()).filePath("container.1"), readFile(fixture.descriptor));
-        mustReject([&] { fls::inspectWgsExportTarget(QDir(QFileInfo(fixture.descriptor).absolutePath()).filePath("container.1"),
-            fls::ExportGameVersion::Horizon5, livery, livery ? 1069 : 0); }, "stale generation");
-        auto invalid = blobs;
-        invalid.insert("profiledata", "unexpected");
-        mustReject([&] { fls::replaceWgsContainer(target, invalid); }, "unregistered blob");
-        for (auto file = before.cbegin(); file != before.cend(); ++file) {
-            require(readFile(file.key()) == file.value(), "rejection changed data");
-        }
-        const QString backup = fls::replaceWgsContainer(target, blobs);
-        const QDir profile(fixture.profile);
-        for (auto file = before.cbegin(); file != before.cend(); ++file) {
-            require(readFile(QDir(backup).filePath(profile.relativeFilePath(file.key()))) == file.value(), "backup bytes");
-        }
-        require(readFile(fixture.descriptor) == before.value(fixture.descriptor), "descriptor GUID preservation");
-        const QByteArray updated = readFile(fixture.index);
-        const QByteArray original = before.value(fixture.index);
-        require(updated.size() == original.size(), "index layout changed");
-        for (int position = 0; position < updated.size(); ++position) {
-            const bool field = (position >= fixture.headerTimeOffset && position < fixture.headerTimeOffset + 8)
-                || (position >= fixture.entryTimeOffset && position < fixture.entryTimeOffset + 8)
-                || (position >= fixture.entryTimeOffset + 16 && position < fixture.entryTimeOffset + 24);
-            require(field || updated[position] == original[position], "opaque index field changed");
-        }
-        const auto save = fls::readWgsSave(fixture.profile);
-        require(save.containerCount == 1 && save.assets.size() == 1, "registration changed");
-        mustReject([&] { fls::replaceWgsContainer(target, blobs); }, "changed snapshot accepted");
-    }
-}
-
-void testRollback(const QString &root) {
-#ifdef Q_OS_WIN
-    const auto fixture = makeFixture(QDir(root).filePath("rollback"), false);
-    const auto target = fls::inspectWgsExportTarget(fixture.descriptor, fls::ExportGameVersion::Horizon5, false);
-    const auto before = snapshotFiles(fixture.profile);
-    const auto blobs = replacement(target, QDir(root).filePath("rollback-staging"));
-    const HANDLE handle = CreateFileW(reinterpret_cast<LPCWSTR>(fixture.index.utf16()), GENERIC_READ,
-                                      FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-    require(handle != INVALID_HANDLE_VALUE, "index lock");
-    bool failed = false;
-    try {
-        fls::replaceWgsContainer(target, blobs);
-    } catch (const std::exception &error) {
-        failed = QString::fromUtf8(error.what()).contains("rolled back");
-    }
-    CloseHandle(handle);
-    require(failed, "index commit failure did not roll back");
-    for (auto file = before.cbegin(); file != before.cend(); ++file) {
-        require(readFile(file.key()) == file.value(), "rollback did not restore file");
-    }
-#else
-    Q_UNUSED(root);
-#endif
-}
-
 void copyTree(const QString &source, const QString &destination) {
     const QDir origin(source);
     QDirIterator iterator(source, QDir::Files | QDir::NoDotAndDotDot, QDirIterator::Subdirectories);
@@ -269,57 +141,99 @@ void copyTree(const QString &source, const QString &destination) {
     }
 }
 
-void testSample(const QString &sample, const QString &root) {
-    QString profile;
-    fls::WgsSave originalSave;
-    for (const QFileInfo &info : QDir(sample).entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot)) {
-        if (fls::isWgsSaveDirectory(info.absoluteFilePath())) {
-            const auto save = fls::readWgsSave(info.absoluteFilePath());
-            if (save.containerCount > originalSave.containerCount) {
-                originalSave = save;
-                profile = info.absoluteFilePath();
-            }
+void testAppend(const QString &profile, const QString &staging, fls::ExportGameVersion game, bool livery) {
+    const QDir directory(profile);
+    const QString index = directory.filePath("containers.index");
+    const int carId = livery ? 1069 : 0;
+    const auto kind = livery ? fls::WgsAssetKind::Livery : fls::WgsAssetKind::Group;
+    const QString expectedPrefix = livery ? "Livery_1069_" : "LayerGroup_0000_";
+    const QString payloadKey = livery ? "c_livery" : "c_group";
+    const auto before = snapshotFiles(profile);
+    const auto originalSave = fls::readWgsSave(profile);
+    const auto target = fls::inspectWgsAppendTarget(index, game, kind, carId);
+    auto blobs = encodedArtwork(target, staging);
+    mustReject([&] { fls::appendWgsContainer(target, blobs); }, "missing thumbnails");
+    require(snapshotFiles(profile) == before, "invalid append changed the profile");
+    const QByteArray png = QByteArray::fromBase64(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jLZkAAAAASUVORK5CYII=");
+    if (livery) {
+        blobs.insert("bigthumb.png", png);
+        blobs.insert("smallthumb.png", png);
+    } else {
+        blobs.insert("thumb.png", png);
+    }
+
+#ifdef Q_OS_WIN
+    const HANDLE handle = CreateFileW(reinterpret_cast<LPCWSTR>(index.utf16()), GENERIC_READ,
+                                      FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    require(handle != INVALID_HANDLE_VALUE, "index lock");
+    bool failed = false;
+    try {
+        fls::appendWgsContainer(target, blobs);
+    } catch (const std::exception &error) {
+        failed = QString::fromUtf8(error.what()).contains("Backup:");
+    }
+    CloseHandle(handle);
+    require(failed, "locked index did not reject append at commit");
+    require(snapshotFiles(profile) == before, "failed append left files in the profile");
+#endif
+
+    const auto added = fls::appendWgsContainer(target, blobs);
+    const auto save = fls::readWgsSave(profile);
+    require(save.containerCount == originalSave.containerCount + 1, "append registration count");
+    require(added.containerName.startsWith(expectedPrefix), "append registration name");
+    QByteArray registration;
+    appendString(registration, added.containerName);
+    appendString(registration, added.containerName);
+    appendString(registration, QString());
+    registration.append(char(1));
+    fls::detail::appendLeU32(registration, 5);
+    require(readFile(index).contains(registration), "append cloud state and empty tag");
+    require(readFile(QDir(added.backupPath).filePath("containers.index")) == before.value(index), "append backup");
+    for (auto file = before.cbegin(); file != before.cend(); ++file) {
+        require(file.key() == index || readFile(file.key()) == file.value(), "append changed an existing blob or descriptor");
+    }
+    const auto asset = std::find_if(save.assets.cbegin(), save.assets.cend(),
+        [&](const fls::WgsAsset &candidate) { return candidate.containerName == added.containerName; });
+    require(asset != save.assets.cend() && asset->kind == kind, "appended asset missing");
+    const QByteArray header = readFile(asset->headerPath);
+    const QByteArray payload = readFile(asset->payloadPath);
+    const QDir container(QFileInfo(asset->payloadPath).absolutePath());
+    const QByteArray descriptor = readFile(container.filePath("container.1"));
+    require(descriptor.size() == (livery ? 648 : 488), "append descriptor size");
+    for (int offset = 136; offset < descriptor.size(); offset += 160) {
+        require(descriptor.mid(offset, 16) == QByteArray(16, '\0'), "append cloud blob ID");
+    }
+    require(header == blobs.value("header") && payload == blobs.value(payloadKey)
+            && readFile(asset->thumbnailPath) == png, "append blob bytes");
+    if (livery) {
+        require(fls::importCLiveryData(payload, header, "append").carId == carId, "appended livery import");
+    } else {
+        const auto group = fls::importCGroupNestedData(payload, header, "append");
+        const auto metadata = fls::parseHeader(header);
+        require(group.root && group.root->children.size() == 3, "appended group import");
+        require(metadata.sectionPrefix == QByteArray(1, '\x01') + QByteArray(27, '\0')
+                && metadata.trailing.isEmpty(), "authored FH5 group header layout");
+    }
+    mustReject([&] { fls::appendWgsContainer(target, blobs); }, "stale append target");
+}
+
+void testAppendSample(const QString &sample, const QString &root, fls::ExportGameVersion game) {
+    QString original;
+    for (const QString &name : QDir(sample).entryList(QDir::Dirs | QDir::NoDotAndDotDot)) {
+        if (name.endsWith("7900C3C7", Qt::CaseInsensitive)) {
+            original = QDir(sample).absoluteFilePath(name);
+            break;
         }
     }
-    require(!profile.isEmpty(), "active sample profile");
-    const auto sourceBefore = snapshotFiles(profile);
-    const QString copied = QDir(root).filePath(QDir(profile).dirName());
-    copyTree(profile, copied);
-    const auto copyBefore = snapshotFiles(copied);
-    QSet<QString> affected;
-    int containers = 0;
-    for (const auto &asset : fls::readWgsSave(copied).assets) {
-        const bool livery = asset.kind == fls::WgsAssetKind::Livery;
-        if (!asset.containerName.startsWith(livery ? "Livery_" : "LayerGroup_")) {
-            continue;
-        }
-        const QString folder = QFileInfo(asset.payloadPath).absolutePath();
-        const QStringList names = QDir(folder).entryList({"container.*"}, QDir::Files);
-        const int carId = livery ? asset.containerName.section('_', 1, 1).toInt() : 0;
-        const auto target = fls::inspectWgsExportTarget(QDir(folder).filePath(names.front()), fls::ExportGameVersion::Horizon5, livery, carId);
-        const auto blobs = replacement(target, QDir(root).filePath(QStringLiteral("staging-%1").arg(containers)));
-        const QString backup = fls::replaceWgsContainer(target, blobs);
-        for (auto blob = blobs.cbegin(); blob != blobs.cend(); ++blob) {
-            const QString path = target.blobPaths.value(blob.key());
-            require(readFile(path) == blob.value(), "sample replacement bytes");
-            require(readFile(QDir(backup).filePath(QDir(copied).relativeFilePath(path))) == copyBefore.value(path), "sample backup bytes");
-            affected.insert(path);
-        }
-        affected.insert(target.indexPath);
-        if (livery) {
-            require(fls::importCLiveryData(readFile(target.asset.payloadPath), readFile(target.asset.headerPath), "replacement").carId == carId, "sample livery import");
-        } else {
-            fls::importCGroupNestedData(readFile(target.asset.payloadPath), readFile(target.asset.headerPath), "replacement");
-        }
-        ++containers;
-    }
-    const auto finalSave = fls::readWgsSave(copied);
-    require(finalSave.containerCount == originalSave.containerCount && finalSave.assets.size() == originalSave.assets.size(), "sample registration count");
-    for (auto file = copyBefore.cbegin(); file != copyBefore.cend(); ++file) {
-        require(affected.contains(file.key()) || readFile(file.key()) == file.value(), "unrelated sample file changed");
-    }
-    require(snapshotFiles(profile) == sourceBefore, "original sample changed");
-    qInfo() << "WGS sample replacements:" << containers << "registered containers:" << finalSave.containerCount;
+    require(!original.isEmpty(), "FH5 service profile sample");
+    const auto before = snapshotFiles(original);
+    const QString copied = QDir(root).filePath(QDir(original).dirName());
+    copyTree(original, copied);
+    testAppend(copied, QDir(root).filePath("sample-livery-staging"), game, true);
+    testAppend(copied, QDir(root).filePath("sample-group-staging"), game, false);
+    require(snapshotFiles(original) == before, "original import sample changed");
+    qInfo() << "WGS livery and group append verified against" << sample;
 }
 
 } // namespace
@@ -331,10 +245,18 @@ int main(int argc, char *argv[]) {
         require(QDir().mkpath(parent), "temporary parent");
         QTemporaryDir temporary(QDir(parent).filePath("wgs-writer-XXXXXX"));
         require(temporary.isValid(), "temporary directory");
-        testSynthetic(temporary.path());
-        testRollback(temporary.path());
+        for (const auto game : {fls::ExportGameVersion::Horizon5, fls::ExportGameVersion::Motorsport2023}) {
+            const QDir appendRoot(QDir(temporary.path()).filePath(fls::exportGameCode(game)));
+            const QString profile = makeProfile(appendRoot.absolutePath(), game);
+            testAppend(profile, appendRoot.filePath("staged-livery"), game, true);
+            testAppend(profile, appendRoot.filePath("staged-group"), game, false);
+        }
         if (application.arguments().size() == 3 && application.arguments()[1] == "--sample") {
-            testSample(application.arguments()[2], temporary.path());
+            testAppendSample(application.arguments()[2], QDir(temporary.path()).filePath("native-append"),
+                             fls::ExportGameVersion::Horizon5);
+        }
+        if (application.arguments().size() == 3 && application.arguments()[1] == "--import-sample") {
+            testAppendSample(application.arguments()[2], temporary.path(), fls::ExportGameVersion::Motorsport2023);
         }
         qInfo() << "WGS writer tests passed";
         return 0;
