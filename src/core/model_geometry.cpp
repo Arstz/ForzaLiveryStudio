@@ -493,6 +493,14 @@ ModelVec3 ModelMat4::transformVector(const ModelVec3 &v) const {
             v.x * m[2] + v.y * m[6] + v.z * m[10]};
 }
 
+bool CarMesh::isTire() const {
+    QString path = sourceModelPath;
+    path.replace(QLatin1Char('\\'), QLatin1Char('/'));
+
+    return name.startsWith(QStringLiteral("tire"), Qt::CaseInsensitive)
+        || path.contains(QStringLiteral("/tires/"), Qt::CaseInsensitive);
+}
+
 ModelBounds::ModelBounds() {
     constexpr float kMinimum = std::numeric_limits<float>::max();
     constexpr float kMaximum = std::numeric_limits<float>::lowest();

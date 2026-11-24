@@ -332,6 +332,9 @@ constexpr quint32 kLegacyOpacityMap = 0x698CA64F;
 constexpr quint32 kLegacyColorMap = 0x810E7224;
 constexpr quint32 kLegacySpecularMap = 0x4C96A196;
 constexpr quint32 kLegacyGlossMap = 0xA91F5977;
+constexpr quint32 kLegacyPaintColorMap = 3165326196;
+constexpr quint32 kLegacyPaintOpacityMap = 3719701651;
+constexpr quint32 kLegacyDamageNormalMap = 1820598072;
 constexpr quint32 kNormalTiling = 0x942CA044;
 constexpr quint32 kNormalStrength = 0xEEBAB966;
 constexpr quint32 kDetailNormalMap = 0xD62CC872;
@@ -418,13 +421,15 @@ private:
     const std::vector<ModelMaterialParameter> &parameters_;
 };
 
-std::optional<quint32> readEarlyShaderOpacitySwitch(
-    const BundleBlobRecord &constants, const std::vector<ShaderTextureBinding> &textures) {
-    constexpr std::array kSwitchBindings{
-        std::pair{kFirstChannelOpacityEnabled, kEarlyOpacityMap},
-        std::pair{kSecondChannelOpacityEnabled, kEarlyOpacityMap},
-        std::pair{kCoatedOpacityEnabled, kEarlyOpacityMap},
-        std::pair{kPaintOpacityEnabled, kEarlyPaintOpacityMap},
+std::optional<quint32> readShaderOpacitySwitch(
+    const BundleBlobRecord &constants, const std::vector<ShaderTextureBinding> &textures, bool earlyBindings) {
+    const quint32 opacityMap = earlyBindings ? kEarlyOpacityMap : kLegacyOpacityMap;
+    const quint32 paintOpacityMap = earlyBindings ? kEarlyPaintOpacityMap : kLegacyPaintOpacityMap;
+    const std::array switchBindings{
+        std::pair{kFirstChannelOpacityEnabled, opacityMap},
+        std::pair{kSecondChannelOpacityEnabled, opacityMap},
+        std::pair{kCoatedOpacityEnabled, opacityMap},
+        std::pair{kPaintOpacityEnabled, paintOpacityMap},
     };
     constexpr int kBindingMetadataSize = 18;
     constexpr int kBindingSize = sizeof(quint32) + kBindingMetadataSize;
@@ -438,9 +443,9 @@ std::optional<quint32> readEarlyShaderOpacitySwitch(
     for (int index = 0; index < count; ++index) {
         const quint32 hash = cursor.u32();
         cursor.skip(kBindingMetadataSize);
-        const auto binding = std::find_if(kSwitchBindings.cbegin(), kSwitchBindings.cend(),
+        const auto binding = std::find_if(switchBindings.cbegin(), switchBindings.cend(),
             [hash](const auto &entry) { return entry.first == hash; });
-        if (binding == kSwitchBindings.cend()
+        if (binding == switchBindings.cend()
             || std::none_of(textures.cbegin(), textures.cend(),
                 [binding](const auto &texture) { return texture.nameHash == binding->second; })) continue;
         if (opacitySwitch && *opacitySwitch != hash) return {};
@@ -679,8 +684,6 @@ bool applyLegacyBadgeShader(ModelMaterial &material, const QString &program, boo
 
 bool applyLegacyPaintSurface(ModelMaterial &material, LegacyMaterialSurface &surface,
                              const MaterialParameters &parameters, bool earlyBindings) {
-    constexpr quint32 kPaintColorMap = 3165326196;
-    constexpr quint32 kPaintOpacityMap = 3719701651;
     constexpr quint32 kUseDiffuseColor = 3789039613;
     constexpr quint32 kDiffuseUsesTexture = 2518010538;
     constexpr quint32 kFlakeUsesTexture = 1902750849;
@@ -704,7 +707,7 @@ bool applyLegacyPaintSurface(ModelMaterial &material, LegacyMaterialSurface &sur
     constexpr quint32 kUseColorGroup = 2013285020;
     constexpr quint32 kColorGroup = 1352962;
     constexpr quint32 kManufacturerLiveryPlaceholder = 1130471687;
-    const quint32 colorMap = earlyBindings ? kEarlyPaintColorMap : kPaintColorMap;
+    const quint32 colorMap = earlyBindings ? kEarlyPaintColorMap : kLegacyPaintColorMap;
     const bool diffuseColor = parameters.enabled(kUseDiffuseColor);
     const bool flakeTexture = parameters.enabled(kFlakeUsesTexture);
     const bool mappedColor = diffuseColor ? parameters.enabled(kDiffuseUsesTexture) : flakeTexture;
@@ -740,7 +743,7 @@ bool applyLegacyPaintSurface(ModelMaterial &material, LegacyMaterialSurface &sur
         surface.opacityFromAlpha = packed;
         surface.diffuseAlpha = mappedColor && packed;
         if (!surface.diffuseAlpha) {
-            const quint32 opacityMap = earlyBindings ? kEarlyPaintOpacityMap : kPaintOpacityMap;
+            const quint32 opacityMap = earlyBindings ? kEarlyPaintOpacityMap : kLegacyPaintOpacityMap;
             surface.opacityMap = packed ? colorMap : opacityMap;
         }
         material.alphaUv = MaterialUvMapping{};
@@ -833,18 +836,29 @@ void applyLegacyShaderSurface(ModelMaterial &material, const QString &program, b
         }
         if (metal) applyLegacyMetalEmission(material, surface, parameters, sharedUv, firstChannel, earlyBindings);
         surface.diffuseAlpha = interiorDual && mappedColor;
-    } else if (program == QStringLiteral("clc_metalch2normalch1mask.shaderbin")) {
-        if (parameters.enabled(0x05A401E7)) {
-            surface.diffuseMap = 0xCA4E3249;
+    } else if (program == QStringLiteral("clc_metalch2normalch1mask.shaderbin")
+        || program == QStringLiteral("clc_metalch2normalch1maskch1clcnormal.shaderbin")
+        || program == QStringLiteral("int_clc_metalch2normalch1mask.shaderbin")
+        || program == QStringLiteral("rh_clc_metalch2normalch1mask.shaderbin")
+        || program == QStringLiteral("clc_ch2norm_ch1knockoutmask.shaderbin")) {
+        constexpr quint32 kCoatedColor = 1940513503;
+        constexpr quint32 kCoatedDiffuseEnabled = 94634471;
+        constexpr quint32 kCoatedDiffuseMap = 3394122313;
+        constexpr quint32 kCoatedDiffuseTiling = 822378793;
+        constexpr quint32 kCoatedOpacityTiling = 734603102;
+        if (parameters.enabled(kCoatedDiffuseEnabled)) {
+            surface.diffuseMap = kCoatedDiffuseMap;
             setMaterialColor(material, kWhite);
-            setLegacyDiffuseUv(material, parameters.uv(1, 0x31048129));
+            setLegacyDiffuseUv(material, parameters.uv(1, kCoatedDiffuseTiling));
+        } else {
+            setMaterialColor(material, parameters.color(kCoatedColor, material.baseColor));
         }
-        if (parameters.enabled(kDetailNormalEnabled)) {
+        if (parameters.enabled(kDetailNormalEnabled, true)) {
             setLegacyNormal(material, surface, kNormalTexture, parameters.uv(1, kNormalTiling), normalStrength);
         }
         if (parameters.enabled(kCoatedOpacityEnabled)) {
             surface.opacityMap = kLegacyOpacityMap;
-            material.alphaUv = parameters.uv(0);
+            material.alphaUv = parameters.uv(0, kCoatedOpacityTiling);
         }
     } else if (program == QStringLiteral("int_ch2_norm_diffuse.shaderbin")) {
         surface.diffuseMap = 0x29C58482;
@@ -1063,7 +1077,7 @@ std::shared_ptr<ModelMaterial> decodeMaterialFromBundle(
     std::optional<ShaderBindingLayout> bindingLayout;
     const BundleBlobRecord *constantMapping = nullptr;
     bool shaderBundle = false;
-    bool earlyTextureBindings = false;
+    bool byteCountTextureBindings = false;
     bool legacyVariants = false;
 
     for (const BundleBlobRecord &child : bundle.blobs) {
@@ -1084,7 +1098,7 @@ std::shared_ptr<ModelMaterial> decodeMaterialFromBundle(
         } else if (child.tag == bundle_tags::TextureParameterMapping) {
             appendShaderTextures(*material, child);
             shaderBundle = true;
-            earlyTextureBindings = child.versionMajor == 3 && child.versionMinor == 0;
+            byteCountTextureBindings = child.versionMajor == 3 && child.versionMinor == 0;
         } else if (child.tag == bundle_tags::ShaderVersion) {
             bindingLayout = child.versionMajor == 1 && child.versionMinor == 1
                 ? ShaderBindingLayout::Legacy : ShaderBindingLayout::Current;
@@ -1104,12 +1118,24 @@ std::shared_ptr<ModelMaterial> decodeMaterialFromBundle(
     }
     if (shaderBundle) {
         if (!bindingLayout) {
-            if (earlyTextureBindings) bindingLayout = ShaderBindingLayout::EarlyLegacy;
-            else if (legacyVariants) bindingLayout = ShaderBindingLayout::Legacy;
+            if (byteCountTextureBindings) {
+                constexpr std::array kLegacyTextureBindings{
+                    material_hashes::parameter::kNormalTexture, kLegacyOpacityMap, kLegacyColorMap,
+                    kLegacyGlossMap, kLegacyPaintColorMap, kLegacyDamageNormalMap, kDetailNormalMap,
+                };
+                const bool legacyBindings = std::any_of(material->shaderTextures.cbegin(), material->shaderTextures.cend(),
+                    [&](const auto &texture) {
+                        return material_hashes::contains(kLegacyTextureBindings, texture.nameHash);
+                    });
+                bindingLayout = legacyBindings ? ShaderBindingLayout::Legacy : ShaderBindingLayout::EarlyLegacy;
+            } else if (legacyVariants) {
+                bindingLayout = ShaderBindingLayout::Legacy;
+            }
         }
         material->shaderBindingLayout = bindingLayout;
-        if (bindingLayout == ShaderBindingLayout::EarlyLegacy && constantMapping != nullptr) {
-            material->shaderOpacitySwitch = readEarlyShaderOpacitySwitch(*constantMapping, material->shaderTextures);
+        if (byteCountTextureBindings && bindingLayout != ShaderBindingLayout::Current && constantMapping != nullptr) {
+            material->shaderOpacitySwitch = readShaderOpacitySwitch(
+                *constantMapping, material->shaderTextures, bindingLayout == ShaderBindingLayout::EarlyLegacy);
         }
         for (auto &parameter : material->parameters) parameter.shaderDefault = true;
     }

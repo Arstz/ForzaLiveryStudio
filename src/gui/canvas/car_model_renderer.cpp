@@ -3382,8 +3382,7 @@ void CarModelRenderer::uploadModel(const fls::CarModel &model, int lodIndex,
         const std::optional<MaterialFallback> material = exteriorMaterialFallback(mesh);
         QString wheelPath = mesh.sourceModelPath.toLower();
         wheelPath.replace(QLatin1Char('\\'), QLatin1Char('/'));
-        const bool tire = mesh.name.startsWith(QStringLiteral("tire"), Qt::CaseInsensitive)
-            || wheelPath.contains(QStringLiteral("/tires/"));
+        const bool tire = mesh.isTire();
         if (tire) {
             if (!buffers->hasMaterialColor) {
                 buffers->hasMaterialColor = true;

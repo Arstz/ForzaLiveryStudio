@@ -95,6 +95,8 @@ struct CarMesh {
     quint32 drawGroups = 0;
     bool stockPart = true;
     std::vector<int> partOptionIds;
+
+    bool isTire() const;
 };
 
 struct CarPartOption {

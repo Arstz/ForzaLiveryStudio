@@ -1078,10 +1078,12 @@ void resolveModelMaterials(
             }
             visited.insert(mesh.material.get());
             const auto &parameters = mesh.material->parameters;
-            const bool tire = std::any_of(parameters.cbegin(), parameters.cend(),
+            const bool tire = mesh.isTire() && std::any_of(parameters.cbegin(), parameters.cend(),
                 [](const auto &parameter) {
                     const NativeTextureSlot slot = tireTextureSlot(parameter.nameHash);
-                    return slot != NativeTextureSlot::Unknown && slot != NativeTextureSlot::TireDiffuse;
+
+                    return parameter.type == fls::ModelMaterialParameterType::Texture2D
+                        && slot != NativeTextureSlot::Unknown && slot != NativeTextureSlot::TireDiffuse;
                 });
             const auto &legacySurface = mesh.material->legacySurface;
             const bool weave = mesh.material->weave.has_value();
