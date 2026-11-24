@@ -377,8 +377,12 @@ qt_add_library(fls_editor_ui STATIC
     src/gui/widgets/clipboard_buffer_widget.h
     src/gui/widgets/color_palette_widget.cpp
     src/gui/widgets/color_palette_widget.h
+    src/gui/widgets/browser_scroll.cpp
+    src/gui/widgets/browser_scroll.h
     src/gui/widgets/export_asset_dialog.cpp
     src/gui/widgets/export_asset_dialog.h
+    src/gui/widgets/file_picker_style.cpp
+    src/gui/widgets/file_picker_style.h
     src/gui/widgets/font_glyphs.cpp
     src/gui/widgets/font_glyphs.h
     src/gui/widgets/header_metadata_widget.cpp
