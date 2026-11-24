@@ -1,6 +1,5 @@
 Small changes:
     -Anull UV cache on manual model change
-    -Replace shape based on bounding box
 
 Medium changes:
     -Unify file picker explorer

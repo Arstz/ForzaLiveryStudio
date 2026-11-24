@@ -28,7 +28,7 @@ The target-car chooser lists supported game versions beside each car. A white ve
 
 ### Shapes
 
-To place shapes interact with `Shapes` widget. Left click would create a new shape and right would change the selected shape to the clicked one. Add and remove shapes to favourites via clicking on the star icon, shapes can be renamed by editing `assets/vector/shape_names.json` located in your install location.
+To place shapes interact with `Shapes` widget. Left-click to create a new shape. Right-click to replace the selected shape and fit the new artwork to its relative bounding box. Add and remove shapes to favourites via clicking on the star icon, shapes can be renamed by editing `assets/vector/shape_names.json` located in your install location.
 
 To place text use `Place Text` on the toolbar, choose a font and type your text. Letters are placed as a group of shapes; `Monospace` gives them fixed spacing.
 

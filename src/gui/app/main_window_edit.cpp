@@ -13,6 +13,7 @@
 #include "perf_utils.h"
 #include "property_panel.h"
 #include "cubic_contour.h"
+#include "scene_view.h"
 #include "tool_settings_widget.h"
 #include "shape_name_store.h"
 #include "shapes_browser_widget.h"
@@ -1008,15 +1009,34 @@ void MainWindow::replaceSelectedShape(int shapeId) {
         canvasStatusBar_->showMessage(QStringLiteral("Selected shape already uses this geometry"), 1500);
         return;
     }
+    if (canvas_ == nullptr) {
+        return;
+    }
+
+    const QRectF currentBounds = layer->isRaster()
+        ? sceneLocalRect(QSizeF(layer->rasterWidth, layer->rasterHeight))
+        : canvas_->shapeInkBounds(layer->shapeId);
+    const QRectF replacementBounds = canvas_->shapeInkBounds(shapeId);
+    if (!currentBounds.isValid() || !replacementBounds.isValid()) {
+        canvasStatusBar_->showMessage(QStringLiteral("Cannot fit replacement to the shape bounds"), 2500);
+        return;
+    }
+
+    const QTransform fitScale = QTransform::fromScale(currentBounds.width() / replacementBounds.width(),
+                                                     currentBounds.height() / replacementBounds.height());
+    const QPointF fittedOrigin = sceneLocalTransform(*layer).map(
+        currentBounds.center() - fitScale.map(replacementBounds.center()));
 
     state_->beginProjectEdit();
     layer->setVectorShape(static_cast<quint16>(shapeId));
     layer->sourceLogoId = 0;
+    layer->x = fittedOrigin.x();
+    layer->y = fittedOrigin.y();
+    layer->scaleX *= fitScale.m11();
+    layer->scaleY *= fitScale.m22();
     state_->commitProjectEdit();
     state_->noteProjectGeometryChanged(true, {layer->id});
-    if (canvas_ != nullptr) {
-        canvas_->setFocus();
-    }
+    canvas_->setFocus();
     canvasStatusBar_->showMessage(QStringLiteral("Replaced selected shape"), 1500);
 }
 
