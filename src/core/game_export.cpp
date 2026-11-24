@@ -226,6 +226,12 @@ QString exportGameCode(ExportGameVersion game) {
     }
 }
 
+NativeExportVersions nativeExportVersions(ExportGameVersion game) {
+    const ExportProfile profile = exportProfile(game);
+
+    return {profile.headerVersion, profile.liveryVersion};
+}
+
 bool isXbox360ExportGame(ExportGameVersion game) {
     return game == ExportGameVersion::Motorsport2 || game == ExportGameVersion::Motorsport3
         || game == ExportGameVersion::Motorsport4 || game == ExportGameVersion::Horizon1;

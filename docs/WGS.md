@@ -1,23 +1,23 @@
 # WGS Asset Export
 
-WGS export registers new liveries and layer groups. Select **WGS / add new
-container** for the native FH5 profile or **WGS (FH5->FM2023)** for the
-Motorsport import profile. Choose `containers.index` in the destination
-game's FH5 service namespace. The host package identifies the destination and
-the account identifier in the profile folder supplies the creator identity.
+WGS export registers new liveries and layer groups. Select the destination game
+and its WGS container format, then choose `containers.index` from the save
+profile. The package and service identifier identify the destination. The
+account identifier in the profile folder supplies the creator identity. The
+dialog remembers the last successful export game and each game's WGS index.
 
 ## Storage Layout
 
 Version-14 indices register logical container names, physical container GUIDs,
 active descriptor generations, timestamps, and total blob sizes. Version-4
 descriptors contain fixed-size entries with UTF-16 blob names and GUID pairs.
-The current GUID identifies each physical blob file. FH5 stores its native
-compressed artwork, header, and PNG thumbnails in those files.
+The current GUID identifies each physical blob file. Profiles store compressed
+artwork, a header, and PNG thumbnails in those files.
 
-The FH5 encoder supplies the artwork and header. The export assigns fresh
-identifiers to the asset, folder, and blobs. Liveries use the car ID and a
-timestamp in the registration name. Layer groups use the group prefix and a
-timestamp.
+The selected profile determines the artwork, header, and thumbnail formats.
+The export assigns fresh identifiers to the asset, folder, and blobs. Liveries
+use the car ID and a timestamp in the registration name. Layer groups use the
+group prefix and a timestamp.
 
 ## Transaction
 

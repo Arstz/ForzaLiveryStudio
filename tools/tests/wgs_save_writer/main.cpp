@@ -20,6 +20,27 @@
 
 namespace {
 
+using Game = fls::ExportGameVersion;
+
+struct ProfileFixture {
+    Game game;
+    const char *serviceId;
+    const char *package;
+    quint32 headerVersion;
+    quint32 liveryVersion;
+    int assetIdSize;
+};
+
+constexpr const char *kFh5ServiceId = "0000000000000000000000007900C3C7";
+constexpr const char *kFh5Package = "Microsoft.624F8B84B80_8wekyb3d8bbwe!Forzahorizon5";
+constexpr ProfileFixture kProfiles[] = {
+    {Game::Horizon3, "1902010095754C2B99163D664CE1DFAB", "Microsoft.OpusPG_8wekyb3d8bbwe!OpusReleaseFinal", 1, 6, 8},
+    {Game::Horizon4, "000000000000000000000000765B6743", "Microsoft.SunriseBaseGame_8wekyb3d8bbwe!SunriseReleaseFinal", 4, 17, 16},
+    {Game::Motorsport7, "000000000000000000000000772F15B8", "Microsoft.ApolloBaseGame_8wekyb3d8bbwe!forzamotorsport7", 2, 7, 16},
+    {Game::Horizon5, kFh5ServiceId, kFh5Package, 6, 18, 16},
+    {Game::Motorsport2023, kFh5ServiceId, "Microsoft.ForzaMotorsport_8wekyb3d8bbwe!ReleaseFinal", 6, 18, 16},
+};
+
 void require(bool condition, const QString &message) {
     if (!condition) {
         throw std::runtime_error(message.toStdString());
@@ -80,28 +101,28 @@ fls::Project makeProject(bool livery, int car = 0) {
 QMap<QString, QByteArray> encodedArtwork(const fls::WgsExportTarget &target, const QString &staging) {
     auto project = makeProject(target.kind == fls::WgsAssetKind::Livery, target.carId);
     auto header = fls::defaultDraftHeader(project.name, "WGS tests", target.carId);
-    header.formatVersion = 4;
+    header.formatVersion = target.versions.header;
     header.guid = target.assetGuid;
     header.creatorTag = target.creatorTag;
     project.headerMetadata = header;
+    const Game game = target.game == Game::Motorsport2023 ? Game::Horizon5 : target.game;
     if (project.isLivery) {
-        fls::exportGameLivery(project, staging, fls::ExportGameVersion::Horizon5);
+        fls::exportGameLivery(project, staging, game);
     } else {
-        fls::exportGameGroup(project, staging, fls::ExportGameVersion::Horizon5);
+        fls::exportGameGroup(project, staging, game);
     }
     const QString payload = project.isLivery ? QStringLiteral("C_livery") : QStringLiteral("C_group");
     return {{payload.toLower(), readFile(QDir(staging).filePath(payload))},
             {QStringLiteral("header"), readFile(QDir(staging).filePath(QStringLiteral("header")))}};
 }
 
-QString makeProfile(const QString &root, fls::ExportGameVersion game) {
-    const QString profile = QDir(root).filePath(QStringLiteral("000901FEBE15706D_0000000000000000000000007900C3C7"));
+QString makeProfile(const QString &root, const QString &serviceId, const QString &package) {
+    const QString profile = QDir(root).filePath(QStringLiteral("000901FEBE15706D_") + serviceId);
     QByteArray index;
     fls::detail::appendLeU32(index, 14);
     fls::detail::appendLeU32(index, 0);
     fls::detail::appendLeU32(index, 17);
-    appendString(index, game == fls::ExportGameVersion::Motorsport2023
-        ? "Microsoft.ForzaMotorsport_8wekyb3d8bbwe!ReleaseFinal" : "Microsoft.624F8B84B80_8wekyb3d8bbwe!Forzahorizon5");
+    appendString(index, package);
     appendU64(index, 1);
     fls::detail::appendLeU32(index, 3);
     appendString(index, "b329481a-9cff-4b60-924b-41554f4c35f2");
@@ -210,10 +231,12 @@ void testAppend(const QString &profile, const QString &staging, fls::ExportGameV
         require(fls::importCLiveryData(payload, header, "append").carId == carId, "appended livery import");
     } else {
         const auto group = fls::importCGroupNestedData(payload, header, "append");
-        const auto metadata = fls::parseHeader(header);
         require(group.root && group.root->children.size() == 3, "appended group import");
-        require(metadata.sectionPrefix == QByteArray(1, '\x01') + QByteArray(27, '\0')
-                && metadata.trailing.isEmpty(), "authored FH5 group header layout");
+        if (game == Game::Horizon5 || game == Game::Motorsport2023) {
+            const auto metadata = fls::parseHeader(header);
+            require(metadata.sectionPrefix == QByteArray(1, '\x01') + QByteArray(27, '\0')
+                    && metadata.trailing.isEmpty(), "authored FH5 group header layout");
+        }
     }
     mustReject([&] { fls::appendWgsContainer(target, blobs); }, "stale append target");
 }
@@ -245,11 +268,22 @@ int main(int argc, char *argv[]) {
         require(QDir().mkpath(parent), "temporary parent");
         QTemporaryDir temporary(QDir(parent).filePath("wgs-writer-XXXXXX"));
         require(temporary.isValid(), "temporary directory");
-        for (const auto game : {fls::ExportGameVersion::Horizon5, fls::ExportGameVersion::Motorsport2023}) {
-            const QDir appendRoot(QDir(temporary.path()).filePath(fls::exportGameCode(game)));
-            const QString profile = makeProfile(appendRoot.absolutePath(), game);
-            testAppend(profile, appendRoot.filePath("staged-livery"), game, true);
-            testAppend(profile, appendRoot.filePath("staged-group"), game, false);
+        for (const auto &fixture : kProfiles) {
+            const QDir appendRoot(QDir(temporary.path()).filePath(fls::exportGameCode(fixture.game)));
+            const QString profile = makeProfile(appendRoot.absolutePath(), fixture.serviceId, fixture.package);
+            const QString index = QDir(profile).filePath("containers.index");
+            const auto target = fls::inspectWgsAppendTarget(index, fixture.game, fls::WgsAssetKind::Group);
+            require(target.versions.header == fixture.headerVersion && target.versions.livery == fixture.liveryVersion
+                    && target.assetGuid.size() == fixture.assetIdSize, "native WGS artwork profile");
+            if (QString::fromLatin1(fixture.serviceId) != QLatin1String(kFh5ServiceId)) {
+                const QString importProfile = makeProfile(appendRoot.filePath("fh5-import"), fixture.serviceId, kFh5Package);
+                mustReject([&] {
+                    fls::inspectWgsAppendTarget(QDir(importProfile).filePath("containers.index"),
+                                                fixture.game, fls::WgsAssetKind::Group);
+                }, "matching service ID under another game package");
+            }
+            testAppend(profile, appendRoot.filePath("staged-livery"), fixture.game, true);
+            testAppend(profile, appendRoot.filePath("staged-group"), fixture.game, false);
         }
         if (application.arguments().size() == 3 && application.arguments()[1] == "--sample") {
             testAppendSample(application.arguments()[2], QDir(temporary.path()).filePath("native-append"),

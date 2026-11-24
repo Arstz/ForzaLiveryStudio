@@ -31,6 +31,7 @@ struct ExportAssetSelection {
 };
 
 bool supportsExportContainer(ExportGameVersion game, ExportContainerFormat format);
+void rememberExportSelection(const ExportAssetSelection &selection);
 
 std::optional<ExportAssetSelection> showExportAssetDialog(
     QWidget *parent, const QString &startDirectory, const QString &projectName, bool livery,

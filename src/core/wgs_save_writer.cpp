@@ -15,6 +15,7 @@
 #include <QUuid>
 
 #include <algorithm>
+#include <iterator>
 #include <limits>
 #include <span>
 #include <stdexcept>
@@ -30,6 +31,8 @@ constexpr quint32 kUnresolvedConflicts = 16;
 constexpr quint8 kInitialGeneration = 1;
 constexpr int kCurrentGuidOffset = 144;
 constexpr int kGuidSize = 16;
+constexpr int kLegacyAssetIdSize = 8;
+constexpr quint32 kFirstFullGuidHeaderVersion = 2;
 constexpr qint64 kMaximumFileSize = 64 * 1024 * 1024;
 constexpr quint32 kMaximumEntries = 1000000;
 constexpr quint64 kWindowsEpochOffset = 116444736000000000;
@@ -37,16 +40,41 @@ constexpr quint64 kFileTimeTicksPerMillisecond = 10000;
 constexpr int kIndexEntryMetadataSize = 45;
 constexpr int kLiveryCreatorTagOffset = 33;
 constexpr int kLiveryInfoVersionOffset = 29;
-constexpr quint32 kFh5LiveryInfoVersion = 18;
 constexpr quint32 kIndexCountOffset = 4;
 constexpr quint32 kFileTimeSize = 8;
 constexpr char kBackupFolder[] = ".fls-wgs-backups";
 constexpr char kLockName[] = ".fls-wgs-export.lock";
 constexpr char kIndexName[] = "containers.index";
-constexpr char kFh5Scid[] = "0000000000000000000000007900C3C7";
-constexpr char kMotorsportPackage[] = "Microsoft.ForzaMotorsport_8wekyb3d8bbwe!ReleaseFinal";
-constexpr const char *kLiveryBlobNames[] = {"C_livery", "header", "bigThumb.png", "smallThumb.png"};
+constexpr char kFh5ServiceId[] = "0000000000000000000000007900C3C7";
+constexpr const char *kLiveryBlobNames[] = {"C_livery", "bigThumb.png", "header", "smallThumb.png"};
 constexpr const char *kGroupBlobNames[] = {"C_group", "header", "thumb.png"};
+constexpr QSize kLegacyLiveryThumbnailSize(816, 459);
+constexpr QSize kLegacyHorizonSmallThumbnailSize(224, 126);
+constexpr QSize kFh5LiveryThumbnailSize(670, 376);
+constexpr QSize kFh5SmallLiveryThumbnailSize(328, 328);
+
+struct WgsProfile {
+    ExportGameVersion game;
+    const char *gameName;
+    const char *package;
+    const char *serviceId;
+    QSize liveryThumbnailSize;
+    QSize smallLiveryThumbnailSize;
+};
+
+constexpr WgsProfile kWgsProfiles[] = {
+    {ExportGameVersion::Horizon3, "Forza Horizon 3", "Microsoft.OpusPG_8wekyb3d8bbwe!OpusReleaseFinal",
+     "1902010095754C2B99163D664CE1DFAB", kLegacyLiveryThumbnailSize, kLegacyHorizonSmallThumbnailSize},
+    {ExportGameVersion::Horizon4, "Forza Horizon 4", "Microsoft.SunriseBaseGame_8wekyb3d8bbwe!SunriseReleaseFinal",
+     "000000000000000000000000765B6743", kLegacyLiveryThumbnailSize, kLegacyHorizonSmallThumbnailSize},
+    {ExportGameVersion::Motorsport7, "Forza Motorsport 7", "Microsoft.ApolloBaseGame_8wekyb3d8bbwe!forzamotorsport7",
+     "000000000000000000000000772F15B8", kLegacyLiveryThumbnailSize, QSize(192, 108)},
+    {ExportGameVersion::Horizon5, "Forza Horizon 5", "!Forzahorizon5", kFh5ServiceId,
+     kFh5LiveryThumbnailSize, kFh5SmallLiveryThumbnailSize},
+    {ExportGameVersion::Motorsport2023, "Forza Motorsport 2023",
+     "Microsoft.ForzaMotorsport_8wekyb3d8bbwe!ReleaseFinal", kFh5ServiceId,
+     kFh5LiveryThumbnailSize, kFh5SmallLiveryThumbnailSize},
+};
 
 struct AppendSnapshot {
     WgsExportTarget target;
@@ -61,6 +89,40 @@ void require(bool condition, const QString &message) {
     if (!condition) {
         throw std::runtime_error(message.toStdString());
     }
+}
+
+const WgsProfile *wgsProfile(ExportGameVersion game) {
+    const auto profile = std::ranges::find(kWgsProfiles, game, &WgsProfile::game);
+
+    return profile == std::end(kWgsProfiles) ? nullptr : profile;
+}
+
+void validateProfile(const WgsProfile &expected, const QString &package, const QString &serviceId) {
+    const auto selected = std::ranges::find_if(kWgsProfiles, [&package](const WgsProfile &profile) {
+        const QLatin1String name(profile.package);
+
+        return profile.game == ExportGameVersion::Horizon5 ? package.endsWith(name, Qt::CaseInsensitive)
+            : package.compare(name, Qt::CaseInsensitive) == 0;
+    });
+    const bool knownPackage = selected != std::end(kWgsProfiles);
+    const bool matchingService = knownPackage && serviceId.compare(QLatin1String(selected->serviceId),
+                                                                  Qt::CaseInsensitive) == 0;
+
+    if (selected == &expected && matchingService) {
+        return;
+    }
+    QString selectedName = knownPackage ? QString::fromLatin1(selected->gameName)
+                                        : QStringLiteral("an unrecognized game");
+    if (knownPackage && !matchingService) {
+        selectedName += QStringLiteral(" (another save profile)");
+    }
+    throw std::runtime_error(QStringLiteral(
+        "Selected a container for %1, please select container for %2 or change export game version")
+        .arg(selectedName, QLatin1String(expected.gameName)).toStdString());
+}
+
+int assetIdSize(const NativeExportVersions &versions) {
+    return versions.header < kFirstFullGuidHeaderVersion ? kLegacyAssetIdSize : kGuidSize;
 }
 
 QByteArray readFile(const QString &path) {
@@ -122,7 +184,8 @@ QString checkedFile(const QString &directory, const QString &name) {
     return info.absoluteFilePath();
 }
 
-quint32 readIndexHeader(AppendSnapshot &snapshot, int &offset) {
+quint32 readIndexHeader(AppendSnapshot &snapshot, int &offset, const WgsProfile &profile,
+                       const QString &serviceId) {
     const QByteArray &bytes = snapshot.index;
 
     require(detail::readLeU32(bytes, 0) == kIndexVersion,
@@ -131,13 +194,7 @@ quint32 readIndexHeader(AppendSnapshot &snapshot, int &offset) {
     require(count <= kMaximumEntries, QStringLiteral("Invalid WGS index container count"));
     offset = 12;
     const QString package = readString(bytes, offset);
-    if (snapshot.target.game == ExportGameVersion::Motorsport2023) {
-        require(package.compare(QLatin1String(kMotorsportPackage), Qt::CaseInsensitive) == 0,
-                QStringLiteral("Select the FH5 import profile under Forza Motorsport 2023."));
-    } else {
-        require(package.endsWith(QStringLiteral("!Forzahorizon5"), Qt::CaseInsensitive),
-                QStringLiteral("The selected WGS profile is not Forza Horizon 5"));
-    }
+    validateProfile(profile, package, serviceId);
     snapshot.indexTimeOffset = offset;
     skip(bytes, offset, 12);
     readString(bytes, offset);
@@ -150,10 +207,10 @@ QByteArray inflatedPayload(const QByteArray &wrapped, bool livery) {
     require(wrapped.size() >= 8 && detail::readLeU32(wrapped, 0) == wrapped.size() - 8
                 && detail::readLeU32(wrapped, 4) > 0
                 && detail::readLeU32(wrapped, 4) <= kMaximumFileSize,
-            QStringLiteral("Invalid FH5 payload wrapper"));
+            QStringLiteral("Invalid WGS payload wrapper"));
     const QByteArray raw = inflateContainer(wrapped);
     require(raw.startsWith(livery ? QByteArray("vlrc", 4) : QByteArray("gyvl", 4))
-                && detail::readLeU32(raw, 4) == 1, QStringLiteral("The payload is not the selected FH5 asset type"));
+                && detail::readLeU32(raw, 4) == 1, QStringLiteral("The payload does not match the selected asset type"));
 
     return raw;
 }
@@ -177,26 +234,27 @@ AppendSnapshot readAppendSnapshot(const QString &indexPath, ExportGameVersion ga
                                   WgsAssetKind kind, int carId) {
     const QFileInfo indexInfo(indexPath);
     const QDir profile(indexInfo.absolutePath());
+    const WgsProfile *format = wgsProfile(game);
     AppendSnapshot append;
     int offset = 0;
 
-    require(game == ExportGameVersion::Horizon5 || game == ExportGameVersion::Motorsport2023,
-            QStringLiteral("WGS append requires an FH5 or FM2023 FH5 import profile."));
+    require(format != nullptr, QStringLiteral("WGS export is unavailable for the selected game."));
     require(kind != WgsAssetKind::Livery || carId > 0, QStringLiteral("Select a valid car for the WGS livery."));
     require(QDir::isAbsolutePath(indexPath) && indexInfo.fileName() == QLatin1String(kIndexName),
             QStringLiteral("Select containers.index from the destination WGS profile."));
-    require(profile.dirName().section(QLatin1Char('_'), 1).compare(QLatin1String(kFh5Scid),
-                Qt::CaseInsensitive) == 0,
-            QStringLiteral("Select the FH5 service profile ending in 7900C3C7."));
     append.target.indexPath = checkedFile(profile.absolutePath(), QLatin1String(kIndexName));
-    append.target.creatorTag = profileCreatorTag(profile);
+    append.target.liveryThumbnailSize = format->liveryThumbnailSize;
+    append.target.smallLiveryThumbnailSize = format->smallLiveryThumbnailSize;
+    append.target.versions = nativeExportVersions(game == ExportGameVersion::Motorsport2023
+        ? ExportGameVersion::Horizon5 : game);
     append.target.game = game;
     append.target.kind = kind;
     append.target.carId = kind == WgsAssetKind::Livery ? carId : 0;
     append.index = readFile(append.target.indexPath);
     append.indexModifiedAt = QFileInfo(append.target.indexPath).lastModified();
     append.target.fingerprint = QCryptographicHash::hash(append.index, QCryptographicHash::Sha256);
-    append.count = readIndexHeader(append, offset);
+    append.count = readIndexHeader(append, offset, *format, profile.dirName().section(QLatin1Char('_'), 1));
+    append.target.creatorTag = profileCreatorTag(profile);
     const quint32 flags = detail::readLeU32(append.index, append.indexTimeOffset + kFileTimeSize);
     require((flags & kUnresolvedConflicts) == 0,
             QStringLiteral("Resolve the WGS profile's cloud conflict before exporting."));
@@ -251,8 +309,8 @@ void appendU64(QByteArray &bytes, quint64 value) {
     detail::appendLeU32(bytes, static_cast<quint32>(value >> 32));
 }
 
-void validateAppendBlobs(const WgsExportTarget &target, const QMap<QString, QByteArray> &blobs,
-                         std::span<const char *const> names) {
+void validateAppendBlobs(const WgsExportTarget &target, const NativeExportVersions &versions,
+                         const QMap<QString, QByteArray> &blobs, std::span<const char *const> names) {
     const bool livery = target.kind == WgsAssetKind::Livery;
     const QString payloadKey = livery ? QStringLiteral("c_livery") : QStringLiteral("c_group");
     const QByteArray pngSignature = QByteArray::fromHex("89504e470d0a1a0a");
@@ -268,13 +326,13 @@ void validateAppendBlobs(const WgsExportTarget &target, const QMap<QString, QByt
                 QStringLiteral("WGS thumbnails must be PNG blobs."));
     }
     const QByteArray raw = inflatedPayload(blobs.value(payloadKey), livery);
-    require(!livery || (detail::readLeU32(raw, kLiveryInfoVersionOffset) == kFh5LiveryInfoVersion
+    require(!livery || (detail::readLeU32(raw, kLiveryInfoVersionOffset) == versions.livery
                 && detail::readLeU32(raw, 8) == 0
                 && detail::readLeU32(raw, 16) == static_cast<quint32>(target.carId)
                 && raw.mid(kLiveryCreatorTagOffset, target.creatorTag.size()) == target.creatorTag),
-            QStringLiteral("WGS artwork must be an editable FH5 livery for the selected car and profile."));
+            QStringLiteral("WGS artwork must be an editable livery for the selected game, car, and profile."));
     const HeaderMetadata header = parseHeader(blobs.value(QStringLiteral("header")));
-    require(header.formatVersion == 6 && header.hasCarId == livery
+    require(header.formatVersion == versions.header && header.hasCarId == livery
                 && (!livery || header.carId == static_cast<quint32>(target.carId))
                 && header.guid == target.assetGuid && header.creatorTag == target.creatorTag,
             QStringLiteral("WGS header must match the new asset and profile."));
@@ -372,10 +430,14 @@ QString createBackup(const AppendSnapshot &snapshot) {
 
 } // namespace
 
+bool supportsWgsAppend(ExportGameVersion game) {
+    return wgsProfile(game) != nullptr;
+}
+
 WgsExportTarget inspectWgsAppendTarget(const QString &indexPath, ExportGameVersion game,
                                       WgsAssetKind kind, int carId) {
     WgsExportTarget target = readAppendSnapshot(indexPath, game, kind, carId).target;
-    target.assetGuid = guidBytes(QUuid::createUuid());
+    target.assetGuid = guidBytes(QUuid::createUuid()).left(assetIdSize(target.versions));
 
     return target;
 }
@@ -390,9 +452,11 @@ WgsAppendResult appendWgsContainer(const WgsExportTarget &target, const QMap<QSt
     const AppendSnapshot append = readAppendSnapshot(target.indexPath, target.game, target.kind, target.carId);
     require(append.target.fingerprint == target.fingerprint && append.target.creatorTag == target.creatorTag,
             QStringLiteral("The WGS profile changed. Reselect containers.index before exporting."));
-    require(target.assetGuid.size() == kGuidSize && !QUuid::fromRfc4122(target.assetGuid).isNull(),
+    const NativeExportVersions &versions = append.target.versions;
+    const int identifierSize = assetIdSize(versions);
+    require(target.assetGuid.size() == identifierSize && target.assetGuid != QByteArray(identifierSize, '\0'),
             QStringLiteral("Invalid new WGS asset identity."));
-    validateAppendBlobs(target, blobs, names);
+    validateAppendBlobs(target, versions, blobs, names);
 
     const QDateTime now = QDateTime::currentDateTimeUtc();
     const QString name = newContainerName(append, now);

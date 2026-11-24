@@ -22,6 +22,11 @@ enum class ExportGameVersion {
     Motorsport2,
 };
 
+struct NativeExportVersions {
+    quint32 header = 0;
+    quint32 livery = 0;
+};
+
 struct ExportLayerWarnings {
     quint64 masks = 0;
     quint64 logos = 0;
@@ -35,6 +40,7 @@ struct ExportLayerChoices {
 };
 
 QString exportGameCode(ExportGameVersion game);
+NativeExportVersions nativeExportVersions(ExportGameVersion game);
 bool isXbox360ExportGame(ExportGameVersion game);
 QString xbox360ExportExtension(ExportGameVersion game, Xbox360FileKind kind);
 QString exportThumbnailName(ExportGameVersion game, bool livery);

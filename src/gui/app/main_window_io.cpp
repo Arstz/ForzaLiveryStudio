@@ -58,9 +58,7 @@ constexpr const char *kEmptyLiverySectionNames[] = {
 constexpr char kScratchProjectSuffix[] = ".3so";
 constexpr char kScratchMetadataSuffix[] = ".json";
 constexpr char kScratchLockSuffix[] = ".lock";
-constexpr quint32 kFh5HeaderVersion = 4;
 const QSize kLiveryThumbnailSize(670, 376);
-const QSize kWgsSmallThumbnailSize(328, 328);
 
 QImage croppedThumbnail(const QImage &image, const QSize &size) {
     const QImage scaled = image.scaled(size, Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation);
@@ -653,7 +651,7 @@ bool MainWindow::exportFolderImpl(const QString &folder, fls::ExportGameVersion 
         std::unique_ptr<QTemporaryDir> staging;
         if (wgsTarget != nullptr) {
             fls::HeaderMetadata metadata = effectiveHeaderMetadata(exportProject, creatorName_);
-            metadata.formatVersion = kFh5HeaderVersion;
+            metadata.formatVersion = wgsTarget->versions.header;
             metadata.guid = wgsTarget->assetGuid;
             metadata.creatorTag = wgsTarget->creatorTag;
             metadata.published = false;
@@ -691,6 +689,7 @@ bool MainWindow::exportFolderImpl(const QString &folder, fls::ExportGameVersion 
                 .arg(result.containerName, QDir::toNativeSeparators(result.backupPath)), 15000);
         };
         if (exportProject.isLivery) {
+            const QSize thumbnailSize = wgsTarget != nullptr ? wgsTarget->liveryThumbnailSize : kLiveryThumbnailSize;
             const QDir staged(targetFolder);
             const QString thumbnailPath = staged.filePath(thumbnailName);
             QImage thumb;
@@ -699,7 +698,7 @@ bool MainWindow::exportFolderImpl(const QString &folder, fls::ExportGameVersion 
                     throw std::runtime_error(
                         "Qt WEBP image writer is not available; ensure qwebp.dll is deployed in the imageformats plugin folder");
                 }
-                thumb = carPreview_->renderThumbnail(kLiveryThumbnailSize, artworkChanged ? &exportProject : nullptr);
+                thumb = carPreview_->renderThumbnail(thumbnailSize, artworkChanged ? &exportProject : nullptr);
                 if (thumb.isNull()) {
                     throw std::runtime_error("could not render the livery thumbnail from the car preview");
                 }
@@ -710,13 +709,13 @@ bool MainWindow::exportFolderImpl(const QString &folder, fls::ExportGameVersion 
                     thumb.load(thumbnailPath);
                 }
                 if (thumb.isNull()) {
-                    thumb = renderProjectPreviewImage(exportProject, kLiveryThumbnailSize);
+                    thumb = renderProjectPreviewImage(exportProject, thumbnailSize);
                 }
-                if (!croppedThumbnail(thumb, kWgsSmallThumbnailSize).save(
+                if (!croppedThumbnail(thumb, wgsTarget->smallLiveryThumbnailSize).save(
                         staged.filePath(QStringLiteral("smallThumb.png")), "PNG")) {
                     throw std::runtime_error("could not write the small WGS livery thumbnail");
                 }
-                thumb = croppedThumbnail(thumb, kLiveryThumbnailSize);
+                thumb = croppedThumbnail(thumb, thumbnailSize);
             }
             if (!thumb.isNull() && !thumb.save(thumbnailPath, imageFormat)) {
                 throw std::runtime_error("could not write the livery thumbnail");
@@ -1269,6 +1268,7 @@ void MainWindow::exportDialog() {
             }
             fls::exportXbox360Asset(state_->project_, path, selection->gameVersion,
                                     credentials ? &*credentials : nullptr, selection->layerChoices);
+            rememberExportSelection(*selection);
             rememberImportDirectory(path, QStringLiteral("exportFolder"));
             canvasStatusBar_->showMessage(QStringLiteral("Exported %1").arg(path), 5000);
         } catch (const std::exception &ex) {
@@ -1287,7 +1287,7 @@ void MainWindow::exportDialog() {
         confirmation.setTextFormat(Qt::PlainText);
         confirmation.setText(QStringLiteral("Add this %1 to the %2?\n\n%3")
             .arg(state_->project_.isLivery ? QStringLiteral("livery") : QStringLiteral("layer group"),
-                 importProfile ? QStringLiteral("FM2023 FH5 import profile") : QStringLiteral("FH5 profile"),
+                 importProfile ? QStringLiteral("FM2023 FH5 import profile") : QStringLiteral("%1 profile").arg(game),
                  QDir::toNativeSeparators(selection->wgsTarget->indexPath)));
         confirmation.setStandardButtons(QMessageBox::Yes | QMessageBox::Cancel);
         confirmation.setDefaultButton(QMessageBox::Cancel);
@@ -1306,7 +1306,9 @@ void MainWindow::exportDialog() {
     const fls::WgsExportTarget *wgsTarget = selection->wgsTarget ? &*selection->wgsTarget : nullptr;
     if (!exportFolderImpl(folder, encodingGame, selection->layerChoices, &error, wgsTarget)) {
         QMessageBox::critical(this, QStringLiteral("Export failed"), error);
+        return;
     }
+    rememberExportSelection(*selection);
 }
 
 void MainWindow::newProjectDialog() {
