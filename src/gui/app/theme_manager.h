@@ -134,6 +134,7 @@ inline constexpr int kDefaultBucketTolerance = 16;
 inline constexpr double kDefaultLiningOutsideMargin = 0.5;
 inline constexpr bool kDefaultAutomaticSnapping = true;
 inline constexpr bool kDefaultPenColorAwareSnapping = false;
+inline constexpr bool kDefaultAutoAdjustNewPenHandles = true;
 inline constexpr bool kDefaultHoverShapeOutline = true;
 
 struct BehaviorSettings {
@@ -142,6 +143,7 @@ struct BehaviorSettings {
     ContourFillMode contourFillMode = ContourFillMode::Analytic;
     bool autoSavePenPaths = false;
     bool penColorAwareSnapping = kDefaultPenColorAwareSnapping;
+    bool autoAdjustNewPenHandles = kDefaultAutoAdjustNewPenHandles;
     bool autoSaveLiningPaths = false;
     int bucketTolerance = kDefaultBucketTolerance;
     double liningWidth = fls::scene::kDefaultLiningWidth;

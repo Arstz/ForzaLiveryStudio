@@ -128,7 +128,7 @@ public:
     Qt::CursorShape idleCursorShape(const QPointF &point) const override;
 
 private:
-    void beginAnchorPlacement(int loopIndex, const QPointF &world, const QPointF &screen);
+    void placeAnchor(int loopIndex, const QPointF &world, const QPointF &screen);
     void updateAnchorHandles(const QMouseEvent &event);
 };
 

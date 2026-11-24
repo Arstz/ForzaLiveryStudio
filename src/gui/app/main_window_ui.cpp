@@ -675,6 +675,8 @@ void MainWindow::setupOptionsMenu() {
     addBehaviorOption(optionsMenu, QStringLiteral("Show Property Debug"), QStringLiteral("toggle_property_debug"), &BehaviorSettings::showPropertyDebug);
     addBehaviorOption(optionsMenu, QStringLiteral("Hover shape outline"), QStringLiteral("toggle_hover_shape_outline"),
                       &BehaviorSettings::hoverShapeOutline);
+    addBehaviorOption(optionsMenu, QStringLiteral("Auto adjust new pen handles"), QStringLiteral("toggle_auto_adjust_new_pen_handles"),
+                      &BehaviorSettings::autoAdjustNewPenHandles);
 
     QMenu *guidesMenu = optionsMenu->addMenu(QStringLiteral("&Guides"));
     addBehaviorOption(guidesMenu, QStringLiteral("Show Guidelines"), QStringLiteral("show_guidelines"),
@@ -1040,6 +1042,7 @@ void MainWindow::applyBehaviorSettings(const BehaviorSettings &settings, bool sa
         canvas_->setMoveToolAutoSelect(settings.moveToolAutoSelect);
         canvas_->setAutomaticSnapping(settings.automaticSnapping);
         canvas_->setPenColorAwareSnapping(settings.penColorAwareSnapping);
+        canvas_->setAutoAdjustNewPenHandles(settings.autoAdjustNewPenHandles);
         canvas_->setPipetteAutoReturn(settings.pipetteAutoReturn);
         canvas_->setSelectionFlashEnabled(settings.selectionFlashEnabled);
         canvas_->setDisplayAnchorsDuringTransformDrag(settings.displayAnchorsDuringTransformDrag);

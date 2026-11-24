@@ -397,20 +397,23 @@ QString PenTool::name() const {
     return QStringLiteral("pen");
 }
 
-void PenTool::beginAnchorPlacement(int loopIndex, const QPointF &world, const QPointF &screen) {
+void PenTool::placeAnchor(int loopIndex, const QPointF &world, const QPointF &screen) {
     ProjectCanvas &c = canvas_;
     auto &pen = c.pen_;
     auto &points = c.penPointsForLoop(loopIndex);
-    c.beginPathEdit(pen);
     points.push_back({world, points.isEmpty() ? PenPointKind::Hard : PenPointKind::Soft});
-    pen.anchorPressScreen = screen;
-    pen.dragPoint = points.size() - 1;
-    pen.dragLoop = loopIndex;
     pen.hoverWorld = world;
     pen.error.clear();
     pen.crossings.clear();
-    c.invalidatePenGeometryCache();
-    c.clearCursorHint();
+    if (c.options_.autoAdjustNewPenHandles) {
+        pen.anchorPressScreen = screen;
+        pen.dragPoint = points.size() - 1;
+        pen.dragLoop = loopIndex;
+        c.invalidatePenGeometryCache();
+        c.clearCursorHint();
+    } else {
+        c.commitPathEdit(pen);
+    }
     c.update();
 }
 
@@ -525,7 +528,10 @@ bool PenTool::handlePress(QMouseEvent *event) {
                 c.pen_.cutouts.push_back({});
                 c.pen_.activeCutout = c.pen_.cutouts.size() - 1;
                 c.pen_.cutoutClosed = false;
-                beginAnchorPlacement(c.pen_.activeCutout, world, event->position());
+                placeAnchor(c.pen_.activeCutout, world, event->position());
+                if (!c.pen_.anchorPressScreen) {
+                    c.refreshPenInteractionHint(event->position(), event->modifiers());
+                }
                 event->accept();
                 return true;
             }
@@ -562,7 +568,8 @@ bool PenTool::handlePress(QMouseEvent *event) {
         event->accept();
         return true;
     }
-    beginAnchorPlacement(c.pen_.closed ? c.pen_.activeCutout : -1, world, event->position());
+    c.beginPathEdit(c.pen_);
+    placeAnchor(c.pen_.closed ? c.pen_.activeCutout : -1, world, event->position());
     event->accept();
     return true;
 }

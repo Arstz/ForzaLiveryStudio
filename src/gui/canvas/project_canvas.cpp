@@ -435,6 +435,14 @@ void ProjectCanvas::setPenColorAwareSnapping(bool enabled) {
     update();
 }
 
+void ProjectCanvas::setAutoAdjustNewPenHandles(bool enabled) {
+    if (options_.autoAdjustNewPenHandles == enabled) {
+        return;
+    }
+    options_.autoAdjustNewPenHandles = enabled;
+    update();
+}
+
 void ProjectCanvas::setPipetteAutoReturn(bool enabled) {
     options_.pipetteAutoReturn = enabled;
 }
@@ -795,7 +803,7 @@ void ProjectCanvas::refreshPathAfterHistory(PathInteraction &path) {
     path.error.clear();
     const QPoint cursorPoint = mapFromGlobal(QCursor::pos());
     if (&path == &pen_) {
-        if (pen_.closed && pen_.cutoutClosed) {
+        if (!options_.autoAdjustNewPenHandles || (pen_.closed && pen_.cutoutClosed)) {
             normalizePenPointOrder();
         }
         validatePenInteraction();

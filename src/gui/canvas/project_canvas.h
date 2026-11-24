@@ -70,6 +70,7 @@ public:
     bool moveToolAutoSelect() const;
     void setAutomaticSnapping(bool enabled);
     void setPenColorAwareSnapping(bool enabled);
+    void setAutoAdjustNewPenHandles(bool enabled);
     void setPipetteAutoReturn(bool enabled);
     void setSelectionFlashEnabled(bool enabled);
     bool selectionFlashEnabled() const;
@@ -424,6 +425,7 @@ private:
         bool moveToolAutoSelect = false;
         bool automaticSnapping = kDefaultAutomaticSnapping;
         bool penColorAwareSnapping = kDefaultPenColorAwareSnapping;
+        bool autoAdjustNewPenHandles = kDefaultAutoAdjustNewPenHandles;
         bool pipetteAutoReturn = true;
         bool displayAnchorsDuringTransformDrag = true;
         bool separateSelectAndMarqueeTools = false;

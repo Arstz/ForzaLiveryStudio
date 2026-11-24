@@ -40,8 +40,8 @@ QPainterPath ProjectCanvas::penPreviewPath(bool closeToStart) const {
     if (closeToStart && activePoints.size() >= 3) {
         return penGeometryCache().worldPath;
     }
-    if (pen_.anchorPressScreen || activePoints.isEmpty()
-        || pen_.hoverWorld == activePoints.back().position) {
+    if (pen_.anchorPressScreen || (options_.autoAdjustNewPenHandles
+        && (activePoints.isEmpty() || pen_.hoverWorld == activePoints.back().position))) {
         return penPath(activePoints, false);
     }
     auto preview = activePoints;
