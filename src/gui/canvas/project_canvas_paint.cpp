@@ -40,6 +40,10 @@ QPainterPath ProjectCanvas::penPreviewPath(bool closeToStart) const {
     if (closeToStart && activePoints.size() >= 3) {
         return penGeometryCache().worldPath;
     }
+    if (pen_.anchorPressScreen || activePoints.isEmpty()
+        || pen_.hoverWorld == activePoints.back().position) {
+        return penPath(activePoints, false);
+    }
     auto preview = activePoints;
     preview.push_back({pen_.hoverWorld, PenPointKind::Soft});
     QPainterPath path = penPath(preview, false);
@@ -127,7 +131,7 @@ void ProjectCanvas::drawPenOverlay(QPainter &painter) {
     const QVector<PenPoint> &activePoints = drawingCutout
         ? pen_.cutouts[pen_.activeCutout]
         : pen_.points;
-    const bool nearStart = (!pen_.closed || drawingCutout) && activePoints.size() >= 3
+    const bool nearStart = !pen_.anchorPressScreen && (!pen_.closed || drawingCutout) && activePoints.size() >= 3
         && QLineF(worldToScreen(pen_.hoverWorld), worldToScreen(activePoints.front().position)).length()
                <= kPenCloseRadius;
     const bool closed = (pen_.closed && pen_.cutoutClosed) || nearStart;
@@ -169,6 +173,7 @@ void ProjectCanvas::drawPenOverlay(QPainter &painter) {
             const PenPoint &point = points[i];
             const QPointF screen = worldToScreen(point.position);
             if (point.explicitHandles) {
+                const bool placingAnchor = pen_.anchorPressScreen && pen_.dragLoop == loopIndex && pen_.dragPoint == i;
                 painter.setPen(QPen(QColor(185, 190, 200, 150), 1));
                 painter.setBrush(QColor(145, 185, 225));
                 for (int handle : {-1, 1}) {
@@ -178,7 +183,7 @@ void ProjectCanvas::drawPenOverlay(QPainter &painter) {
                         continue;
                     const QPointF offset = handle < 0 ? point.incoming : point.outgoing;
                     const QPointF handle = worldToScreen(point.position + offset);
-                    if (QLineF(screen, handle).length() < 10)
+                    if (offset.isNull() || (!placingAnchor && QLineF(screen, handle).length() < 10))
                         continue;
                     painter.drawLine(screen, handle);
                     painter.drawRect(QRectF(handle - QPointF(3, 3), QSizeF(6, 6)));

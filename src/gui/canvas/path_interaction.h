@@ -37,6 +37,7 @@ struct PathInteraction {
     QVector<QPointF> crossings;
     QPointF hoverWorld;
     QPointF dragOffsetWorld;
+    std::optional<QPointF> anchorPressScreen;
     PenCurveHit hoverCurve;
     QString error;
     QString fillMessage;
@@ -60,6 +61,7 @@ struct PathInteraction {
     void resetHover() {
         hoverCurve = {};
         dragOffsetWorld = {};
+        anchorPressScreen.reset();
         hoverPoint = -1;
         hoverLoop = -1;
         dragPoint = -1;

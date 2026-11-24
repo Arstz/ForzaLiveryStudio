@@ -4,7 +4,6 @@ Small changes:
 
 Medium changes:
     -Unify file picker explorer
-    -Copy pen tool behaviour from PS
 
 Big changes:
     -Vulcan migration(?)

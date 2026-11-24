@@ -519,6 +519,10 @@ bool ProjectCanvas::handleKeyBinding(KeyInteraction interaction, KeyEventPhase p
     if (interaction == KeyInteraction::CanvasRemovePathPoint
         && tool_ == QStringLiteral("pen") && !pen_.fillRunning && pathFigureEditable(pen_)
         && (!pen_.closed || !pen_.cutoutClosed)) {
+        if (pen_.anchorPressScreen) {
+            cancelPathEdit(pen_);
+            return true;
+        }
         QVector<PenPoint> &points = pen_.closed
             ? pen_.cutouts[pen_.activeCutout]
             : pen_.points;
@@ -574,7 +578,11 @@ bool ProjectCanvas::handleKeyBinding(KeyInteraction interaction, KeyEventPhase p
     }
     if (interaction == KeyInteraction::CanvasCancelInteraction) {
         if (tool_ == QStringLiteral("pen")) {
-            discardPathInteraction(pen_, penFillCancelCallback_);
+            if (pen_.anchorPressScreen) {
+                cancelPathEdit(pen_);
+            } else {
+                discardPathInteraction(pen_, penFillCancelCallback_);
+            }
             return true;
         }
         if (tool_ == QStringLiteral("lining")) {

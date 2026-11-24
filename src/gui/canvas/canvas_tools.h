@@ -126,6 +126,10 @@ public:
     bool handleRelease(QMouseEvent *event) override;
     bool handleDoubleClick(QMouseEvent *event) override;
     Qt::CursorShape idleCursorShape(const QPointF &point) const override;
+
+private:
+    void beginAnchorPlacement(int loopIndex, const QPointF &world, const QPointF &screen);
+    void updateAnchorHandles(const QMouseEvent &event);
 };
 
 class LiningTool final : public CanvasTool {

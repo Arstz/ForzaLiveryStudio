@@ -2,6 +2,7 @@
 
 #include "editor_state.h"
 #include "project_canvas.h"
+#include "project_canvas_internal.h"
 
 #include <QMouseEvent>
 #include <QWheelEvent>
@@ -396,6 +397,42 @@ QString PenTool::name() const {
     return QStringLiteral("pen");
 }
 
+void PenTool::beginAnchorPlacement(int loopIndex, const QPointF &world, const QPointF &screen) {
+    ProjectCanvas &c = canvas_;
+    auto &pen = c.pen_;
+    auto &points = c.penPointsForLoop(loopIndex);
+    c.beginPathEdit(pen);
+    points.push_back({world, points.isEmpty() ? PenPointKind::Hard : PenPointKind::Soft});
+    pen.anchorPressScreen = screen;
+    pen.dragPoint = points.size() - 1;
+    pen.dragLoop = loopIndex;
+    pen.hoverWorld = world;
+    pen.error.clear();
+    pen.crossings.clear();
+    c.invalidatePenGeometryCache();
+    c.clearCursorHint();
+    c.update();
+}
+
+void PenTool::updateAnchorHandles(const QMouseEvent &event) {
+    ProjectCanvas &c = canvas_;
+    auto &point = c.penPointsForLoop(c.pen_.dragLoop)[c.pen_.dragPoint];
+    const QPointF press = *c.pen_.anchorPressScreen;
+    if (!point.explicitHandles && QLineF(press, event.position()).length() <= pc_detail::kClickDragThreshold) {
+        return;
+    }
+    const QPointF delta = c.screenToWorld(event.position()) - c.screenToWorld(press);
+    const QPointF endpoint = point.position + delta;
+    point.outgoing = event.modifiers() & Qt::ShiftModifier
+        ? c.snappedPenPosition(endpoint, point.position, event.modifiers()) - point.position
+        : delta;
+    point.incoming = -point.outgoing;
+    point.kind = PenPointKind::Soft;
+    point.explicitHandles = true;
+    c.invalidatePenGeometryCache();
+    c.update();
+}
+
 bool PenTool::handlePress(QMouseEvent *event) {
     if ((event->button() != Qt::LeftButton && event->button() != Qt::RightButton)
         || canvas_.pen_.fillRunning
@@ -485,12 +522,12 @@ bool PenTool::handlePress(QMouseEvent *event) {
                                 c.pen_.hoverCurve.insertIndex, c.pen_.hoverCurve.worldPosition);
                 c.validatePenInteraction();
             } else if (buildPenContour(c.currentPenLoops()).path.contains(world)) {
-                c.pen_.cutouts.push_back({{world, PenPointKind::Hard}});
+                c.pen_.cutouts.push_back({});
                 c.pen_.activeCutout = c.pen_.cutouts.size() - 1;
                 c.pen_.cutoutClosed = false;
-                c.pen_.hoverWorld = world;
-                c.pen_.error.clear();
-                c.pen_.crossings.clear();
+                beginAnchorPlacement(c.pen_.activeCutout, world, event->position());
+                event->accept();
+                return true;
             }
             c.commitPathEdit(c.pen_);
             c.refreshPenInteractionHint(event->position(), event->modifiers());
@@ -525,14 +562,7 @@ bool PenTool::handlePress(QMouseEvent *event) {
         event->accept();
         return true;
     }
-    c.beginPathEdit(c.pen_);
-    points.push_back({world,
-                      points.isEmpty() ? PenPointKind::Hard : PenPointKind::Soft});
-    c.pen_.hoverWorld = world;
-    c.pen_.error.clear();
-    c.pen_.crossings.clear();
-    c.commitPathEdit(c.pen_);
-    c.update();
+    beginAnchorPlacement(c.pen_.closed ? c.pen_.activeCutout : -1, world, event->position());
     event->accept();
     return true;
 }
@@ -542,6 +572,11 @@ bool PenTool::handleMove(QMouseEvent *event) {
     if (c.pen_.dragPoint < 0
         || c.pen_.dragPoint >= c.penPointsForLoop(c.pen_.dragLoop).size()) {
         return false;
+    }
+    if (c.pen_.anchorPressScreen) {
+        updateAnchorHandles(*event);
+        event->accept();
+        return true;
     }
     auto &point = c.penPointsForLoop(c.pen_.dragLoop)[c.pen_.dragPoint];
     const QPointF destination = c.screenToWorld(event->position()) + c.pen_.dragOffsetWorld;
@@ -570,11 +605,20 @@ bool PenTool::handleRelease(QMouseEvent *event) {
     if (event->button() != Qt::LeftButton || c.pen_.dragPoint < 0) {
         return false;
     }
+    const bool placedAnchor = c.pen_.anchorPressScreen.has_value();
+    if (placedAnchor) {
+        updateAnchorHandles(*event);
+        c.pen_.anchorPressScreen.reset();
+    }
     c.pen_.dragPoint = -1;
     c.pen_.dragLoop = -1;
     c.validatePenInteraction();
     c.commitPathEdit(c.pen_);
-    c.refreshPenInteractionHint(event->position(), event->modifiers());
+    if (placedAnchor) {
+        c.update();
+    } else {
+        c.refreshPenInteractionHint(event->position(), event->modifiers());
+    }
     c.updateCursorForPoint(event->position());
     event->accept();
     return true;

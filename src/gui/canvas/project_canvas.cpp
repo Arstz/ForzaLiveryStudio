@@ -795,7 +795,9 @@ void ProjectCanvas::refreshPathAfterHistory(PathInteraction &path) {
     path.error.clear();
     const QPoint cursorPoint = mapFromGlobal(QCursor::pos());
     if (&path == &pen_) {
-        normalizePenPointOrder();
+        if (pen_.closed && pen_.cutoutClosed) {
+            normalizePenPointOrder();
+        }
         validatePenInteraction();
         if (options_.penColorAwareSnapping) {
             penSnapCanvasImage_ = {};
