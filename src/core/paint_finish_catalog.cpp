@@ -185,6 +185,40 @@ FinishUvProfile finishUvProfile(const QString &shaderPath) {
     return FinishUvProfile::Generic;
 }
 
+QStringList paintArchives(const QString &gameFolder, const QString &relativePath) {
+    QStringList archives;
+    for (const QString &path : gameMediaResourcePaths(gameFolder, relativePath)) {
+        const QFileInfo primary(path);
+        const QString priorityPrefix = QFileInfo(gameAssetFileName(primary)).completeBaseName().toLower()
+            + QStringLiteral("_pri_");
+        if (primary.isFile()) archives.push_back(path);
+        for (const QFileInfo &file : primary.dir().entryInfoList(QDir::Files)) {
+            const QString name = gameAssetFileName(file).toLower();
+            if (name.startsWith(priorityPrefix) && name.endsWith(QStringLiteral(".zip"))) {
+                archives.push_back(file.absoluteFilePath());
+            }
+        }
+    }
+
+    return archives;
+}
+
+QHash<QString, QByteArray> readPaintArchiveEntries(const QStringList &archives, QStringList entries) {
+    QHash<QString, QByteArray> result;
+    entries.removeDuplicates();
+    for (const QString &archive : archives) {
+        if (entries.isEmpty()) break;
+        auto blobs = readZipEntries(archive, entries);
+        if (blobs.isEmpty()) continue;
+        entries.removeIf([&](const QString &entry) { return blobs.contains(entry); });
+        for (auto it = blobs.begin(); it != blobs.end(); ++it) {
+            result.insert(it.key(), std::move(it.value()));
+        }
+    }
+
+    return result;
+}
+
 std::shared_ptr<ModelMaterial> decodeFinishMaterial(const QByteArray &bytes);
 
 QHash<QString, std::shared_ptr<ModelMaterial>> loadFinishShaderDefaults(
@@ -197,8 +231,6 @@ QHash<QString, std::shared_ptr<ModelMaterial>> loadFinishShaderDefaults(
     QHash<QString, QStringList> requests;
     QHash<QString, std::shared_ptr<ModelMaterial>> defaults;
 
-    const QDir cars(gameCarsDir(gameFolder));
-    const QDir media(gameMediaDir(gameFolder));
     const QString prefix = QStringLiteral("/_library/shaders/");
     for (const auto &material : materials) {
         const QString path = finishShaderPath(*material);
@@ -206,26 +238,29 @@ QHash<QString, std::shared_ptr<ModelMaterial>> loadFinishShaderDefaults(
         const qsizetype start = path.indexOf(prefix);
         if (start < 0) continue;
         QString entry = path.mid(start + prefix.size());
-        QString archive = gameAssetFilePath(media, QStringLiteral("_library/Shaders.zip"));
+        QString archive = QStringLiteral("_library/Shaders.zip");
         if (path.contains(QStringLiteral("/cars") + prefix)) {
             const qsizetype separator = entry.indexOf(QLatin1Char('/'));
             if (separator < 0) continue;
-            archive = gameAssetFilePath(cars, QStringLiteral("_library/shaders/") + entry.left(separator) + QStringLiteral(".zip"));
+            archive = QStringLiteral("Cars/_library/shaders/") + entry.left(separator) + QStringLiteral(".zip");
             entry = entry.mid(separator + 1);
         }
         sources.insert(path, {archive, entry});
         requests[archive].push_back(entry);
     }
     for (auto request = requests.cbegin(); request != requests.cend(); ++request) {
-        if (!QFileInfo::exists(request.key())) continue;
-        const auto blobs = readZipEntries(request.key(), request.value());
+        const auto blobs = readPaintArchiveEntries(paintArchives(gameFolder, request.key()), request.value());
         for (const QString &entry : request.value()) {
-            if (auto decoded = decodeFinishMaterial(blobs.value(entry))) defaults.insert(request.key() + entry, std::move(decoded));
+            if (auto decoded = decodeFinishMaterial(blobs.value(entry))) {
+                defaults.insert(request.key() + QLatin1Char('|') + entry, std::move(decoded));
+            }
         }
     }
     QHash<QString, std::shared_ptr<ModelMaterial>> shaders;
     for (auto source = sources.cbegin(); source != sources.cend(); ++source) {
-        if (auto decoded = defaults.value(source->archive + source->entry)) shaders.insert(source.key(), std::move(decoded));
+        if (auto decoded = defaults.value(source->archive + QLatin1Char('|') + source->entry)) {
+            shaders.insert(source.key(), std::move(decoded));
+        }
     }
 
     return shaders;
@@ -268,40 +303,6 @@ PaintFinishRender renderFromMaterial(const FinishMaterial &info, const ModelMate
     return render;
 }
 
-QStringList paintArchives(const QString &primaryArchive) {
-    if (primaryArchive.isEmpty()) return {};
-    const QFileInfo primary(primaryArchive);
-    const QString priorityPrefix = QFileInfo(gameAssetFileName(primary)).completeBaseName().toLower()
-        + QStringLiteral("_pri_");
-    QStringList archives;
-
-    if (primary.isFile()) archives.push_back(primaryArchive);
-    for (const QFileInfo &file : primary.dir().entryInfoList(QDir::Files)) {
-        const QString name = gameAssetFileName(file).toLower();
-        if (name.startsWith(priorityPrefix) && name.endsWith(QStringLiteral(".zip"))) {
-            archives.push_back(file.absoluteFilePath());
-        }
-    }
-
-    return archives;
-}
-
-QHash<QString, QByteArray> readPaintArchiveEntries(const QStringList &archives, QStringList entries) {
-    QHash<QString, QByteArray> result;
-    entries.removeDuplicates();
-    for (const QString &archive : archives) {
-        if (entries.isEmpty()) break;
-        auto blobs = readZipEntries(archive, entries);
-        if (blobs.isEmpty()) continue;
-        entries.removeIf([&](const QString &entry) { return blobs.contains(entry); });
-        for (auto it = blobs.begin(); it != blobs.end(); ++it) {
-            result.insert(it.key(), std::move(it.value()));
-        }
-    }
-
-    return result;
-}
-
 std::shared_ptr<ModelMaterial> decodeFinishMaterial(const QByteArray &bytes) {
     try {
         return decodeMaterialBundle(bytes);
@@ -312,7 +313,7 @@ std::shared_ptr<ModelMaterial> decodeFinishMaterial(const QByteArray &bytes) {
 
 QHash<int, std::shared_ptr<ModelMaterial>> decodeFinishMaterials(
     const QHash<int, FinishMaterial> &finishes, const QString &gameFolder, const QString &game) {
-    const QStringList archives = paintArchives(gamePaintMaterialsArchive(gameFolder));
+    const QStringList archives = paintArchives(gameFolder, QStringLiteral("Cars/_library/Materials.zip"));
     const QString modernPrefix = gamePaintMaterialsPrefix();
     const QStringList prefixes = game == QStringLiteral("FH6") || game == QStringLiteral("FM2023")
         ? QStringList{modernPrefix, kLegacyPaintMaterialsPrefix}
@@ -655,9 +656,10 @@ void PaintFinishLibrary::load(const QString &gameFolder, const QString &game) {
         }
         resolvedFinishes.insert(it.key(), {std::move(resolved), std::move(paths), profile});
     }
-    const QString mediaTextures = gameAssetFilePath(QDir(gameMediaDir(gameFolder)), QStringLiteral("_library/Textures.zip"));
-    const auto carBlobs = readPaintArchiveEntries(paintArchives(gamePaintTexturesArchive(gameFolder)), std::move(wantedCarTextures));
-    const auto mediaBlobs = readPaintArchiveEntries(paintArchives(mediaTextures), std::move(wantedMediaTextures));
+    const auto carBlobs = readPaintArchiveEntries(
+        paintArchives(gameFolder, QStringLiteral("Cars/_library/Textures.zip")), std::move(wantedCarTextures));
+    const auto mediaBlobs = readPaintArchiveEntries(
+        paintArchives(gameFolder, QStringLiteral("_library/Textures.zip")), std::move(wantedMediaTextures));
     const auto swatchImages = [&](const QString &reference, SwatchImage &image, std::vector<SwatchImage> &mips) {
         if (reference.isEmpty()) return;
         const auto &blobs = isCarTexture(reference) ? carBlobs : mediaBlobs;

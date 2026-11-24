@@ -179,6 +179,15 @@ QString gameMediaDir(const QString &gameFolder) {
     return root.absolutePath();
 }
 
+QStringList gameMediaResourcePaths(const QString &gameFolder, const QString &relativePath) {
+    if (gameFolder.isEmpty()) return {};
+    const QDir media(gameMediaDir(gameFolder));
+
+    return {gameAssetFilePath(media, relativePath),
+            gameAssetFilePath(QDir(media.filePath(QStringLiteral("pcfamily"))), relativePath),
+            gameAssetFilePath(QDir(media.filePath(QStringLiteral("base"))), relativePath)};
+}
+
 QStringList gameCarsDirs(const QString &gameFolder) {
     const QDir media(gameMediaDir(gameFolder));
     QStringList directories;
@@ -260,18 +269,6 @@ QSet<QString> availableCarModelCodes(const QString &gameFolder) {
     }
 
     return models;
-}
-
-QString gamePaintMaterialsArchive(const QString &gameFolder) {
-    const QString cars = gameCarsDir(gameFolder);
-
-    return cars.isEmpty() ? QString() : gameAssetFilePath(QDir(cars), QStringLiteral("_library/Materials.zip"));
-}
-
-QString gamePaintTexturesArchive(const QString &gameFolder) {
-    const QString cars = gameCarsDir(gameFolder);
-
-    return cars.isEmpty() ? QString() : gameAssetFilePath(QDir(cars), QStringLiteral("_library/Textures.zip"));
 }
 
 QString gamePaintMaterialsPrefix() {

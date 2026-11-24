@@ -30,13 +30,11 @@ QString gameAssetFilePath(const QDir &directory, const QString &relativePath);
 
 QStringList carModelGames(const QString &preferredGame = {});
 QString gameMediaDir(const QString &gameFolder);
+QStringList gameMediaResourcePaths(const QString &gameFolder, const QString &relativePath);
 QStringList gameCarsDirs(const QString &gameFolder);
 QString gameCarsDir(const QString &gameFolder);
 QString findCarModelPath(const QString &carsFolder, const QString &modelCode);
 QSet<QString> availableCarModelCodes(const QString &gameFolder);
-QString gamePaintMaterialsArchive(const QString &gameFolder);
-QString gamePaintTexturesArchive(const QString &gameFolder);
-
 // Entry prefix of the customizable paint materials inside the materials archive.
 QString gamePaintMaterialsPrefix();
 

@@ -6,6 +6,7 @@
 #include "zip_extract.h"
 
 #include <QCoreApplication>
+#include <QDir>
 #include <QDirIterator>
 #include <QTemporaryDir>
 #include <QtEndian>
@@ -530,6 +531,26 @@ void checkEarlyFinishLibrary(const QString &folder) {
     }
 }
 
+void checkFm7FinishLibrary(const QString &folder) {
+    const QDir media(fls::gameMediaDir(folder));
+    for (const auto &source : {folder, media.filePath(QStringLiteral("pcfamily")), media.filePath(QStringLiteral("base"))}) {
+        fls::PaintFinishLibrary library;
+        library.load(source, QStringLiteral("FM7"));
+        checkLegacyCamouflage(library);
+        for (int code : {6, 7, 8, 9}) {
+            const auto *finish = library.find(code);
+            require(finish && finish->selfColored && finish->hasDetailNormal()
+                && finish->normalUv.channel == 1 && finish->normalUv.tiling == std::array<float, 2>{55, 55},
+                "FM7 carbon or Kevlar lost its weave normal");
+            require(finish->hasPattern() == (code >= 8), "FM7 Kevlar lost its shader-default tint texture");
+        }
+        const auto *wood = library.find(53);
+        const auto *damascus = library.find(66);
+        require(wood && wood->hasPattern(), "FM7 wood lost its color map");
+        require(damascus && damascus->hasRoughMetalAo(), "FM7 Damascus lost its gloss map");
+    }
+}
+
 void checkLegacyFinishLibrary(const QString &folder, const QString &game) {
     fls::PaintFinishLibrary library;
     library.load(folder, game);
@@ -620,6 +641,8 @@ int main(int argc, char **argv) {
         const QStringList args = app.arguments();
         if (args.size() == 3 && args[1] == QStringLiteral("--legacy-library")) {
             checkLegacyFinishLibrary(args[2], QStringLiteral("FH5"));
+        } else if (args.size() == 3 && args[1] == QStringLiteral("--fm7-library")) {
+            checkFm7FinishLibrary(args[2]);
         } else if (args.size() == 4 && args[1] == QStringLiteral("--older-libraries")) {
             checkEarlyFinishLibrary(args[2]);
             checkLegacyFinishLibrary(args[3], QStringLiteral("FH4"));

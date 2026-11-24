@@ -284,11 +284,9 @@ QString findMediaResource(const QString &sourcePath, const QString &relativePath
         if (directory.dirName().compare(QStringLiteral("media"), Qt::CaseInsensitive) == 0
             || QFileInfo(fls::gameAssetFilePath(directory, QStringLiteral("Cars"))).isDir()
             || directory.exists(QStringLiteral("pcfamily/Cars"))) {
-            const QDir media(fls::gameMediaDir(directory.absolutePath()));
-            const QStringList layers = {directory.absolutePath(), media.absolutePath(),
-                media.filePath(QStringLiteral("pcfamily")), media.filePath(QStringLiteral("base"))};
-            for (const QString &layer : layers) {
-                const QString path = fls::gameAssetFilePath(QDir(layer), relativePath);
+            QStringList paths = fls::gameMediaResourcePaths(directory.absolutePath(), relativePath);
+            paths.prepend(fls::gameAssetFilePath(directory, relativePath));
+            for (const QString &path : paths) {
                 if (QFileInfo(path).isFile()) {
                     return path;
                 }
@@ -332,13 +330,15 @@ CarGameSource carGameSource(const QString &path, const QString &game) {
     if (!archive.isEmpty()) {
         QDir media = QFileInfo(archive).absoluteDir();
         if (media.cdUp()) {
-            if (!game.isEmpty()) return {game, fls::gameMediaDir(media.absolutePath())};
-            if (fls::hasFh3ObfuscatedNames(media.absolutePath())) return {QStringLiteral("FH3"), media.absolutePath()};
-            QDir install = media;
+            const QString mediaPath = fls::gameMediaDir(media.absolutePath());
+            if (!game.isEmpty()) return {game, mediaPath};
+            if (fls::hasFh3ObfuscatedNames(mediaPath)) return {QStringLiteral("FH3"), mediaPath};
+            QDir install(mediaPath);
             if (install.cdUp()) {
-                if (install.exists(QStringLiteral("forzahorizon6.exe"))) return {QStringLiteral("FH6"), media.absolutePath()};
-                if (install.exists(QStringLiteral("ForzaHorizon5.exe"))) return {QStringLiteral("FH5"), media.absolutePath()};
-                if (install.exists(QStringLiteral("ForzaHorizon4.exe"))) return {QStringLiteral("FH4"), media.absolutePath()};
+                if (install.exists(QStringLiteral("forzahorizon6.exe"))) return {QStringLiteral("FH6"), mediaPath};
+                if (install.exists(QStringLiteral("ForzaHorizon5.exe"))) return {QStringLiteral("FH5"), mediaPath};
+                if (install.exists(QStringLiteral("ForzaHorizon4.exe"))) return {QStringLiteral("FH4"), mediaPath};
+                if (install.exists(QStringLiteral("forzamotorsport7.exe"))) return {QStringLiteral("FM7"), mediaPath};
             }
         }
     }
