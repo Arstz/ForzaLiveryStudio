@@ -2,8 +2,8 @@
 
 WGS export registers new liveries and layer groups. Select the destination game
 and its WGS container format, then choose `containers.index` from the save
-profile. The package and service identifier identify the destination. The
-account identifier in the profile folder supplies the creator identity. The
+profile. The title identifier in the profile folder identifies the destination
+across host packages. The account identifier supplies the creator identity. The
 dialog remembers the last successful export game and each game's WGS index.
 
 ## Storage Layout

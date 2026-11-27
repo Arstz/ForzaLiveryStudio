@@ -720,9 +720,9 @@ QByteArray sourceSectionBoundary(const SourceLivery *source, int slot) {
     return defaultSectionBoundary(slot);
 }
 
-QByteArray defaultEmptySlot(int slot) {
+QByteArray defaultEmptySlot(float orientation) {
     detail::VinylBoundary boundary;
-    boundary.orientation = kEmptySlotRotation[slot];
+    boundary.orientation = orientation;
 
     return detail::writeVinylBoundary(boundary) + detail::writeVinylChildHeader(0, {});
 }
@@ -744,7 +744,7 @@ QByteArray sourceEmptySlot(const SourceLivery *source, int slot) {
     if (isEmptySlotRecord(slotBytes)) {
         return slotBytes.left(23);
     }
-    return defaultEmptySlot(slot);
+    return defaultEmptySlot(kEmptySlotRotation[slot]);
 }
 
 bool appendLiveryArtworkRecord(QByteArray &out, const LiveryEntry &entry, double offsetX,
@@ -1234,7 +1234,7 @@ void appendStructuralSection(QByteArray &body, const scene::Group *sectionGroup,
 } // namespace
 
 static QByteArray buildLiveryGyvlImpl(const Project &project, int sectionCount,
-                                     bool preserveSource,
+                                     bool preserveSource, bool neutralBlankBoundaries,
                                      std::array<int, kLiverySectionCount> *outSectionCounts) {
     std::array<const scene::Group *, kLiverySectionCount> slotGroups{};
     std::array<QVector<const scene::Shape *>, kLiverySectionCount> slotShapes;
@@ -1322,6 +1322,7 @@ static QByteArray buildLiveryGyvlImpl(const Project &project, int sectionCount,
         std::copy_n(sourcePtr->payload.sectionCounts.cbegin(),
             std::min(sectionCount, static_cast<int>(sourcePtr->payload.sectionCounts.size())), counts.begin());
     } else {
+        const bool neutralBoundaries = neutralBlankBoundaries && lastPopulatedSlot < 0;
         for (int slot = 0; slot < sectionCount; ++slot) {
             const auto &shapes = slotShapes[slot];
             const LiverySection *section = sourceSection(sourcePtr, slot);
@@ -1330,7 +1331,7 @@ static QByteArray buildLiveryGyvlImpl(const Project &project, int sectionCount,
                 ? sourcePtr->payload.sectionCounts[slot] : static_cast<int>(shapes.size());
             const bool physicalCountMatches = physical != nullptr && physical->shapeCount == sourceCount;
             if (shapes.isEmpty()) {
-                QByteArray empty = sourceEmptySlot(sourcePtr, slot);
+                QByteArray empty = neutralBoundaries ? defaultEmptySlot(0.0f) : sourceEmptySlot(sourcePtr, slot);
                 if (slot == lastPopulatedSlot + 1) {
                     empty = detail::writeVinylChildHeader(0, {});
                 }
@@ -1371,18 +1372,18 @@ static QByteArray buildLiveryGyvlImpl(const Project &project, int sectionCount,
 
 QByteArray buildLiveryGyvl(const Project &project,
                           std::array<int, kLiverySectionCount> *outSectionCounts) {
-    return buildLiveryGyvlImpl(project, kLiverySectionCount, true, outSectionCounts);
+    return buildLiveryGyvlImpl(project, kLiverySectionCount, true, false, outSectionCounts);
 }
 
 QByteArray buildLiveryGyvlForSectionCount(const Project &project, int sectionCount,
                                         std::array<int, kLiverySectionCount> *outSectionCounts,
-                                        bool keepIncompatibleShapes) {
+                                        bool keepIncompatibleShapes, bool neutralBlankBoundaries) {
     if (sectionCount <= 0 || sectionCount > kLiverySectionCount) {
         throw std::runtime_error("invalid livery export section count");
     }
 
     std::array<int, kLiverySectionCount> counts{};
-    const QByteArray artwork = buildLiveryGyvlImpl(project, sectionCount, false, &counts);
+    const QByteArray artwork = buildLiveryGyvlImpl(project, sectionCount, false, neutralBlankBoundaries, &counts);
     QVector<int> decodedCounts;
     for (int slot = 0; slot < sectionCount; ++slot) {
         decodedCounts.append(counts[slot]);

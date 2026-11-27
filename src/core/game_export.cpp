@@ -527,13 +527,14 @@ QByteArray earlyArtwork(const Project &project, const ExportProfile &profile,
 }
 
 QByteArray nativeArtwork(const Project &project, const ExportProfile &profile,
-                         std::array<int, 11> &counts, bool keepIncompatibleShapes) {
+                         std::array<int, 11> &counts, bool keepIncompatibleShapes, bool neutralBlankBoundaries) {
     const Project artworkProject = nativeArtworkProject(project, profile);
     if (profile.liveryVersion <= kLastEarlyLiveryVersion) {
         return earlyArtwork(artworkProject, profile, counts);
     }
 
-    return buildLiveryGyvlForSectionCount(artworkProject, profile.sectionCount, &counts, keepIncompatibleShapes);
+    return buildLiveryGyvlForSectionCount(artworkProject, profile.sectionCount, &counts,
+                                         keepIncompatibleShapes, neutralBlankBoundaries);
 }
 
 QByteArray nativeLiveryPayload(const Project &project, ExportGameVersion game,
@@ -543,11 +544,12 @@ QByteArray nativeLiveryPayload(const Project &project, ExportGameVersion game,
         throw std::runtime_error("not a livery project");
     }
     const bool motorsport = game == ExportGameVersion::Motorsport2023;
+    const bool horizon5 = game == ExportGameVersion::Horizon5;
     const ExportProfile profile = exportProfile(game);
     const bool early = profile.liveryVersion <= kLastEarlyLiveryVersion;
     const bool tagged = profile.liveryVersion != 2;
     const QByteArray paint = encodePositionalPaint(project, profile.paintRecordCount, exportGameCode(game));
-    const QByteArray artwork = nativeArtwork(project, profile, counts, keepIncompatibleShapes);
+    const QByteArray artwork = nativeArtwork(project, profile, counts, keepIncompatibleShapes, horizon5);
     QByteArray payload("vlrc", 4);
     QByteArray sourceEntries;
     const QByteArray &source = project.liverySource;
@@ -620,7 +622,7 @@ QByteArray nativeLiveryPayload(const Project &project, ExportGameVersion game,
     if (tagged) {
         payload.append("yrvl", 4);
     }
-    if (motorsport || game == ExportGameVersion::Horizon5) {
+    if (motorsport || horizon5) {
         detail::appendLeU32(payload, 0);
     }
 
@@ -635,23 +637,9 @@ void createOutputFolder(const QString &path) {
 
 void copyThumbnail(const Project &project, const QString &outputFolder,
                    ExportGameVersion game) {
-    if (project.sourceFolder.isEmpty()) {
-        return;
-    }
-    const QStringList candidates = {
-        exportThumbnailName(game, project.isLivery), QStringLiteral("thumbnail"),
-        QStringLiteral("bigThumb.png"), QStringLiteral("bigThumb.webp"),
-        QStringLiteral("thumb.png"), QStringLiteral("thumb.webp")};
-    for (const QString &name : candidates) {
-        QFile file(QDir(project.sourceFolder).filePath(name));
-        if (!file.open(QIODevice::ReadOnly)) {
-            continue;
-        }
-        const QByteArray thumbnail = file.readAll();
-        if (thumbnail.startsWith(QByteArray::fromHex("89504e470d0a1a0a"))) {
-            writeFile(QDir(outputFolder).filePath(exportThumbnailName(game, project.isLivery)), thumbnail);
-            return;
-        }
+    const QByteArray thumbnail = sourceExportThumbnail(project, game);
+    if (!thumbnail.isEmpty()) {
+        writeFile(QDir(outputFolder).filePath(exportThumbnailName(game, project.isLivery)), thumbnail);
     }
 }
 
@@ -672,6 +660,40 @@ quint64 visibleShapeCount(const scene::Layer &layer) {
     return count;
 }
 
+NativeAssetData encodeNativeLivery(const Project &project, const QString &outputFolder, ExportGameVersion game,
+                                  const ExportLayerChoices &choices) {
+    Project artwork = project;
+    const QByteArray creatorTag = destinationCreatorTag(project, outputFolder);
+    std::array<int, 11> counts{};
+
+    prepareExportLayers(artwork, game, choices);
+    const QByteArray payload = nativeLiveryPayload(artwork, game, creatorTag, counts, choices.keepShapes);
+    const quint32 shapeCount = static_cast<quint32>(std::accumulate(counts.begin(), counts.end(), 0));
+    const QByteArray wrapped = game == ExportGameVersion::Motorsport2023
+        ? deflateContainerBlocks(payload, kMotorsportBlockSize) : deflateContainer(payload);
+
+    return {wrapped, nativeHeader(project, game, shapeCount, creatorTag, outputFolder)};
+}
+
+NativeAssetData encodeNativeGroup(const Project &project, const QString &outputFolder, ExportGameVersion game,
+                                 const SpriteSizeFn &spriteSize, const ExportLayerChoices &choices) {
+    if (project.isLivery || project.root == nullptr) {
+        throw std::runtime_error("not a group project");
+    }
+    Project artwork = project;
+    prepareExportLayers(artwork, game, choices);
+    const quint64 count = visibleShapeCount(*artwork.root);
+    if (count > std::numeric_limits<quint32>::max()) {
+        throw std::runtime_error("too many group shapes for header metadata");
+    }
+    artwork.sourceDecPrefix.clear();
+    const QByteArray payload = buildNestedPayload(artwork, spriteSize, exportProfile(game).groupGeneration);
+    const QByteArray header = nativeHeader(project, game, static_cast<quint32>(count),
+                                         destinationCreatorTag(project, outputFolder), outputFolder);
+
+    return {game == ExportGameVersion::Motorsport2023 ? payload : deflateContainer(payload), header};
+}
+
 } // namespace
 
 QString exportThumbnailName(ExportGameVersion game, bool livery) {
@@ -683,6 +705,28 @@ QString exportThumbnailName(ExportGameVersion game, bool livery) {
     }
 
     return livery ? QStringLiteral("bigThumb.webp") : QStringLiteral("thumb.webp");
+}
+
+QByteArray sourceExportThumbnail(const Project &project, ExportGameVersion game) {
+    if (project.sourceFolder.isEmpty()) {
+        return {};
+    }
+    const QStringList candidates = {
+        exportThumbnailName(game, project.isLivery), QStringLiteral("thumbnail"),
+        QStringLiteral("bigThumb.png"), QStringLiteral("bigThumb.webp"),
+        QStringLiteral("thumb.png"), QStringLiteral("thumb.webp")};
+    const QByteArray pngSignature = QByteArray::fromHex("89504e470d0a1a0a");
+    for (const QString &name : candidates) {
+        QFile file(QDir(project.sourceFolder).filePath(name));
+        if (file.open(QIODevice::ReadOnly)) {
+            const QByteArray thumbnail = file.readAll();
+            if (thumbnail.startsWith(pngSignature)) {
+                return thumbnail;
+            }
+        }
+    }
+
+    return {};
 }
 
 bool exportGameSupportsMasks(ExportGameVersion game) {
@@ -788,6 +832,12 @@ QByteArray encodeGameLiveryPayload(const Project &project, ExportGameVersion gam
     return nativeLiveryPayload(artwork, game, destinationCreatorTag(project, QString()), counts, choices.keepShapes);
 }
 
+NativeAssetData encodeNativeGameAsset(const Project &project, ExportGameVersion game,
+                                     const SpriteSizeFn &spriteSize, const ExportLayerChoices &choices) {
+    return project.isLivery ? encodeNativeLivery(project, {}, game, choices)
+        : encodeNativeGroup(project, {}, game, spriteSize, choices);
+}
+
 void exportGameLivery(const Project &project, const QString &outputFolder, ExportGameVersion game,
                       const ExportLayerChoices &choices) {
     if (isXbox360ExportGame(game)) {
@@ -797,29 +847,18 @@ void exportGameLivery(const Project &project, const QString &outputFolder, Expor
         exportXbox360Asset(project, QDir(outputFolder).filePath(QStringLiteral("Livery.liv")), game, nullptr, choices);
         return;
     }
-    Project artwork = project;
-    prepareExportLayers(artwork, game, choices);
     if (game == ExportGameVersion::Horizon6) {
+        Project artwork = project;
+        prepareExportLayers(artwork, game, choices);
         exportCLivery(artwork, outputFolder);
         return;
     }
-    std::array<int, 11> counts{};
-    const QByteArray creatorTag = destinationCreatorTag(project, outputFolder);
-    const QByteArray payload = nativeLiveryPayload(artwork, game, creatorTag, counts, choices.keepShapes);
-    const quint32 shapeCount = static_cast<quint32>(std::accumulate(counts.begin(), counts.end(), 0));
-    const QByteArray header = nativeHeader(project, game, shapeCount, creatorTag, outputFolder);
-    QByteArray wrapped;
-
-    if (game == ExportGameVersion::Motorsport2023) {
-        wrapped = deflateContainerBlocks(payload, kMotorsportBlockSize);
-    } else {
-        wrapped = deflateContainer(payload);
-    }
+    const NativeAssetData asset = encodeNativeLivery(project, outputFolder, game, choices);
     createOutputFolder(outputFolder);
     QDir output(outputFolder);
     writeFile(output.filePath(game == ExportGameVersion::Motorsport2023
-        ? QStringLiteral("data") : QStringLiteral("C_livery")), wrapped);
-    writeFile(output.filePath(QStringLiteral("header")), header);
+        ? QStringLiteral("data") : QStringLiteral("C_livery")), asset.artwork);
+    writeFile(output.filePath(QStringLiteral("header")), asset.header);
     copyThumbnail(project, outputFolder, game);
 }
 
@@ -833,31 +872,19 @@ void exportGameGroup(const Project &project, const QString &outputFolder,
         exportXbox360Asset(project, QDir(outputFolder).filePath(name), game, nullptr, choices);
         return;
     }
-    Project artwork = project;
-    prepareExportLayers(artwork, game, choices);
     if (game == ExportGameVersion::Horizon6) {
+        Project artwork = project;
+        prepareExportLayers(artwork, game, choices);
         exportNestedProjectFolder(artwork, outputFolder, project.name, spriteSize);
         return;
     }
-    if (project.isLivery || project.root == nullptr) {
-        throw std::runtime_error("not a group project");
-    }
-    const quint64 count = visibleShapeCount(*artwork.root);
-    if (count > std::numeric_limits<quint32>::max()) {
-        throw std::runtime_error("too many group shapes for header metadata");
-    }
-    artwork.sourceDecPrefix.clear();
-    const QByteArray payload = buildNestedPayload(artwork, spriteSize,
-                                                 exportProfile(game).groupGeneration);
-    const QByteArray header = nativeHeader(project, game, static_cast<quint32>(count),
-                                           destinationCreatorTag(project, outputFolder), outputFolder);
+    const NativeAssetData asset = encodeNativeGroup(project, outputFolder, game, spriteSize, choices);
     const bool motorsport = game == ExportGameVersion::Motorsport2023;
-    const QByteArray fileBytes = motorsport ? payload : deflateContainer(payload);
 
     createOutputFolder(outputFolder);
     QDir output(outputFolder);
-    writeFile(output.filePath(motorsport ? QStringLiteral("data") : QStringLiteral("C_group")), fileBytes);
-    writeFile(output.filePath(QStringLiteral("header")), header);
+    writeFile(output.filePath(motorsport ? QStringLiteral("data") : QStringLiteral("C_group")), asset.artwork);
+    writeFile(output.filePath(QStringLiteral("header")), asset.header);
     copyThumbnail(project, outputFolder, game);
 }
 

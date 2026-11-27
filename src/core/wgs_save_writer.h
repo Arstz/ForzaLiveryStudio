@@ -6,6 +6,8 @@
 #include <QMap>
 #include <QSize>
 
+class QImage;
+
 namespace fls {
 
 struct WgsExportTarget {
@@ -19,6 +21,9 @@ struct WgsExportTarget {
     ExportGameVersion game = ExportGameVersion::Horizon5;
     WgsAssetKind kind = WgsAssetKind::Group;
     int carId = 0;
+
+    ExportGameVersion encodingGame() const;
+    QSize thumbnailSize() const;
 };
 
 struct WgsAppendResult {
@@ -30,5 +35,7 @@ bool supportsWgsAppend(ExportGameVersion game);
 WgsExportTarget inspectWgsAppendTarget(const QString &indexPath, ExportGameVersion game,
                                       WgsAssetKind kind, int carId = 0);
 WgsAppendResult appendWgsContainer(const WgsExportTarget &target, const QMap<QString, QByteArray> &blobs);
+WgsAppendResult exportWgsAsset(const WgsExportTarget &target, Project project, const QImage &thumbnail,
+                              const SpriteSizeFn &spriteSize, const ExportLayerChoices &choices);
 
 } // namespace fls

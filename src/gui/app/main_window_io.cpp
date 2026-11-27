@@ -26,7 +26,6 @@
 #include <QLocale>
 #include <QSaveFile>
 #include <QStandardPaths>
-#include <QTemporaryDir>
 #include <QUuid>
 
 #include <algorithm>
@@ -59,13 +58,6 @@ constexpr char kScratchProjectSuffix[] = ".3so";
 constexpr char kScratchMetadataSuffix[] = ".json";
 constexpr char kScratchLockSuffix[] = ".lock";
 const QSize kLiveryThumbnailSize(670, 376);
-
-QImage croppedThumbnail(const QImage &image, const QSize &size) {
-    const QImage scaled = image.scaled(size, Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation);
-    const QPoint offset((scaled.width() - size.width()) / 2, (scaled.height() - size.height()) / 2);
-
-    return scaled.copy(QRect(offset, size));
-}
 
 QString absoluteProjectPath(const QString &path) {
     return QFileInfo(path).absoluteFilePath();
@@ -648,75 +640,61 @@ bool MainWindow::exportFolderImpl(const QString &folder, fls::ExportGameVersion 
     try {
         fls::Project exportProject = state_->project_;
         const bool artworkChanged = fls::prepareExportLayers(exportProject, game, choices);
-        std::unique_ptr<QTemporaryDir> staging;
-        if (wgsTarget != nullptr) {
-            fls::HeaderMetadata metadata = effectiveHeaderMetadata(exportProject, creatorName_);
-            metadata.formatVersion = wgsTarget->versions.header;
-            metadata.guid = wgsTarget->assetGuid;
-            metadata.creatorTag = wgsTarget->creatorTag;
-            metadata.published = false;
-            metadata.description.clear();
-            exportProject.sourceHeader.clear();
-            exportProject.headerMetadata = metadata;
-            staging = std::make_unique<QTemporaryDir>(QDir::temp().filePath(QStringLiteral("fls-wgs-export-XXXXXX")));
-            if (!staging->isValid()) {
-                throw std::runtime_error("could not create the WGS export staging folder");
-            }
-        }
         const bool webp = game == fls::ExportGameVersion::Horizon6;
         const char *imageFormat = webp ? "WEBP" : "PNG";
+        const auto renderLiveryThumbnail = [&](const QSize &size) {
+            if (carPreview_ == nullptr || !carPreview_->hasModel()) {
+                return QImage();
+            }
+            if (webp && !QImageWriter::supportedImageFormats().contains("webp")) {
+                throw std::runtime_error(
+                    "Qt WEBP image writer is not available; ensure qwebp.dll is deployed in the imageformats plugin folder");
+            }
+            const QImage thumb = carPreview_->renderThumbnail(size, artworkChanged ? &exportProject : nullptr);
+            if (thumb.isNull()) {
+                throw std::runtime_error("could not render the livery thumbnail from the car preview");
+            }
+
+            return thumb;
+        };
+        ShapeGeometryStore geometry;
+        if (!exportProject.isLivery) {
+            geometry.loadDefault();
+        }
+        const fls::SpriteSizeFn spriteSize = [&geometry](quint16 id) {
+            return geometry.shapeSize(static_cast<int>(id));
+        };
+        if (wgsTarget != nullptr) {
+            const QSize thumbnailSize = wgsTarget->thumbnailSize();
+            QImage thumb;
+            if (exportProject.isLivery) {
+                thumb = renderLiveryThumbnail(thumbnailSize);
+                if (thumb.isNull()) {
+                    thumb = QImage::fromData(fls::sourceExportThumbnail(exportProject, game), "PNG");
+                }
+            }
+            if (thumb.isNull()) {
+                thumb = renderProjectPreviewImage(exportProject, thumbnailSize);
+            }
+            exportProject.headerMetadata = effectiveHeaderMetadata(exportProject, creatorName_);
+            const fls::WgsAppendResult result = fls::exportWgsAsset(
+                *wgsTarget, std::move(exportProject), thumb, spriteSize, choices);
+            canvasStatusBar_->showMessage(QStringLiteral("Added %1. Backup saved to %2")
+                .arg(result.containerName, QDir::toNativeSeparators(result.backupPath)), 15000);
+            return true;
+        }
         const QString thumbnailName = fls::exportThumbnailName(game, exportProject.isLivery);
-        const QString targetFolder = staging ? staging->path() : game == fls::ExportGameVersion::Motorsport2023
+        const QString targetFolder = game == fls::ExportGameVersion::Motorsport2023
             ? (!QUuid(QDir(folder).dirName()).isNull() ? folder
                 : QDir(folder).filePath(QUuid::createUuid().toString(QUuid::WithoutBraces)))
             : projectExportFolder(folder, exportProject.name, exportProject.isLivery);
-        const auto finishExport = [this, wgsTarget, &targetFolder]() {
-            if (wgsTarget == nullptr) {
-                canvasStatusBar_->showMessage(QStringLiteral("Exported %1").arg(targetFolder), 5000);
-                return;
-            }
-            QMap<QString, QByteArray> blobs;
-            const QDir staged(targetFolder);
-            for (const QString &name : staged.entryList(QDir::Files)) {
-                QFile file(staged.filePath(name));
-                if (!file.open(QIODevice::ReadOnly)) {
-                    throw std::runtime_error("could not read a staged WGS export blob");
-                }
-                blobs.insert(name.toLower(), file.readAll());
-            }
-            const fls::WgsAppendResult result = fls::appendWgsContainer(*wgsTarget, blobs);
-            canvasStatusBar_->showMessage(QStringLiteral("Added %1. Backup saved to %2")
-                .arg(result.containerName, QDir::toNativeSeparators(result.backupPath)), 15000);
+        const auto finishExport = [this, &targetFolder]() {
+            canvasStatusBar_->showMessage(QStringLiteral("Exported %1").arg(targetFolder), 5000);
         };
         if (exportProject.isLivery) {
-            const QSize thumbnailSize = wgsTarget != nullptr ? wgsTarget->liveryThumbnailSize : kLiveryThumbnailSize;
-            const QDir staged(targetFolder);
-            const QString thumbnailPath = staged.filePath(thumbnailName);
-            QImage thumb;
-            if (carPreview_ != nullptr && carPreview_->hasModel()) {
-                if (webp && !QImageWriter::supportedImageFormats().contains("webp")) {
-                    throw std::runtime_error(
-                        "Qt WEBP image writer is not available; ensure qwebp.dll is deployed in the imageformats plugin folder");
-                }
-                thumb = carPreview_->renderThumbnail(thumbnailSize, artworkChanged ? &exportProject : nullptr);
-                if (thumb.isNull()) {
-                    throw std::runtime_error("could not render the livery thumbnail from the car preview");
-                }
-            }
+            const QString thumbnailPath = QDir(targetFolder).filePath(thumbnailName);
+            const QImage thumb = renderLiveryThumbnail(kLiveryThumbnailSize);
             fls::exportGameLivery(exportProject, targetFolder, game, choices);
-            if (wgsTarget != nullptr) {
-                if (thumb.isNull()) {
-                    thumb.load(thumbnailPath);
-                }
-                if (thumb.isNull()) {
-                    thumb = renderProjectPreviewImage(exportProject, thumbnailSize);
-                }
-                if (!croppedThumbnail(thumb, wgsTarget->smallLiveryThumbnailSize).save(
-                        staged.filePath(QStringLiteral("smallThumb.png")), "PNG")) {
-                    throw std::runtime_error("could not write the small WGS livery thumbnail");
-                }
-                thumb = croppedThumbnail(thumb, thumbnailSize);
-            }
             if (!thumb.isNull() && !thumb.save(thumbnailPath, imageFormat)) {
                 throw std::runtime_error("could not write the livery thumbnail");
             }
@@ -736,11 +714,6 @@ bool MainWindow::exportFolderImpl(const QString &folder, fls::ExportGameVersion 
         exportProject.sourceHeader.clear();
         exportProject.headerMetadata = meta;
 
-        ShapeGeometryStore geometry;
-        geometry.loadDefault();
-        const fls::SpriteSizeFn spriteSize = [&geometry](quint16 id) {
-            return geometry.shapeSize(static_cast<int>(id));
-        };
         fls::exportGameGroup(exportProject, targetFolder, game, spriteSize, choices);
         const QImage thumb = renderProjectPreviewImage(exportProject, QSize(256, 256));
         if (webp && !QImageWriter::supportedImageFormats().contains("webp")) {
@@ -1302,8 +1275,8 @@ void MainWindow::exportDialog() {
     }
 
     QString error;
-    const auto encodingGame = importProfile ? fls::ExportGameVersion::Horizon5 : selection->gameVersion;
     const fls::WgsExportTarget *wgsTarget = selection->wgsTarget ? &*selection->wgsTarget : nullptr;
+    const auto encodingGame = wgsTarget != nullptr ? wgsTarget->encodingGame() : selection->gameVersion;
     if (!exportFolderImpl(folder, encodingGame, selection->layerChoices, &error, wgsTarget)) {
         QMessageBox::critical(this, QStringLiteral("Export failed"), error);
         return;

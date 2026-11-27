@@ -47,6 +47,7 @@ QByteArray buildLiveryGyvl(const Project &project,
                            std::array<int, 11> *outSectionCounts = nullptr);
 QByteArray buildLiveryGyvlForSectionCount(const Project &project, int sectionCount,
                                         std::array<int, 11> *outSectionCounts,
-                                        bool keepIncompatibleShapes = false);
+                                        bool keepIncompatibleShapes = false,
+                                        bool neutralBlankBoundaries = false);
 
 } // namespace fls

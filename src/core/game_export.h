@@ -27,6 +27,11 @@ struct NativeExportVersions {
     quint32 livery = 0;
 };
 
+struct NativeAssetData {
+    QByteArray artwork;
+    QByteArray header;
+};
+
 struct ExportLayerWarnings {
     quint64 masks = 0;
     quint64 logos = 0;
@@ -44,6 +49,7 @@ NativeExportVersions nativeExportVersions(ExportGameVersion game);
 bool isXbox360ExportGame(ExportGameVersion game);
 QString xbox360ExportExtension(ExportGameVersion game, Xbox360FileKind kind);
 QString exportThumbnailName(ExportGameVersion game, bool livery);
+QByteArray sourceExportThumbnail(const Project &project, ExportGameVersion game);
 bool exportGameSupportsMasks(ExportGameVersion game);
 quint64 exportMaskedLayerCount(const Project &project);
 quint64 exportIncompatibleLayerCount(const Project &project, ExportGameVersion game);
@@ -51,6 +57,8 @@ ExportLayerWarnings exportLayerWarnings(const Project &project, ExportGameVersio
 bool prepareExportLayers(Project &project, ExportGameVersion game, const ExportLayerChoices &choices);
 QByteArray encodeGameLiveryPayload(const Project &project, ExportGameVersion game,
                                   const ExportLayerChoices &choices = {});
+NativeAssetData encodeNativeGameAsset(const Project &project, ExportGameVersion game,
+                                     const SpriteSizeFn &spriteSize, const ExportLayerChoices &choices);
 void exportGameLivery(const Project &project, const QString &outputFolder,
                       ExportGameVersion game, const ExportLayerChoices &choices = {});
 void exportGameGroup(const Project &project, const QString &outputFolder,
