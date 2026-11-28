@@ -947,7 +947,9 @@ bool ProjectCanvas::savePathFigure(bool selectFigure) {
     const QVector<QString> previousSelection = state_->selectionEntries();
     EditorCommand insert;
     insert.type = EditorCommandType::Insert;
-    insert.entries = previousSelection;
+    if (path.pathKind != fls::scene::ContourPathKind::Pen || !loadBehaviorSettings().penAlwaysOnTop) {
+        insert.entries = previousSelection;
+    }
     insert.clipboard.emplace();
     insert.clipboard->nodes.push_back(std::move(figure));
     if (!state_->executeCommand(insert)) {

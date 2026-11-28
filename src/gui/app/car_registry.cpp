@@ -16,6 +16,8 @@
 #include <QHBoxLayout>
 #include <QPushButton>
 #include <QRegularExpression>
+#include <QScreen>
+#include <QScrollBar>
 #include <QSet>
 #include <QTreeWidget>
 #include <QVBoxLayout>
@@ -517,7 +519,6 @@ bool chooseCarModel(QWidget *parent, int currentId, int *outId, bool confirmMiss
 
     QDialog dialog(parent);
     dialog.setWindowTitle(QStringLiteral("Choose Target Car"));
-    dialog.resize(kCarDialogWidth, kCarDialogHeight);
 
     auto *layout = new QVBoxLayout(&dialog);
     layout->addWidget(new QLabel(QStringLiteral("Select the car this livery is for:"), &dialog));
@@ -537,6 +538,7 @@ bool chooseCarModel(QWidget *parent, int currentId, int *outId, bool confirmMiss
     list->setItemsExpandable(false);
     list->setUniformRowHeights(true);
     list->setSelectionBehavior(QAbstractItemView::SelectRows);
+    list->setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
     list->header()->setStretchLastSection(false);
     list->header()->setSectionsClickable(true);
     list->header()->setSectionsMovable(false);
@@ -544,7 +546,7 @@ bool chooseCarModel(QWidget *parent, int currentId, int *outId, bool confirmMiss
     list->header()->setSortIndicatorShown(false);
     list->header()->setSectionResizeMode(kManufacturerColumn, QHeaderView::Fixed);
     list->header()->setSectionResizeMode(kYearColumn, QHeaderView::Fixed);
-    list->header()->setSectionResizeMode(kModelColumn, QHeaderView::Stretch);
+    list->header()->setSectionResizeMode(kModelColumn, QHeaderView::Interactive);
     for (int index = 0; index < games.size(); ++index) {
         const int column = kFirstGameColumn + index;
         list->headerItem()->setTextAlignment(column, Qt::AlignCenter);
@@ -580,7 +582,7 @@ bool chooseCarModel(QWidget *parent, int currentId, int *outId, bool confirmMiss
     int sortColumn = kManufacturerColumn;
     Qt::SortOrder sortOrder = Qt::AscendingOrder;
     list->header()->setSortIndicatorShown(true);
-    for (const int column : {kManufacturerColumn, kYearColumn}) {
+    for (const int column : {kManufacturerColumn, kYearColumn, kModelColumn}) {
         list->header()->setSortIndicator(column, Qt::AscendingOrder);
         list->resizeColumnToContents(column);
     }
@@ -660,6 +662,11 @@ bool chooseCarModel(QWidget *parent, int currentId, int *outId, bool confirmMiss
     QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog, acceptCar);
     QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
 
+    const QMargins margins = layout->contentsMargins();
+    const int contentsWidth = list->header()->length() + 2 * list->frameWidth()
+        + list->verticalScrollBar()->sizeHint().width() + margins.left() + margins.right();
+    const int screenWidth = dialog.screen()->availableGeometry().width();
+    dialog.resize(std::min(std::max(kCarDialogWidth, contentsWidth), screenWidth), kCarDialogHeight);
     filter->setFocus();
     if (dialog.exec() != QDialog::Accepted) {
         return false;

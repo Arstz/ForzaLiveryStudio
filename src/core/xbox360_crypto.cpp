@@ -4,6 +4,7 @@
 #include "game_export.h"
 #include "xbox360_vinyl.h"
 
+#include <QByteArrayView>
 #include <QMessageAuthenticationCode>
 #include <QRandomGenerator>
 #include <QtEndian>
@@ -19,7 +20,9 @@
 #endif
 
 #include <algorithm>
+#include <cstring>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 
 namespace fls {
@@ -47,17 +50,52 @@ struct KeyPair {
     QByteArray mac;
 };
 
-struct KeyLocation {
-    quint32 aesOffset;
-    quint32 macOffset;
-    int aesProfileOffset;
-    int macProfileOffset;
+struct ProfileKeyOffsets {
+    int aes;
+    int mac;
 };
 
-constexpr KeyLocation kFM4LiveryKeys = {0xec80, 0xec60, 5, 1};
-constexpr KeyLocation kFM4GroupKeys = {0x1d0c4, 0x1d0a4, 2, 7};
-constexpr KeyLocation kFH1DiscLiveryKeys = {0xd643, 0x173e4, 1, 5};
-constexpr KeyLocation kFH1UpdateLiveryKeys = {0x13a13, 0x1dfe4, 1, 5};
+constexpr ProfileKeyOffsets kMotorsportLiveryOffsets = {5, 1};
+constexpr ProfileKeyOffsets kMotorsportGroupOffsets = {2, 7};
+constexpr ProfileKeyOffsets kHorizonLiveryOffsets = {1, 5};
+constexpr ProfileKeyOffsets kHorizonGroupOffsets = {0, 3};
+
+struct KeyLocation {
+    ProfileKeyOffsets profileOffsets;
+    quint32 aesOffset;
+    quint32 macOffset;
+};
+
+constexpr KeyLocation kFM4LiveryKeys = {kMotorsportLiveryOffsets, 0xec80, 0xec60};
+constexpr KeyLocation kFM4GroupKeys = {kMotorsportGroupOffsets, 0x1d0c4, 0x1d0a4};
+constexpr KeyLocation kFH1DiscLiveryKeys = {kHorizonLiveryOffsets, 0xd643, 0x173e4};
+constexpr KeyLocation kFH1UpdateLiveryKeys = {kHorizonLiveryOffsets, 0x13a13, 0x1dfe4};
+
+struct BaseKeys {
+    QByteArrayView data;
+    QByteArrayView mask;
+    ProfileKeyOffsets profileOffsets;
+};
+
+enum class BundledKeyGame : quint8 { Unknown, Horizon1 = 1, Motorsport3 = 3, Motorsport4 = 4 };
+enum class BundledKeyKind : quint8 { Livery = 1, Group = 2 };
+
+struct BundledKeyEntry {
+    BundledKeyGame game;
+    BundledKeyKind kind;
+    quint8 aesSize;
+    quint8 macSize;
+    quint8 aesProfileOffset;
+    quint8 macProfileOffset;
+};
+
+constexpr char kBundleMagic[] = "X360";
+constexpr quint16 kBundleVersion = 1;
+constexpr qsizetype kBundleVersionOffset = 4;
+constexpr qsizetype kBundleCountOffset = kBundleVersionOffset + sizeof(quint16);
+constexpr qsizetype kBundleHeaderSize = kBundleCountOffset + sizeof(quint16);
+constexpr qsizetype kBundleEntrySize = 6;
+static_assert(sizeof(BundledKeyEntry) == kBundleEntrySize);
 
 const Envelope &envelopeForGame(ExportGameVersion game) {
     switch (game) {
@@ -69,6 +107,79 @@ const Envelope &envelopeForGame(ExportGameVersion game) {
     default:
         throw std::runtime_error("unsupported Xbox 360 encryption profile");
     }
+}
+
+BundledKeyGame bundledKeyGame(ExportGameVersion game) {
+    switch (game) {
+    case ExportGameVersion::Motorsport3:
+        return BundledKeyGame::Motorsport3;
+    case ExportGameVersion::Motorsport4:
+        return BundledKeyGame::Motorsport4;
+    case ExportGameVersion::Horizon1:
+        return BundledKeyGame::Horizon1;
+    default:
+        return BundledKeyGame::Unknown;
+    }
+}
+
+QByteArrayView bundledKeyResource() {
+#ifdef _WIN32
+    constexpr int kResourceType = 10;
+    constexpr int kResourceId = 61750;
+    const HMODULE module = GetModuleHandleW(nullptr);
+    const HRSRC resource = FindResourceW(module, MAKEINTRESOURCEW(kResourceId), MAKEINTRESOURCEW(kResourceType));
+    if (resource != nullptr) {
+        const HGLOBAL loaded = LoadResource(module, resource);
+        const auto *data = loaded == nullptr ? nullptr : static_cast<const char *>(LockResource(loaded));
+        if (data != nullptr) {
+            return {data, static_cast<qsizetype>(SizeofResource(module, resource))};
+        }
+    }
+#endif
+
+    return {};
+}
+
+std::optional<BaseKeys> bundledBaseKeys(ExportGameVersion game, Xbox360FileKind kind) {
+    const QByteArrayView bundle = bundledKeyResource();
+    const auto bundledGame = bundledKeyGame(game);
+    const auto bundledKind = kind == Xbox360FileKind::Livery ? BundledKeyKind::Livery : BundledKeyKind::Group;
+    if (bundledGame == BundledKeyGame::Unknown || kind == Xbox360FileKind::Unknown
+        || bundle.size() < kBundleHeaderSize || !bundle.startsWith(kBundleMagic)
+        || qFromLittleEndian<quint16>(bundle.data() + kBundleVersionOffset) != kBundleVersion) {
+        return std::nullopt;
+    }
+    const qsizetype entryCount = qFromLittleEndian<quint16>(bundle.data() + kBundleCountOffset);
+    const qsizetype dataOffset = kBundleHeaderSize + entryCount * kBundleEntrySize;
+    const qsizetype packedSize = bundle.size() - dataOffset;
+    if (packedSize < 0 || packedSize % 2 != 0) {
+        return std::nullopt;
+    }
+    const QByteArrayView data = bundle.sliced(dataOffset);
+    const qsizetype maskSize = packedSize / 2;
+    std::optional<BaseKeys> result;
+    qsizetype offset = 0;
+    for (qsizetype index = 0; index < entryCount; ++index) {
+        BundledKeyEntry entry;
+        std::memcpy(&entry, bundle.data() + kBundleHeaderSize + index * kBundleEntrySize, sizeof(entry));
+        const int macSize = entry.game == BundledKeyGame::Motorsport3 ? kSha1.macKeySize : kSha256.macKeySize;
+        const int keySize = entry.aesSize + entry.macSize;
+        if (entry.aesSize != kAesKeySize || entry.macSize != macSize
+            || entry.aesProfileOffset >= kProfileIdSize || entry.macProfileOffset >= kProfileIdSize
+            || keySize > maskSize - offset) {
+            return std::nullopt;
+        }
+        if (entry.game == bundledGame && entry.kind == bundledKind) {
+            if (result) {
+                return std::nullopt;
+            }
+            result = BaseKeys{data.sliced(maskSize + offset, keySize), data.sliced(offset, keySize),
+                              {entry.aesProfileOffset, entry.macProfileOffset}};
+        }
+        offset += keySize;
+    }
+
+    return offset == maskSize ? result : std::nullopt;
 }
 
 quint32 beWord(const QByteArray &bytes, qsizetype offset) {
@@ -156,16 +267,41 @@ QByteArray aesCbc(const QByteArray &data, const QByteArray &key, QByteArray iv, 
     return output;
 }
 
-QByteArray deriveKey(const QByteArray &base, const QByteArray &profileId,
-                     int profileOffset, bool horizon) {
+QByteArray deriveKey(QByteArrayView base, QByteArrayView profileId,
+                     int profileOffset, bool horizon, QByteArrayView mask = {}) {
     QByteArray result(base.size(), Qt::Uninitialized);
-    for (int index = 0; index < base.size(); ++index) {
-        const quint8 byte = static_cast<quint8>(base[index])
+    for (qsizetype index = 0; index < base.size(); ++index) {
+        const quint8 maskByte = mask.isEmpty() ? 0 : static_cast<quint8>(mask[index]);
+        const quint8 byte = static_cast<quint8>(base[index]) ^ maskByte
             ^ static_cast<quint8>(profileId[(index + profileOffset) % kProfileIdSize]);
         result[index] = static_cast<char>(byte + (horizon ? 2 * index : 0));
     }
 
     return result;
+}
+
+KeyPair deriveBaseKeys(ExportGameVersion game, Xbox360FileKind kind, const Envelope &profile,
+                       const Xbox360Credentials &credentials) {
+    const bool horizon = game == ExportGameVersion::Horizon1;
+    const bool livery = kind == Xbox360FileKind::Livery;
+    const ProfileKeyOffsets offsets = horizon ? (livery ? kHorizonLiveryOffsets : kHorizonGroupOffsets)
+        : (livery ? kMotorsportLiveryOffsets : kMotorsportGroupOffsets);
+    BaseKeys keys{credentials.keyData, {}, offsets};
+    if (credentials.source == Xbox360KeySource::Bundled) {
+        const auto bundled = bundledBaseKeys(game, kind);
+        if (!bundled) {
+            throw std::runtime_error("no bundled Xbox 360 keys for the selected game and asset type");
+        }
+        keys = *bundled;
+    }
+    if (credentials.profileId.size() != kProfileIdSize || keys.data.size() != kAesKeySize + profile.macKeySize) {
+        throw std::runtime_error("Xbox 360 key derivation requires base AES and HMAC keys and a profile ID");
+    }
+
+    return {deriveKey(keys.data.first(kAesKeySize), credentials.profileId, keys.profileOffsets.aes, horizon,
+                      keys.mask.left(kAesKeySize)),
+            deriveKey(keys.data.sliced(kAesKeySize), credentials.profileId, keys.profileOffsets.mac, horizon,
+                      keys.mask.mid(kAesKeySize))};
 }
 
 QByteArray readPeSection(const QByteArray &image, quint32 address, int length) {
@@ -209,8 +345,8 @@ KeyPair deriveExecutableKeys(const Xbox360Credentials &credentials, const KeyLoc
         return {};
     }
 
-    return {deriveKey(aes, credentials.profileId, location.aesProfileOffset, horizon),
-            deriveKey(mac, credentials.profileId, location.macProfileOffset, horizon)};
+    return {deriveKey(aes, credentials.profileId, location.profileOffsets.aes, horizon),
+            deriveKey(mac, credentials.profileId, location.profileOffsets.mac, horizon)};
 }
 
 QList<KeyPair> candidateKeys(ExportGameVersion game, Xbox360FileKind kind,
@@ -223,6 +359,9 @@ QList<KeyPair> candidateKeys(ExportGameVersion game, Xbox360FileKind kind,
         }
 
         return {{credentials.keyData.left(kAesKeySize), credentials.keyData.mid(kAesKeySize)}};
+    }
+    if (credentials.source == Xbox360KeySource::BaseKeys || credentials.source == Xbox360KeySource::Bundled) {
+        return {deriveBaseKeys(game, kind, profile, credentials)};
     }
     if (!xbox360SupportsExecutableKeys(game, kind) || credentials.profileId.size() != kProfileIdSize) {
         throw std::runtime_error("Xbox 360 executable keys require a supported title and profile ID");
@@ -284,6 +423,10 @@ Xbox360Envelope xbox360Envelope(const QByteArray &bytes) {
     }
 
     return Xbox360Envelope::Unknown;
+}
+
+Xbox360KeyRequirements xbox360KeyRequirements(ExportGameVersion game, Xbox360FileKind kind) {
+    return {kProfileIdSize, kAesKeySize, envelopeForGame(game).macKeySize, bundledBaseKeys(game, kind).has_value()};
 }
 
 QByteArray xbox360ProfileId(const QString &hex) {

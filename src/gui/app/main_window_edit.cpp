@@ -213,8 +213,8 @@ void MainWindow::startPenFill(const QVector<PenLoop> &loops,
         }
         return;
     }
-    const ContourFillMode fillMode = loadBehaviorSettings().contourFillMode;
-    const bool compactFit = fillMode == ContourFillMode::CompactFit;
+    const BehaviorSettings settings = loadBehaviorSettings();
+    const bool compactFit = settings.contourFillMode == ContourFillMode::CompactFit;
     const QString fillLabel = compactFit ? QStringLiteral("Compact fit") : QStringLiteral("Analytic contour fill");
     const QString fillTool = compactFit ? QStringLiteral("compact") : QStringLiteral("analytic");
     PenFillRequest request;
@@ -248,6 +248,9 @@ void MainWindow::startPenFill(const QVector<PenLoop> &loops,
     prepareGeneratedFill(
         fillColor, fillLabel, fillTool,
         fillMask);
+    if (settings.penAlwaysOnTop) {
+        generatedFillTopSectionId_ = activeLiverySectionId();
+    }
     if (fillColor.has_value()) {
         generatedFillGuideSelection_ = state_->selectedGuideLayerIds();
     }
@@ -454,6 +457,7 @@ void MainWindow::clearGeneratedFillState() {
     generatedFillWorkCompleted_ = 0;
     generatedFillWorkTotal_ = 0;
     generatedFillInsertionEntries_.clear();
+    generatedFillTopSectionId_.reset();
     generatedFillLabel_.clear();
     generatedFillGuideSelection_.clear();
     generatedFillTool_.clear();
@@ -616,12 +620,10 @@ void MainWindow::insertGeneratedFill(const QString &groupName,
     }
 
     state_->beginProjectEdit();
-    const bool insertedBelowLeeway =
-        !generatedFillLeewayEntryId_.isEmpty()
-        && state_->insertLayerBelowEntry(
-            insertedNode,
-            generatedFillLeewayEntryId_);
-    if (!insertedBelowLeeway && insertedNode != nullptr) {
+    if (generatedFillTopSectionId_) {
+        state_->insertLayerOnTop(std::move(insertedNode), *generatedFillTopSectionId_);
+    } else if (generatedFillLeewayEntryId_.isEmpty()
+               || !state_->insertLayerBelowEntry(insertedNode, generatedFillLeewayEntryId_)) {
         state_->insertLayerAboveSelection(
             std::move(insertedNode),
             generatedFillInsertionEntries_);
@@ -661,8 +663,9 @@ void MainWindow::insertGeneratedFill(const QString &groupName,
 
 void MainWindow::toggleContourLeewayEntry(
     const QString &entryId) {
+    const BehaviorSettings settings = loadBehaviorSettings();
     if (canvas_ == nullptr
-        || loadBehaviorSettings().contourFillMode != ContourFillMode::CompactFit) {
+        || settings.contourFillMode != ContourFillMode::CompactFit) {
         canvasStatusBar_->showMessage(
             QStringLiteral("Contour leeway requires Compact Fit Contour Fill"),
             3000);
@@ -691,11 +694,13 @@ void MainWindow::toggleContourLeewayEntry(
     tree_->setLeewayEntryId(nextEntryId);
     const fls::scene::Layer *entry =
         state_->sceneNode(nextEntryId);
+    const QString leewayMessage = settings.penAlwaysOnTop
+        ? QStringLiteral("Contour leeway: %1. Fill will be placed at the top.")
+        : QStringLiteral("Contour leeway: %1. Fill will be placed below it.");
     canvasStatusBar_->showMessage(
         nextEntryId.isEmpty()
         ? QStringLiteral("Contour leeway cleared")
-        : QStringLiteral("Contour leeway: %1; fill will be placed below it")
-              .arg(entry != nullptr ? entry->name : nextEntryId),
+        : leewayMessage.arg(entry != nullptr ? entry->name : nextEntryId),
         3500);
 }
 

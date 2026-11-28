@@ -1221,6 +1221,7 @@ BehaviorSettings loadBehaviorSettings() {
     }
     const bool legacySavePaths = settings.value(QStringLiteral("ui/behavior/autoSavePaths"), false).toBool();
     result.autoSavePenPaths = settings.value(QStringLiteral("ui/behavior/autoSavePenPaths"), legacySavePaths).toBool();
+    result.penAlwaysOnTop = settings.value(QStringLiteral("ui/behavior/penAlwaysOnTop"), result.penAlwaysOnTop).toBool();
     result.penColorAwareSnapping = settings.value(QStringLiteral("ui/behavior/penColorAwareSnapping"), result.penColorAwareSnapping).toBool();
     result.autoAdjustNewPenHandles = settings.value(QStringLiteral("ui/behavior/autoAdjustNewPenHandles"), result.autoAdjustNewPenHandles).toBool();
     result.autoSaveLiningPaths = settings.value(QStringLiteral("ui/behavior/autoSaveLiningPaths"), legacySavePaths).toBool();
@@ -1307,6 +1308,7 @@ void saveBehaviorSettings(const BehaviorSettings &settings) {
     qsettings.remove(QStringLiteral("ui/behavior/differentialContourFill"));
     qsettings.remove(QStringLiteral("ui/behavior/autoSavePaths"));
     qsettings.setValue(QStringLiteral("ui/behavior/autoSavePenPaths"), settings.autoSavePenPaths);
+    qsettings.setValue(QStringLiteral("ui/behavior/penAlwaysOnTop"), settings.penAlwaysOnTop);
     qsettings.setValue(QStringLiteral("ui/behavior/penColorAwareSnapping"), settings.penColorAwareSnapping);
     qsettings.setValue(QStringLiteral("ui/behavior/autoAdjustNewPenHandles"), settings.autoAdjustNewPenHandles);
     qsettings.setValue(QStringLiteral("ui/behavior/autoSaveLiningPaths"), settings.autoSaveLiningPaths);

@@ -35,9 +35,9 @@ void collectLeafIds(const fls::scene::Layer &node, QSet<QString> &layers, QSet<Q
     }
 }
 
-fls::scene::Group *defaultInsertionTarget(EditorState &state) {
-    if (state.project_.isLivery && !state.activeSectionId_.isEmpty()) {
-        if (fls::scene::Group *section = state.groupForId(state.activeSectionId_);
+fls::scene::Group *insertionTargetForSection(EditorState &state, const QString &sectionId) {
+    if (state.project_.isLivery && !sectionId.isEmpty()) {
+        if (fls::scene::Group *section = state.groupForId(sectionId);
             section != nullptr && section->isLiverySection) {
             return section;
         }
@@ -212,7 +212,7 @@ void EditorState::insertClipboardAt(const ProjectClipboard &clipboard,
         });
     }
 
-    fls::scene::Group *target = haveTarget ? groupForId(parentId) : defaultInsertionTarget(*this);
+    fls::scene::Group *target = haveTarget ? groupForId(parentId) : insertionTargetForSection(*this, activeSectionId_);
     if (target == nullptr) {
         target = project_.root.get();
         insertAt = static_cast<int>(target->children.size());
@@ -274,13 +274,21 @@ void EditorState::insertLayerAboveSelection(std::unique_ptr<fls::scene::Layer> l
     }
     const EntryInsertionPoint insertionPoint = insertionPointAboveSelection(selectedEntries);
     fls::scene::Group *target = insertionPoint.hasTarget ? groupForId(insertionPoint.parentId)
-                                                        : defaultInsertionTarget(*this);
+        : insertionTargetForSection(*this, activeSectionId_);
     if (target == nullptr) {
         target = project_.root.get();
     }
     const int insertAt = insertionPoint.hasTarget ? insertionPoint.row
                                                   : static_cast<int>(target->children.size());
     target->insert(std::clamp(insertAt, 0, static_cast<int>(target->children.size())), std::move(layer));
+    invalidateProjectIndexCache();
+}
+
+void EditorState::insertLayerOnTop(std::unique_ptr<fls::scene::Layer> layer, const QString &sectionId) {
+    if (!layer || !project_.root) {
+        return;
+    }
+    insertionTargetForSection(*this, sectionId)->append(std::move(layer));
     invalidateProjectIndexCache();
 }
 

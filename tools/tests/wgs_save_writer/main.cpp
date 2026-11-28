@@ -306,9 +306,7 @@ void testAppend(const QString &profile, const QString &staging, Game game, bool 
     const QByteArray payload = readFile(asset->payloadPath);
     const QDir container(QFileInfo(asset->payloadPath).absolutePath());
 #ifdef Q_OS_WIN
-    if (game == Game::Horizon5) {
-        checkContainerPermissions(directory, container);
-    }
+    checkContainerPermissions(directory, container);
 #endif
     const QByteArray descriptor = readFile(container.filePath("container.1"));
     require(descriptor.size() == (livery ? 648 : 488), "append descriptor size");

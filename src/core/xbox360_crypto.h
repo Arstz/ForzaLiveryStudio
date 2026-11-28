@@ -7,7 +7,7 @@ namespace fls {
 
 enum class ExportGameVersion;
 
-enum class Xbox360KeySource { ProfileKeys, Executable, HorizonTitleUpdate };
+enum class Xbox360KeySource { ProfileKeys, Executable, HorizonTitleUpdate, BaseKeys, Bundled };
 
 struct Xbox360Credentials {
     QByteArray profileId;
@@ -18,8 +18,16 @@ struct Xbox360Credentials {
 enum class Xbox360FileKind { Unknown, Livery, Group };
 enum class Xbox360Envelope { Unknown, Motorsport2, Sha1, Sha256 };
 
+struct Xbox360KeyRequirements {
+    int profileIdSize;
+    int aesKeySize;
+    int hmacKeySize;
+    bool bundled;
+};
+
 Xbox360FileKind xbox360FileKind(const QString &fileName);
 Xbox360Envelope xbox360Envelope(const QByteArray &bytes);
+Xbox360KeyRequirements xbox360KeyRequirements(ExportGameVersion game, Xbox360FileKind kind);
 QByteArray xbox360ProfileId(const QString &hex);
 bool xbox360SupportsExecutableKeys(ExportGameVersion game, Xbox360FileKind kind);
 QByteArray decryptXbox360Asset(const QByteArray &bytes, ExportGameVersion game,

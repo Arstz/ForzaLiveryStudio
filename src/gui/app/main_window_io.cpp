@@ -21,12 +21,20 @@
 
 #include <QtGui>
 
+#include <QApplication>
+#include <QDialogButtonBox>
+#include <QFormLayout>
 #include <QInputDialog>
+#include <QLineEdit>
 #include <QLockFile>
 #include <QLocale>
+#include <QPushButton>
+#include <QRegularExpressionValidator>
 #include <QSaveFile>
 #include <QStandardPaths>
+#include <QStyle>
 #include <QUuid>
+#include <QVBoxLayout>
 
 #include <algorithm>
 #include <exception>
@@ -57,6 +65,7 @@ constexpr const char *kEmptyLiverySectionNames[] = {
 constexpr char kScratchProjectSuffix[] = ".3so";
 constexpr char kScratchMetadataSuffix[] = ".json";
 constexpr char kScratchLockSuffix[] = ".lock";
+constexpr char kXbox360ProfileIdSetting[] = "xbox360/profileId";
 const QSize kLiveryThumbnailSize(670, 376);
 
 QString absoluteProjectPath(const QString &path) {
@@ -144,25 +153,88 @@ QByteArray readImportFile(const QString &path, bool optional = false) {
     return file.readAll();
 }
 
-std::optional<fls::Xbox360Credentials> chooseXbox360KeyFile(QWidget *parent, fls::ExportGameVersion game) {
-    constexpr qint64 kMaximumKeyFileSize = 48;
-    const QString path = QFileDialog::getOpenFileName(parent,
-        QStringLiteral("Select %1 Xbox 360 Key File").arg(fls::exportGameCode(game)),
-        QString(), QStringLiteral("Profile-derived keys (*.keys)"));
-    if (path.isEmpty()) {
+QString xbox360BaseKeysSetting(fls::ExportGameVersion game, fls::Xbox360FileKind kind) {
+    const QString assetType = kind == fls::Xbox360FileKind::Livery
+        ? QStringLiteral("livery") : QStringLiteral("group");
+
+    return QStringLiteral("xbox360/baseKeys/%1/%2").arg(fls::exportGameCode(game), assetType);
+}
+
+void rememberXbox360Credentials(fls::ExportGameVersion game, fls::Xbox360FileKind kind,
+                               const fls::Xbox360Credentials &credentials) {
+    QSettings settings;
+    settings.setValue(QLatin1String(kXbox360ProfileIdSetting), credentials.profileId);
+    if (credentials.source == fls::Xbox360KeySource::BaseKeys) {
+        settings.setValue(xbox360BaseKeysSetting(game, kind), credentials.keyData);
+    }
+}
+
+std::optional<fls::Xbox360Credentials> chooseXbox360Credentials(QWidget *parent, fls::ExportGameVersion game,
+                                                                fls::Xbox360FileKind kind) {
+    constexpr int kHexDigitsPerByte = 2;
+    constexpr int kTitleBarPaddingFactor = 3;
+    const auto requirements = fls::xbox360KeyRequirements(game, kind);
+    const QSettings settings;
+    const QByteArray savedProfileId = settings.value(QLatin1String(kXbox360ProfileIdSetting)).toByteArray();
+    fls::Xbox360Credentials credentials;
+    QDialog dialog(parent);
+    auto *layout = new QVBoxLayout(&dialog);
+    auto *form = new QFormLayout;
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    QLineEdit *aes = nullptr;
+    QLineEdit *hmac = nullptr;
+
+    dialog.setWindowTitle(QStringLiteral("%1 Xbox 360 Credentials").arg(fls::exportGameCode(game)));
+    const QFontMetrics titleMetrics(QApplication::font("QTitleBar"));
+    const int titleBarHeight = dialog.style()->pixelMetric(QStyle::PM_TitleBarHeight, nullptr, &dialog);
+    dialog.setMinimumWidth(titleMetrics.horizontalAdvance(dialog.windowTitle()) + kTitleBarPaddingFactor * titleBarHeight);
+    layout->addLayout(form);
+    layout->addWidget(buttons);
+    const auto addHexField = [form](const QString &label, int byteCount) {
+        auto *field = new QLineEdit;
+        const int digits = byteCount * kHexDigitsPerByte;
+        field->setPlaceholderText(QStringLiteral("%1 hex digits").arg(digits));
+        field->setValidator(new QRegularExpressionValidator(
+            QRegularExpression(QStringLiteral("[0-9A-Fa-f]{%1}").arg(digits)), field));
+        form->addRow(label, field);
+
+        return field;
+    };
+    auto *profileId = addHexField(QStringLiteral("Profile ID"), requirements.profileIdSize);
+    if (savedProfileId.size() == requirements.profileIdSize) {
+        profileId->setText(QString::fromLatin1(savedProfileId.toHex()));
+    }
+    if (!requirements.bundled) {
+        const QByteArray savedKeys = settings.value(xbox360BaseKeysSetting(game, kind)).toByteArray();
+        aes = addHexField(QStringLiteral("Base AES key"), requirements.aesKeySize);
+        hmac = addHexField(QStringLiteral("Base HMAC key"), requirements.hmacKeySize);
+        aes->setEchoMode(QLineEdit::PasswordEchoOnEdit);
+        hmac->setEchoMode(QLineEdit::PasswordEchoOnEdit);
+        if (savedKeys.size() == requirements.aesKeySize + requirements.hmacKeySize) {
+            aes->setText(QString::fromLatin1(savedKeys.first(requirements.aesKeySize).toHex()));
+            hmac->setText(QString::fromLatin1(savedKeys.sliced(requirements.aesKeySize).toHex()));
+        }
+    }
+    const auto fields = dialog.findChildren<QLineEdit *>();
+    auto *accept = buttons->button(QDialogButtonBox::Ok);
+    const auto updateAccept = [accept, fields] {
+        accept->setEnabled(std::ranges::all_of(fields, &QLineEdit::hasAcceptableInput));
+    };
+    for (auto *field : fields) {
+        QObject::connect(field, &QLineEdit::textChanged, &dialog, updateAccept);
+    }
+    QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    updateAccept();
+    profileId->setFocus();
+    if (dialog.exec() != QDialog::Accepted) {
         return std::nullopt;
     }
-    if (QFileInfo(path).suffix().compare(QStringLiteral("keys"), Qt::CaseInsensitive) != 0) {
-        throw std::runtime_error("select an Xbox 360 .keys file");
-    }
-    QFile file(path);
-    if (!file.open(QIODevice::ReadOnly)) {
-        throw std::runtime_error("could not read the Xbox 360 key file");
-    }
-    fls::Xbox360Credentials credentials;
-    credentials.keyData = file.read(kMaximumKeyFileSize + 1);
-    if (file.error() != QFileDevice::NoError) {
-        throw std::runtime_error("could not read the Xbox 360 key file");
+    credentials.profileId = fls::xbox360ProfileId(profileId->text());
+    credentials.source = requirements.bundled ? fls::Xbox360KeySource::Bundled : fls::Xbox360KeySource::BaseKeys;
+    if (!requirements.bundled) {
+        credentials.keyData = QByteArray::fromHex(aes->text().toLatin1())
+            + QByteArray::fromHex(hmac->text().toLatin1());
     }
 
     return credentials;
@@ -813,11 +885,12 @@ bool MainWindow::importAny(const QString &path, QString *error) {
                 if (!game) {
                     return false;
                 }
-                const auto credentials = chooseXbox360KeyFile(this, *game);
+                const auto credentials = chooseXbox360Credentials(this, *game, xbox360Kind);
                 if (!credentials) {
                     return false;
                 }
                 bytes = fls::decryptXbox360Asset(bytes, *game, xbox360Kind, *credentials);
+                rememberXbox360Credentials(*game, xbox360Kind, *credentials);
                 gameCode = fls::exportGameCode(*game);
             }
             rememberImportDirectory(info.absoluteFilePath(), QStringLiteral("source"));
@@ -1234,13 +1307,16 @@ void MainWindow::exportDialog() {
         try {
             std::optional<fls::Xbox360Credentials> credentials;
             if (format == ExportContainerFormat::Xbox360SignedFile) {
-                credentials = chooseXbox360KeyFile(this, selection->gameVersion);
+                credentials = chooseXbox360Credentials(this, selection->gameVersion, kind);
                 if (!credentials) {
                     return;
                 }
             }
             fls::exportXbox360Asset(state_->project_, path, selection->gameVersion,
                                     credentials ? &*credentials : nullptr, selection->layerChoices);
+            if (credentials) {
+                rememberXbox360Credentials(selection->gameVersion, kind, *credentials);
+            }
             rememberExportSelection(*selection);
             rememberImportDirectory(path, QStringLiteral("exportFolder"));
             canvasStatusBar_->showMessage(QStringLiteral("Exported %1").arg(path), 5000);

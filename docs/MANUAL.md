@@ -94,7 +94,9 @@ Pen tool will place a single hard point (red) to start a contour on left click. 
 
 Choose Analytical or Compact from `Tool Settings->Mode`. Pen and Bucket use the selected mode. Compact uses opaque fills and asks how far shapes may extend outside the contour. Generated shapes can be kept with a warning if the result misses its quality targets.
 
-With a closed Pen contour in Compact mode, `Alt` + click a group in Layers to mark it as leeway. The fill can continue underneath it and will be inserted below that group.
+`Tool Settings->Always on top` is on by default. New Pen fills and saved contours are inserted at the top of Layers in the current project or livery section.
+
+With a closed Pen contour in Compact mode, `Alt` + click a group in Layers to mark it as leeway. Disable `Always on top` to insert the fill below the leeway group.
 
 Saved Pen and Lining paths appear in `Layers`. Use `Edit->Save Pen or Lining Path as Figure` to save the active path, then select it to resume editing. `Properties->Color` changes its outline and fill color. Each tool has its own `Tool Settings->Save Path` checkbox, off by default. Pen saves on contour closure; Lining saves when the line is finished.
 

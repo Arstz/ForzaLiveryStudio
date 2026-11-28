@@ -1,9 +1,9 @@
 Small changes:
     -Anull UV cache on manual model change
-    -Stretch target car menu
-    -Always on top option for per fill
+    -Warn about bucket selection taking long time
 
 Medium changes:
+    -Rework bucket to be object aware
 
 Big changes:
     -Vulcan migration(?)

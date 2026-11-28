@@ -596,9 +596,7 @@ WgsAppendResult appendWgsContainer(const WgsExportTarget &target, const QMap<QSt
             QStringLiteral("Could not publish the new WGS container."));
     try {
 #ifdef Q_OS_WIN
-        if (target.game == ExportGameVersion::Horizon5) {
-            inheritContainerPermissions(QDir(profile.filePath(folderName)), static_cast<qsizetype>(names.size()) + 1);
-        }
+        inheritContainerPermissions(QDir(profile.filePath(folderName)), static_cast<qsizetype>(names.size()) + 1);
 #endif
         require(readFile(target.indexPath) == append.index,
                 QStringLiteral("The WGS index changed during export."));

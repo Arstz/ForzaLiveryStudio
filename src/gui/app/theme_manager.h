@@ -142,6 +142,7 @@ struct BehaviorSettings {
     bool insertShapeWithLastSelectedScale = false;
     ContourFillMode contourFillMode = ContourFillMode::Analytic;
     bool autoSavePenPaths = false;
+    bool penAlwaysOnTop = true;
     bool penColorAwareSnapping = kDefaultPenColorAwareSnapping;
     bool autoAdjustNewPenHandles = kDefaultAutoAdjustNewPenHandles;
     bool autoSaveLiningPaths = false;
