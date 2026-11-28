@@ -17,6 +17,8 @@
 
 #ifdef Q_OS_WIN
 #include <windows.h>
+#include <aclapi.h>
+#include <sddl.h>
 #endif
 
 namespace {
@@ -59,6 +61,41 @@ void writeFile(const QString &path, const QByteArray &data) {
     QFile file(path);
     require(file.open(QIODevice::WriteOnly) && file.write(data) == data.size(), "write " + path);
 }
+
+#ifdef Q_OS_WIN
+QString accessRules(const QString &path) {
+    auto nativePath = QDir::toNativeSeparators(path).toStdWString();
+    PSECURITY_DESCRIPTOR descriptor = nullptr;
+    const DWORD result = GetNamedSecurityInfoW(nativePath.data(), SE_FILE_OBJECT, DACL_SECURITY_INFORMATION,
+        nullptr, nullptr, nullptr, nullptr, &descriptor);
+    const std::unique_ptr<void, decltype(&LocalFree)> security(descriptor, &LocalFree);
+    require(result == ERROR_SUCCESS, "read Windows permissions");
+    LPWSTR text = nullptr;
+    const bool converted = ConvertSecurityDescriptorToStringSecurityDescriptorW(descriptor, SDDL_REVISION_1,
+        DACL_SECURITY_INFORMATION, &text, nullptr);
+    const std::unique_ptr<void, decltype(&LocalFree)> accessList(text, &LocalFree);
+    require(converted, "read Windows access rules");
+    const QString sddl = QString::fromWCharArray(text);
+    const qsizetype firstRule = sddl.indexOf(QLatin1Char('('));
+    require(firstRule >= 0 && !sddl.startsWith(QLatin1String("D:P")), "Windows permissions inherit from the parent");
+    return sddl.mid(firstRule);
+}
+
+void checkContainerPermissions(const QDir &profile, const QDir &container) {
+    const QString referenceName = QStringLiteral("acl-reference");
+    const QDir reference(profile.filePath(referenceName));
+    require(profile.mkdir(referenceName), "create copied WGS permission reference");
+    const QString file = reference.filePath(QStringLiteral("blob"));
+    writeFile(file, QByteArray());
+    require(accessRules(container.absolutePath()) == accessRules(reference.absolutePath()),
+            "FH5 container inherits the profile access rules");
+    const QString referenceRules = accessRules(file);
+    for (const QString &name : container.entryList(QDir::Files)) {
+        require(accessRules(container.filePath(name)) == referenceRules, "FH5 blob inherits the profile access rules");
+    }
+    require(QFile::remove(file) && profile.rmdir(referenceName), "remove WGS permission reference");
+}
+#endif
 
 void appendU64(QByteArray &bytes, quint64 value) {
     fls::detail::appendLeU32(bytes, static_cast<quint32>(value));
@@ -268,6 +305,11 @@ void testAppend(const QString &profile, const QString &staging, Game game, bool 
     const QByteArray header = readFile(asset->headerPath);
     const QByteArray payload = readFile(asset->payloadPath);
     const QDir container(QFileInfo(asset->payloadPath).absolutePath());
+#ifdef Q_OS_WIN
+    if (game == Game::Horizon5) {
+        checkContainerPermissions(directory, container);
+    }
+#endif
     const QByteArray descriptor = readFile(container.filePath("container.1"));
     require(descriptor.size() == (livery ? 648 : 488), "append descriptor size");
     for (int offset = 136; offset < descriptor.size(); offset += 160) {

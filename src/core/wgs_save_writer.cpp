@@ -22,6 +22,14 @@
 #include <span>
 #include <stdexcept>
 
+#ifdef Q_OS_WIN
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#include <aclapi.h>
+#endif
+
 namespace fls {
 namespace {
 
@@ -489,6 +497,30 @@ quint64 stageContainer(const QDir &directory, const QMap<QString, QByteArray> &b
     return size;
 }
 
+#ifdef Q_OS_WIN
+void inheritContainerPermissions(const QDir &directory, qsizetype expectedFileCount) {
+    const auto files = directory.entryList(QDir::Files | QDir::Hidden | QDir::NoSymLinks);
+    require(files.size() == expectedFileCount, QStringLiteral("Could not list the published WGS container files."));
+    // An empty explicit ACL lets Windows inherit the rules from the WGS directory.
+    ACL acl;
+    require(InitializeAcl(&acl, sizeof(acl), ACL_REVISION),
+            QStringLiteral("Could not initialize WGS permissions."));
+    const auto inherit = [&acl](const QString &path) {
+        auto nativePath = QDir::toNativeSeparators(path).toStdWString();
+        const DWORD result = SetNamedSecurityInfoW(nativePath.data(), SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION | UNPROTECTED_DACL_SECURITY_INFORMATION,
+            nullptr, nullptr, &acl, nullptr);
+        require(result == ERROR_SUCCESS,
+                QStringLiteral("Could not inherit WGS permissions for %1 (Windows error %2).")
+                    .arg(path).arg(result));
+    };
+    inherit(directory.absolutePath());
+    for (const QString &file : files) {
+        inherit(directory.filePath(file));
+    }
+}
+#endif
+
 QString createBackup(const AppendSnapshot &snapshot) {
     const QDir profile(QFileInfo(snapshot.target.indexPath).absolutePath());
     const QString backupRoot = profile.filePath(QLatin1String(kBackupFolder));
@@ -563,6 +595,11 @@ WgsAppendResult appendWgsContainer(const WgsExportTarget &target, const QMap<QSt
     require(profile.rename(stagedPath, folderName),
             QStringLiteral("Could not publish the new WGS container."));
     try {
+#ifdef Q_OS_WIN
+        if (target.game == ExportGameVersion::Horizon5) {
+            inheritContainerPermissions(QDir(profile.filePath(folderName)), static_cast<qsizetype>(names.size()) + 1);
+        }
+#endif
         require(readFile(target.indexPath) == append.index,
                 QStringLiteral("The WGS index changed during export."));
         writeFile(target.indexPath, updatedIndex);

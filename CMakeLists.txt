@@ -169,7 +169,7 @@ target_link_libraries(fls_core
 )
 
 if(WIN32)
-    target_link_libraries(fls_core PUBLIC d3d11 d3dcompiler PRIVATE bcrypt)
+    target_link_libraries(fls_core PUBLIC d3d11 d3dcompiler PRIVATE advapi32 bcrypt)
 else()
     find_package(OpenSSL REQUIRED COMPONENTS Crypto)
     target_link_libraries(fls_core PRIVATE OpenSSL::Crypto)
